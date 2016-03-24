@@ -15,6 +15,7 @@
 #include <linux/fs.h>
 #include <linux/aio_abi.h>	/* for aio_context_t */
 #include <linux/unistd.h>
+#include <linux/syscalls.h>	/* for SYSCALL_FILL_ARGDESC_SECTION */
 
 #include <asm/compat.h>
 #include <asm/siginfo.h>
@@ -28,7 +29,15 @@
 #define __SC_DELOUSE(t,v) ((t)(unsigned long)(v))
 #endif
 
+#ifdef CONFIG_SECURITY_SECCOMP
+#define COMPAT_SYSCALL_FILL_ARGDESC(...)	\
+	SYSCALL_FILL_ARGDESC_SECTION("__compat_syscalls_argdesc", __VA_ARGS__)
+#else
+#define COMPAT_SYSCALL_FILL_ARGDESC(...)
+#endif /* CONFIG_SECURITY_SECCOMP */
+
 #define COMPAT_SYSCALL_DEFINE0(name) \
+	COMPAT_SYSCALL_FILL_ARGDESC(compat_sys_##name, 0)	\
 	asmlinkage long compat_sys_##name(void)
 
 #define COMPAT_SYSCALL_DEFINE1(name, ...) \
@@ -45,6 +54,7 @@
 	COMPAT_SYSCALL_DEFINEx(6, _##name, __VA_ARGS__)
 
 #define COMPAT_SYSCALL_DEFINEx(x, name, ...)				\
+	COMPAT_SYSCALL_FILL_ARGDESC(compat_sys##name, x, __VA_ARGS__)	\
 	asmlinkage long compat_sys##name(__MAP(x,__SC_DECL,__VA_ARGS__))\
 		__attribute__((alias(__stringify(compat_SyS##name))));  \
 	static inline long C_SYSC##name(__MAP(x,__SC_DECL,__VA_ARGS__));\

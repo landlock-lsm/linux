@@ -108,6 +108,9 @@ struct audit_proctitle {
 struct audit_context {
 	int		    dummy;	/* must be the first element */
 	int		    in_syscall;	/* 1 if task is in a syscall */
+#ifdef CONFIG_SECURITY_SECCOMP
+	int		    in_seccomp;	/* 1 if task is in seccomp */
+#endif
 	enum audit_state    state, current_state;
 	unsigned int	    serial;     /* serial number for record */
 	int		    major;      /* syscall number */

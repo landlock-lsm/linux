@@ -1892,5 +1892,10 @@ extern void __init yama_add_hooks(void);
 #else
 static inline void __init yama_add_hooks(void) { }
 #endif
+#ifdef CONFIG_SECURITY_SECCOMP
+extern void __init seccomp_init(void);
+#else
+static inline void __init seccomp_init(void) { }
+#endif
 
 #endif /* ! __LINUX_LSM_HOOKS_H */

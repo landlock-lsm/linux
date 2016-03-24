@@ -1501,7 +1501,10 @@ void __audit_syscall_entry(int major, unsigned long a1, unsigned long a2,
 	if (!context)
 		return;
 
-	BUG_ON(context->in_syscall || context->name_count);
+	BUG_ON(context->in_syscall);
+#ifndef CONFIG_SECURITY_SECCOMP
+	BUG_ON(context->name_count);
+#endif /* CONFIG_SECURITY_SECCOMP */
 
 	if (!audit_enabled)
 		return;
@@ -1578,6 +1581,35 @@ void __audit_syscall_exit(int success, long return_code)
 		context->filterkey = NULL;
 	}
 	tsk->audit_context = context;
+}
+
+void __audit_seccomp_entry(void)
+{
+	struct audit_context *context = current->audit_context;
+
+	if (!context)
+		return;
+	BUG_ON(context->in_seccomp || context->name_count);
+	if (!audit_enabled)
+		return;
+
+	context->in_seccomp = 1;
+}
+
+void __audit_seccomp_exit(int do_free)
+{
+	struct audit_context *context = current->audit_context;
+
+	if (!context)
+		return;
+	BUG_ON(!context->in_seccomp);
+	if (!audit_enabled)
+		return;
+
+	BUG_ON(!context->in_seccomp);
+	context->in_seccomp = 0;
+	if (do_free)
+		audit_free_names(context);
 }
 
 static inline void handle_one(const struct inode *inode)
@@ -1728,7 +1760,7 @@ void __audit_getname(struct filename *name)
 	struct audit_context *context = current->audit_context;
 	struct audit_names *n;
 
-	if (!context->in_syscall)
+	if (!context->in_syscall && !context->in_seccomp)
 		return;
 
 	n = audit_alloc_name(context, AUDIT_TYPE_UNKNOWN);

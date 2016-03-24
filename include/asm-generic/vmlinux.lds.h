@@ -153,6 +153,26 @@
 #define TRACE_SYSCALLS()
 #endif
 
+#ifdef CONFIG_SECURITY_SECCOMP
+#define ARGDESC_SYSCALLS() . = ALIGN(8);				\
+			 VMLINUX_SYMBOL(__start_syscalls_argdesc) = .;	\
+			 *(__syscalls_argdesc)				\
+			 VMLINUX_SYMBOL(__stop_syscalls_argdesc) = .;
+
+#ifdef CONFIG_COMPAT
+#define COMPAT_ARGDESC_SYSCALLS() . = ALIGN(8);				\
+		 VMLINUX_SYMBOL(__start_compat_syscalls_argdesc) = .;	\
+		 *(__compat_syscalls_argdesc)				\
+		 VMLINUX_SYMBOL(__stop_compat_syscalls_argdesc) = .;
+#else
+#define COMPAT_ARGDESC_SYSCALLS()
+#endif	/* CONFIG_COMPAT */
+
+#else
+#define ARGDESC_SYSCALLS()
+#define COMPAT_ARGDESC_SYSCALLS()
+#endif /* CONFIG_SECURITY_SECCOMP */
+
 #ifdef CONFIG_SERIAL_EARLYCON
 #define EARLYCON_TABLE() STRUCT_ALIGN();			\
 			 VMLINUX_SYMBOL(__earlycon_table) = .;	\
@@ -511,6 +531,8 @@
 	MEM_DISCARD(init.data)						\
 	KERNEL_CTORS()							\
 	MCOUNT_REC()							\
+	ARGDESC_SYSCALLS()						\
+	COMPAT_ARGDESC_SYSCALLS()					\
 	*(.init.rodata)							\
 	FTRACE_EVENTS()							\
 	TRACE_SYSCALLS()						\

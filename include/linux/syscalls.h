@@ -79,6 +79,8 @@ union bpf_attr;
 #include <linux/quota.h>
 #include <linux/key.h>
 #include <trace/syscall.h>
+#include <uapi/asm/unistd.h>
+#include <linux/seccomp.h>
 
 /*
  * __MAP - apply a macro to syscall arguments
@@ -97,6 +99,24 @@ union bpf_attr;
 #define __MAP5(m,t,a,...) m(t,a), __MAP4(m,__VA_ARGS__)
 #define __MAP6(m,t,a,...) m(t,a), __MAP5(m,__VA_ARGS__)
 #define __MAP(n,...) __MAP##n(__VA_ARGS__)
+
+#define __COMPARGS6
+#define __COMPARGS5 , 0
+#define __COMPARGS4 , 0, 0
+#define __COMPARGS3 , 0, 0, 0
+#define __COMPARGS2 , 0, 0, 0, 0
+#define __COMPARGS1 , 0, 0, 0, 0, 0
+#define __COMPARGS0 0, 0, 0, 0, 0, 0
+#define __COMPARGS(n) __COMPARGS##n
+
+#define __COMPDECL6
+#define __COMPDECL5
+#define __COMPDECL4
+#define __COMPDECL3
+#define __COMPDECL2
+#define __COMPDECL1
+#define __COMPDECL0 void
+#define __COMPDECL(n) __COMPDECL##n
 
 #define __SC_DECL(t, a)	t a
 #define __TYPE_IS_L(t)	(__same_type((t)0, 0L))
@@ -175,8 +195,55 @@ extern struct trace_event_functions exit_syscall_print_funcs;
 #define SYSCALL_METADATA(sname, nb, ...)
 #endif
 
+#ifdef CONFIG_SECURITY_SECCOMP
+/*
+ * Do not store the symbole name but the syscall symbole address.
+ * FIXME: Handle aliased symboles (i.e. different name but same address)?
+ *
+ * @addr: syscall address
+ * @args: syscall arguments C type (i.e. __SACT__* values)
+ */
+struct syscall_argdesc {
+	const void *addr;
+	u8 args[6];
+};
+
+/* Syscall Argument C Type (none means no argument) */
+#define __SACT__NONE			0
+#define __SACT__OTHER			1
+#define __SACT__CONST_CHAR_PTR		2
+#define __SACT__CHAR_PTR		3
+
+#define __SC_ARGDESC_TYPE(t, a)						\
+	__builtin_types_compatible_p(typeof(t), const char *) ?		\
+	__SACT__CONST_CHAR_PTR :					\
+	__builtin_types_compatible_p(typeof(t), char *) ?		\
+	__SACT__CHAR_PTR :						\
+	__SACT__OTHER
+
+#define SYSCALL_FILL_ARGDESC_SECTION(_section, sname, nb, ...)		\
+	asmlinkage long sname(__MAP(nb, __SC_DECL, __VA_ARGS__)		\
+			__COMPDECL(nb));				\
+	static struct syscall_argdesc __used				\
+		__attribute__((section(_section)))			\
+		syscall_argdesc_##sname = {				\
+			.addr = sname,					\
+			.args = {					\
+				__MAP(nb, __SC_ARGDESC_TYPE, __VA_ARGS__)\
+				__COMPARGS(nb)				\
+			},						\
+		};
+
+#define SYSCALL_FILL_ARGDESC(...)	\
+	SYSCALL_FILL_ARGDESC_SECTION("__syscalls_argdesc", __VA_ARGS__)
+
+#else
+#define SYSCALL_FILL_ARGDESC(...)
+#endif /* CONFIG_SECURITY_SECCOMP */
+
 #define SYSCALL_DEFINE0(sname)					\
 	SYSCALL_METADATA(_##sname, 0);				\
+	SYSCALL_FILL_ARGDESC(sys_##sname, 0)			\
 	asmlinkage long sys_##sname(void)
 
 #define SYSCALL_DEFINE1(name, ...) SYSCALL_DEFINEx(1, _##name, __VA_ARGS__)
@@ -188,6 +255,7 @@ extern struct trace_event_functions exit_syscall_print_funcs;
 
 #define SYSCALL_DEFINEx(x, sname, ...)				\
 	SYSCALL_METADATA(sname, x, __VA_ARGS__)			\
+	SYSCALL_FILL_ARGDESC(sys##sname, x, __VA_ARGS__)	\
 	__SYSCALL_DEFINEx(x, sname, __VA_ARGS__)
 
 #define __PROTECT(...) asmlinkage_protect(__VA_ARGS__)
