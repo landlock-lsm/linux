@@ -53,83 +53,12 @@
 #include <asm/numa.h>
 #include <asm/cacheflush.h>
 #include <asm/init.h>
+#include <asm/uv/uv.h>
 #include <asm/setup.h>
 
 #include "mm_internal.h"
 
-static void ident_pmd_init(unsigned long pmd_flag, pmd_t *pmd_page,
-			   unsigned long addr, unsigned long end)
-{
-	addr &= PMD_MASK;
-	for (; addr < end; addr += PMD_SIZE) {
-		pmd_t *pmd = pmd_page + pmd_index(addr);
-
-		if (!pmd_present(*pmd))
-			set_pmd(pmd, __pmd(addr | pmd_flag));
-	}
-}
-static int ident_pud_init(struct x86_mapping_info *info, pud_t *pud_page,
-			  unsigned long addr, unsigned long end)
-{
-	unsigned long next;
-
-	for (; addr < end; addr = next) {
-		pud_t *pud = pud_page + pud_index(addr);
-		pmd_t *pmd;
-
-		next = (addr & PUD_MASK) + PUD_SIZE;
-		if (next > end)
-			next = end;
-
-		if (pud_present(*pud)) {
-			pmd = pmd_offset(pud, 0);
-			ident_pmd_init(info->pmd_flag, pmd, addr, next);
-			continue;
-		}
-		pmd = (pmd_t *)info->alloc_pgt_page(info->context);
-		if (!pmd)
-			return -ENOMEM;
-		ident_pmd_init(info->pmd_flag, pmd, addr, next);
-		set_pud(pud, __pud(__pa(pmd) | _KERNPG_TABLE));
-	}
-
-	return 0;
-}
-
-int kernel_ident_mapping_init(struct x86_mapping_info *info, pgd_t *pgd_page,
-			      unsigned long addr, unsigned long end)
-{
-	unsigned long next;
-	int result;
-	int off = info->kernel_mapping ? pgd_index(__PAGE_OFFSET) : 0;
-
-	for (; addr < end; addr = next) {
-		pgd_t *pgd = pgd_page + pgd_index(addr) + off;
-		pud_t *pud;
-
-		next = (addr & PGDIR_MASK) + PGDIR_SIZE;
-		if (next > end)
-			next = end;
-
-		if (pgd_present(*pgd)) {
-			pud = pud_offset(pgd, 0);
-			result = ident_pud_init(info, pud, addr, next);
-			if (result)
-				return result;
-			continue;
-		}
-
-		pud = (pud_t *)info->alloc_pgt_page(info->context);
-		if (!pud)
-			return -ENOMEM;
-		result = ident_pud_init(info, pud, addr, next);
-		if (result)
-			return result;
-		set_pgd(pgd, __pgd(__pa(pud) | _KERNPG_TABLE));
-	}
-
-	return 0;
-}
+#include "ident_map.c"
 
 /*
  * NOTE: pagetable_init alloc all the fixmap pagetables contiguous on the
@@ -1074,7 +1003,6 @@ void __init mem_init(void)
 	mem_init_print_info(NULL);
 }
 
-#ifdef CONFIG_DEBUG_RODATA
 const int rodata_test_data = 0xC3;
 EXPORT_SYMBOL_GPL(rodata_test_data);
 
@@ -1166,8 +1094,6 @@ void mark_rodata_ro(void)
 	debug_checkwx();
 }
 
-#endif
-
 int kern_addr_valid(unsigned long addr)
 {
 	unsigned long above = ((long)addr) >> __VIRTUAL_MASK_SHIFT;
@@ -1206,26 +1132,13 @@ int kern_addr_valid(unsigned long addr)
 
 static unsigned long probe_memory_block_size(void)
 {
-	/* start from 2g */
-	unsigned long bz = 1UL<<31;
+	unsigned long bz = MIN_MEMORY_BLOCK_SIZE;
 
-	if (totalram_pages >= (64ULL << (30 - PAGE_SHIFT))) {
-		pr_info("Using 2GB memory block size for large-memory system\n");
-		return 2UL * 1024 * 1024 * 1024;
-	}
+	/* if system is UV or has 64GB of RAM or more, use large blocks */
+	if (is_uv_system() || ((max_pfn << PAGE_SHIFT) >= (64UL << 30)))
+		bz = 2UL << 30; /* 2GB */
 
-	/* less than 64g installed */
-	if ((max_pfn << PAGE_SHIFT) < (16UL << 32))
-		return MIN_MEMORY_BLOCK_SIZE;
-
-	/* get the tail size */
-	while (bz > MIN_MEMORY_BLOCK_SIZE) {
-		if (!((max_pfn << PAGE_SHIFT) & (bz - 1)))
-			break;
-		bz >>= 1;
-	}
-
-	printk(KERN_DEBUG "memory block size : %ldMB\n", bz >> 20);
+	pr_info("x86/mm: Memory block size: %ldMB\n", bz >> 20);
 
 	return bz;
 }
@@ -1310,7 +1223,7 @@ int __meminit vmemmap_populate(unsigned long start, unsigned long end, int node)
 	struct vmem_altmap *altmap = to_vmem_altmap(start);
 	int err;
 
-	if (cpu_has_pse)
+	if (boot_cpu_has(X86_FEATURE_PSE))
 		err = vmemmap_populate_hugepages(start, end, node, altmap);
 	else if (altmap) {
 		pr_err_once("%s: no cpu support for altmap allocations\n",
@@ -1353,7 +1266,7 @@ void register_page_bootmem_memmap(unsigned long section_nr,
 		}
 		get_page_bootmem(section_nr, pud_page(*pud), MIX_SECTION_INFO);
 
-		if (!cpu_has_pse) {
+		if (!boot_cpu_has(X86_FEATURE_PSE)) {
 			next = (addr + PAGE_SIZE) & PAGE_MASK;
 			pmd = pmd_offset(pud, addr);
 			if (pmd_none(*pmd))

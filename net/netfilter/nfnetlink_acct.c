@@ -96,6 +96,8 @@ static int nfnl_acct_new(struct net *net, struct sock *nfnl,
 			return -EINVAL;
 		if (flags & NFACCT_F_OVERQUOTA)
 			return -EINVAL;
+		if ((flags & NFACCT_F_QUOTA) && !tb[NFACCT_QUOTA])
+			return -EINVAL;
 
 		size += sizeof(u64);
 	}
@@ -160,15 +162,18 @@ nfnl_acct_fill_info(struct sk_buff *skb, u32 portid, u32 seq, u32 type,
 		pkts = atomic64_read(&acct->pkts);
 		bytes = atomic64_read(&acct->bytes);
 	}
-	if (nla_put_be64(skb, NFACCT_PKTS, cpu_to_be64(pkts)) ||
-	    nla_put_be64(skb, NFACCT_BYTES, cpu_to_be64(bytes)) ||
+	if (nla_put_be64(skb, NFACCT_PKTS, cpu_to_be64(pkts),
+			 NFACCT_PAD) ||
+	    nla_put_be64(skb, NFACCT_BYTES, cpu_to_be64(bytes),
+			 NFACCT_PAD) ||
 	    nla_put_be32(skb, NFACCT_USE, htonl(atomic_read(&acct->refcnt))))
 		goto nla_put_failure;
 	if (acct->flags & NFACCT_F_QUOTA) {
 		u64 *quota = (u64 *)acct->data;
 
 		if (nla_put_be32(skb, NFACCT_FLAGS, htonl(old_flags)) ||
-		    nla_put_be64(skb, NFACCT_QUOTA, cpu_to_be64(*quota)))
+		    nla_put_be64(skb, NFACCT_QUOTA, cpu_to_be64(*quota),
+				 NFACCT_PAD))
 			goto nla_put_failure;
 	}
 	nlmsg_end(skb, nlh);
@@ -241,6 +246,9 @@ nfacct_filter_alloc(const struct nlattr * const attr)
 	err = nla_parse_nested(tb, NFACCT_FILTER_MAX, attr, filter_policy);
 	if (err < 0)
 		return ERR_PTR(err);
+
+	if (!tb[NFACCT_FILTER_MASK] || !tb[NFACCT_FILTER_VALUE])
+		return ERR_PTR(-EINVAL);
 
 	filter = kzalloc(sizeof(struct nfacct_filter), GFP_KERNEL);
 	if (!filter)

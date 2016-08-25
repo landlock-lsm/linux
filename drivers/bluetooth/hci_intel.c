@@ -488,7 +488,7 @@ static int intel_set_baudrate(struct hci_uart *hu, unsigned int speed)
 	clear_bit(STATE_BOOTING, &intel->flags);
 
 	/* In case of timeout, try to continue anyway */
-	if (err && err != ETIMEDOUT)
+	if (err && err != -ETIMEDOUT)
 		return err;
 
 	bt_dev_info(hdev, "Change controller speed to %d", speed);
@@ -581,7 +581,7 @@ static int intel_setup(struct hci_uart *hu)
 	clear_bit(STATE_BOOTING, &intel->flags);
 
 	/* In case of timeout, try to continue anyway */
-	if (err && err != ETIMEDOUT)
+	if (err && err != -ETIMEDOUT)
 		return err;
 
 	set_bit(STATE_BOOTLOADER, &intel->flags);
@@ -1210,8 +1210,7 @@ static int intel_probe(struct platform_device *pdev)
 
 	idev->pdev = pdev;
 
-	idev->reset = devm_gpiod_get_optional(&pdev->dev, "reset",
-					      GPIOD_OUT_LOW);
+	idev->reset = devm_gpiod_get(&pdev->dev, "reset", GPIOD_OUT_LOW);
 	if (IS_ERR(idev->reset)) {
 		dev_err(&pdev->dev, "Unable to retrieve gpio\n");
 		return PTR_ERR(idev->reset);
@@ -1223,8 +1222,7 @@ static int intel_probe(struct platform_device *pdev)
 
 		dev_err(&pdev->dev, "No IRQ, falling back to gpio-irq\n");
 
-		host_wake = devm_gpiod_get_optional(&pdev->dev, "host-wake",
-						    GPIOD_IN);
+		host_wake = devm_gpiod_get(&pdev->dev, "host-wake", GPIOD_IN);
 		if (IS_ERR(host_wake)) {
 			dev_err(&pdev->dev, "Unable to retrieve IRQ\n");
 			goto no_irq;

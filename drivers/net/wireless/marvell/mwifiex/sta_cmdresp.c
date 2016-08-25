@@ -44,7 +44,6 @@ static void
 mwifiex_process_cmdresp_error(struct mwifiex_private *priv,
 			      struct host_cmd_ds_command *resp)
 {
-	struct cmd_ctrl_node *cmd_node = NULL, *tmp_node;
 	struct mwifiex_adapter *adapter = priv->adapter;
 	struct host_cmd_ds_802_11_ps_mode_enh *pm;
 	unsigned long flags;
@@ -71,17 +70,7 @@ mwifiex_process_cmdresp_error(struct mwifiex_private *priv,
 		break;
 	case HostCmd_CMD_802_11_SCAN:
 	case HostCmd_CMD_802_11_SCAN_EXT:
-		/* Cancel all pending scan command */
-		spin_lock_irqsave(&adapter->scan_pending_q_lock, flags);
-		list_for_each_entry_safe(cmd_node, tmp_node,
-					 &adapter->scan_pending_q, list) {
-			list_del(&cmd_node->list);
-			spin_unlock_irqrestore(&adapter->scan_pending_q_lock,
-					       flags);
-			mwifiex_insert_cmd_to_free_q(adapter, cmd_node);
-			spin_lock_irqsave(&adapter->scan_pending_q_lock, flags);
-		}
-		spin_unlock_irqrestore(&adapter->scan_pending_q_lock, flags);
+		mwifiex_cancel_pending_scan_cmd(adapter);
 
 		spin_lock_irqsave(&adapter->mwifiex_cmd_lock, flags);
 		adapter->scan_processing = false;
@@ -1076,8 +1065,11 @@ int mwifiex_process_sta_cmdresp(struct mwifiex_private *priv, u16 cmdresp_no,
 		break;
 	case HostCmd_CMD_802_11_BG_SCAN_QUERY:
 		ret = mwifiex_ret_802_11_scan(priv, resp);
+		cfg80211_sched_scan_results(priv->wdev.wiphy);
 		mwifiex_dbg(adapter, CMD,
 			    "info: CMD_RESP: BG_SCAN result is ready!\n");
+		break;
+	case HostCmd_CMD_802_11_BG_SCAN_CONFIG:
 		break;
 	case HostCmd_CMD_TXPWR_CFG:
 		ret = mwifiex_ret_tx_power_cfg(priv, resp);
@@ -1233,10 +1225,15 @@ int mwifiex_process_sta_cmdresp(struct mwifiex_private *priv, u16 cmdresp_no,
 	case HostCmd_CMD_SDIO_SP_RX_AGGR_CFG:
 		ret = mwifiex_ret_sdio_rx_aggr_cfg(priv, resp);
 		break;
+	case HostCmd_CMD_HS_WAKEUP_REASON:
+		ret = mwifiex_ret_wakeup_reason(priv, resp, data_buf);
+		break;
 	case HostCmd_CMD_TDLS_CONFIG:
 		break;
 	case HostCmd_CMD_ROBUST_COEX:
 		ret = mwifiex_ret_robust_coex(priv, resp, data_buf);
+		break;
+	case HostCmd_CMD_GTK_REKEY_OFFLOAD_CFG:
 		break;
 	default:
 		mwifiex_dbg(adapter, ERROR,

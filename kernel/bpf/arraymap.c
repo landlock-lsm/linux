@@ -16,16 +16,52 @@
 #include <linux/mm.h>
 #include <linux/filter.h>
 #include <linux/perf_event.h>
+#include <linux/file.h> /* fput() */
+#include <linux/fs.h> /* struct file */
+
+#ifdef CONFIG_SECURITY_LANDLOCK
+#ifdef CONFIG_CGROUPS
+#include <linux/cgroup-defs.h> /* struct cgroup_subsys_state */
+#endif	/* CONFIG_CGROUPS */
+#endif /* CONFIG_SECURITY_LANDLOCK */
+
+static void bpf_array_free_percpu(struct bpf_array *array)
+{
+	int i;
+
+	for (i = 0; i < array->map.max_entries; i++)
+		free_percpu(array->pptrs[i]);
+}
+
+static int bpf_array_alloc_percpu(struct bpf_array *array)
+{
+	void __percpu *ptr;
+	int i;
+
+	for (i = 0; i < array->map.max_entries; i++) {
+		ptr = __alloc_percpu_gfp(array->elem_size, 8,
+					 GFP_USER | __GFP_NOWARN);
+		if (!ptr) {
+			bpf_array_free_percpu(array);
+			return -ENOMEM;
+		}
+		array->pptrs[i] = ptr;
+	}
+
+	return 0;
+}
 
 /* Called from syscall */
 static struct bpf_map *array_map_alloc(union bpf_attr *attr)
 {
+	bool percpu = attr->map_type == BPF_MAP_TYPE_PERCPU_ARRAY;
 	struct bpf_array *array;
-	u32 elem_size, array_size;
+	u64 array_size;
+	u32 elem_size;
 
 	/* check sanity of attributes */
 	if (attr->max_entries == 0 || attr->key_size != 4 ||
-	    attr->value_size == 0)
+	    attr->value_size == 0 || attr->map_flags)
 		return ERR_PTR(-EINVAL);
 
 	if (attr->value_size >= 1 << (KMALLOC_SHIFT_MAX - 1))
@@ -36,12 +72,16 @@ static struct bpf_map *array_map_alloc(union bpf_attr *attr)
 
 	elem_size = round_up(attr->value_size, 8);
 
-	/* check round_up into zero and u32 overflow */
-	if (elem_size == 0 ||
-	    attr->max_entries > (U32_MAX - PAGE_SIZE - sizeof(*array)) / elem_size)
+	array_size = sizeof(*array);
+	if (percpu)
+		array_size += (u64) attr->max_entries * sizeof(void *);
+	else
+		array_size += (u64) attr->max_entries * elem_size;
+
+	/* make sure there is no u32 overflow later in round_up() */
+	if (array_size >= U32_MAX - PAGE_SIZE)
 		return ERR_PTR(-ENOMEM);
 
-	array_size = sizeof(*array) + attr->max_entries * elem_size;
 
 	/* allocate all map elements and zero-initialize them */
 	array = kzalloc(array_size, GFP_USER | __GFP_NOWARN);
@@ -52,11 +92,24 @@ static struct bpf_map *array_map_alloc(union bpf_attr *attr)
 	}
 
 	/* copy mandatory map attributes */
+	array->map.map_type = attr->map_type;
 	array->map.key_size = attr->key_size;
 	array->map.value_size = attr->value_size;
 	array->map.max_entries = attr->max_entries;
-	array->map.pages = round_up(array_size, PAGE_SIZE) >> PAGE_SHIFT;
 	array->elem_size = elem_size;
+
+	if (!percpu)
+		goto out;
+
+	array_size += (u64) attr->max_entries * elem_size * num_possible_cpus();
+
+	if (array_size >= U32_MAX - PAGE_SIZE ||
+	    elem_size > PCPU_MIN_UNIT_SIZE || bpf_array_alloc_percpu(array)) {
+		kvfree(array);
+		return ERR_PTR(-ENOMEM);
+	}
+out:
+	array->map.pages = round_up(array_size, PAGE_SIZE) >> PAGE_SHIFT;
 
 	return &array->map;
 }
@@ -67,10 +120,48 @@ static void *array_map_lookup_elem(struct bpf_map *map, void *key)
 	struct bpf_array *array = container_of(map, struct bpf_array, map);
 	u32 index = *(u32 *)key;
 
-	if (index >= array->map.max_entries)
+	if (unlikely(index >= array->map.max_entries))
 		return NULL;
 
 	return array->value + array->elem_size * index;
+}
+
+/* Called from eBPF program */
+static void *percpu_array_map_lookup_elem(struct bpf_map *map, void *key)
+{
+	struct bpf_array *array = container_of(map, struct bpf_array, map);
+	u32 index = *(u32 *)key;
+
+	if (unlikely(index >= array->map.max_entries))
+		return NULL;
+
+	return this_cpu_ptr(array->pptrs[index]);
+}
+
+int bpf_percpu_array_copy(struct bpf_map *map, void *key, void *value)
+{
+	struct bpf_array *array = container_of(map, struct bpf_array, map);
+	u32 index = *(u32 *)key;
+	void __percpu *pptr;
+	int cpu, off = 0;
+	u32 size;
+
+	if (unlikely(index >= array->map.max_entries))
+		return -ENOENT;
+
+	/* per_cpu areas are zero-filled and bpf programs can only
+	 * access 'value_size' of them, so copying rounded areas
+	 * will not leak any kernel data
+	 */
+	size = round_up(map->value_size, 8);
+	rcu_read_lock();
+	pptr = array->pptrs[index];
+	for_each_possible_cpu(cpu) {
+		bpf_long_memcpy(value + off, per_cpu_ptr(pptr, cpu), size);
+		off += size;
+	}
+	rcu_read_unlock();
+	return 0;
 }
 
 /* Called from syscall */
@@ -99,19 +190,62 @@ static int array_map_update_elem(struct bpf_map *map, void *key, void *value,
 	struct bpf_array *array = container_of(map, struct bpf_array, map);
 	u32 index = *(u32 *)key;
 
-	if (map_flags > BPF_EXIST)
+	if (unlikely(map_flags > BPF_EXIST))
 		/* unknown flags */
 		return -EINVAL;
 
-	if (index >= array->map.max_entries)
+	if (unlikely(index >= array->map.max_entries))
 		/* all elements were pre-allocated, cannot insert a new one */
 		return -E2BIG;
 
-	if (map_flags == BPF_NOEXIST)
+	if (unlikely(map_flags == BPF_NOEXIST))
 		/* all elements already exist */
 		return -EEXIST;
 
-	memcpy(array->value + array->elem_size * index, value, map->value_size);
+	if (array->map.map_type == BPF_MAP_TYPE_PERCPU_ARRAY)
+		memcpy(this_cpu_ptr(array->pptrs[index]),
+		       value, map->value_size);
+	else
+		memcpy(array->value + array->elem_size * index,
+		       value, map->value_size);
+	return 0;
+}
+
+int bpf_percpu_array_update(struct bpf_map *map, void *key, void *value,
+			    u64 map_flags)
+{
+	struct bpf_array *array = container_of(map, struct bpf_array, map);
+	u32 index = *(u32 *)key;
+	void __percpu *pptr;
+	int cpu, off = 0;
+	u32 size;
+
+	if (unlikely(map_flags > BPF_EXIST))
+		/* unknown flags */
+		return -EINVAL;
+
+	if (unlikely(index >= array->map.max_entries))
+		/* all elements were pre-allocated, cannot insert a new one */
+		return -E2BIG;
+
+	if (unlikely(map_flags == BPF_NOEXIST))
+		/* all elements already exist */
+		return -EEXIST;
+
+	/* the user space will provide round_up(value_size, 8) bytes that
+	 * will be copied into per-cpu area. bpf programs can only access
+	 * value_size of it. During lookup the same extra bytes will be
+	 * returned or zeros which were zero-filled by percpu_alloc,
+	 * so no kernel data leaks possible
+	 */
+	size = round_up(map->value_size, 8);
+	rcu_read_lock();
+	pptr = array->pptrs[index];
+	for_each_possible_cpu(cpu) {
+		bpf_long_memcpy(per_cpu_ptr(pptr, cpu), value + off, size);
+		off += size;
+	}
+	rcu_read_unlock();
 	return 0;
 }
 
@@ -133,6 +267,9 @@ static void array_map_free(struct bpf_map *map)
 	 */
 	synchronize_rcu();
 
+	if (array->map.map_type == BPF_MAP_TYPE_PERCPU_ARRAY)
+		bpf_array_free_percpu(array);
+
 	kvfree(array);
 }
 
@@ -150,9 +287,24 @@ static struct bpf_map_type_list array_type __read_mostly = {
 	.type = BPF_MAP_TYPE_ARRAY,
 };
 
+static const struct bpf_map_ops percpu_array_ops = {
+	.map_alloc = array_map_alloc,
+	.map_free = array_map_free,
+	.map_get_next_key = array_map_get_next_key,
+	.map_lookup_elem = percpu_array_map_lookup_elem,
+	.map_update_elem = array_map_update_elem,
+	.map_delete_elem = array_map_delete_elem,
+};
+
+static struct bpf_map_type_list percpu_array_type __read_mostly = {
+	.ops = &percpu_array_ops,
+	.type = BPF_MAP_TYPE_PERCPU_ARRAY,
+};
+
 static int __init register_array_map(void)
 {
 	bpf_register_map_type(&array_type);
+	bpf_register_map_type(&percpu_array_type);
 	return 0;
 }
 late_initcall(register_array_map);
@@ -347,3 +499,217 @@ static int __init register_perf_event_array_map(void)
 	return 0;
 }
 late_initcall(register_perf_event_array_map);
+
+
+#ifdef CONFIG_SECURITY_LANDLOCK
+static struct bpf_map *landlock_array_map_alloc(union bpf_attr *attr)
+{
+	if (attr->value_size != sizeof(struct landlock_handle))
+		return ERR_PTR(-EINVAL);
+	attr->value_size = sizeof(struct map_landlock_handle);
+
+	return array_map_alloc(attr);
+}
+
+static void landlock_put_handle(struct map_landlock_handle *handle)
+{
+	switch (handle->type) {
+	case BPF_MAP_HANDLE_TYPE_LANDLOCK_FS_FD:
+		if (likely(handle->file))
+			fput(handle->file);
+		else
+			WARN_ON(1);
+		break;
+	case BPF_MAP_HANDLE_TYPE_LANDLOCK_CGROUP_FD:
+		if (likely(handle->css))
+			css_put(handle->css);
+		else
+			WARN_ON(1);
+		break;
+	default:
+		WARN_ON(1);
+	}
+	/* safeguard */
+	handle->type = BPF_MAP_HANDLE_TYPE_UNSPEC;
+}
+
+static void landlock_array_map_free(struct bpf_map *map)
+{
+	struct bpf_array *array = container_of(map, struct bpf_array, map);
+	int i;
+
+	synchronize_rcu();
+
+	for (i = 0; i < array->n_entries; i++)
+		landlock_put_handle((struct map_landlock_handle *)
+				(array->value + array->elem_size * i));
+	kvfree(array);
+}
+
+static enum bpf_map_array_type landlock_get_array_type(
+		enum bpf_map_handle_type handle_type)
+{
+	switch (handle_type) {
+	case BPF_MAP_HANDLE_TYPE_LANDLOCK_FS_FD:
+	case BPF_MAP_HANDLE_TYPE_LANDLOCK_FS_GLOB:
+		return BPF_MAP_ARRAY_TYPE_LANDLOCK_FS;
+	case BPF_MAP_HANDLE_TYPE_LANDLOCK_CGROUP_FD:
+#ifdef CONFIG_CGROUPS
+		return BPF_MAP_ARRAY_TYPE_LANDLOCK_CGROUP;
+#endif	/* CONFIG_CGROUPS */
+	case BPF_MAP_HANDLE_TYPE_UNSPEC:
+	default:
+		return -EINVAL;
+	}
+}
+
+#define FGET_OR_RET(file, fd) { \
+	file = fget(fd); \
+	if (unlikely(IS_ERR(file))) \
+		return PTR_ERR(file); \
+	}
+
+static inline long landlock_store_handle(struct map_landlock_handle *dst,
+		struct landlock_handle *khandle)
+{
+	struct path kpath;
+#ifdef CONFIG_CGROUPS
+	struct cgroup_subsys_state *css;
+#endif	/* CONFIG_CGROUPS */
+	struct file *handle_file;
+
+	if (unlikely(!khandle))
+		return -EINVAL;
+
+	/* access control already done for the FD */
+
+	switch (khandle->type) {
+	case BPF_MAP_HANDLE_TYPE_LANDLOCK_FS_FD:
+		FGET_OR_RET(handle_file, khandle->fd);
+		dst->file = handle_file;
+		break;
+#ifdef CONFIG_CGROUPS
+	case BPF_MAP_HANDLE_TYPE_LANDLOCK_CGROUP_FD:
+		FGET_OR_RET(handle_file, khandle->fd);
+		css = css_tryget_online_from_dir(file_dentry(handle_file), NULL);
+		fput(handle_file);
+		/* NULL css check done by css_tryget_online_from_dir() */
+		if (IS_ERR(css))
+			return PTR_ERR(css);
+		dst->css = css;
+		break;
+#endif	/* CONFIG_CGROUPS */
+	default:
+		WARN_ON(1);
+		path_put(&kpath);
+		return -EINVAL;
+	}
+	dst->type = khandle->type;
+	return 0;
+}
+
+static void *nop_map_lookup_elem(struct bpf_map *map, void *key)
+{
+	return ERR_PTR(-EINVAL);
+}
+
+/* called from syscall or from eBPF program */
+static int landlock_array_map_update_elem(struct bpf_map *map, void *key,
+		void *value, u64 map_flags)
+{
+	struct bpf_array *array = container_of(map, struct bpf_array, map);
+	u32 index = *(u32 *)key;
+	enum bpf_map_array_type array_type;
+	int ret;
+	struct landlock_handle *khandle = (struct landlock_handle *)value;
+	struct map_landlock_handle *handle, handle_new;
+
+	if (unlikely(map_flags > BPF_EXIST))
+		/* unknown flags */
+		return -EINVAL;
+
+	if (unlikely(index >= array->map.max_entries))
+		/* all elements were pre-allocated, cannot insert a new one */
+		return -E2BIG;
+
+	/* FIXME: add lock */
+	if (unlikely(index > array->n_entries))
+		/* only replace an existing entry or append a new one */
+		return -EINVAL;
+
+	/* TODO: handle all flags, not only BPF_ANY */
+	if (unlikely(map_flags == BPF_NOEXIST))
+		/* all elements already exist */
+		return -EEXIST;
+
+	if (unlikely(!khandle))
+		return -EINVAL;
+
+	array_type = landlock_get_array_type(khandle->type);
+	if (array_type < 0)
+		return array_type;
+
+	if (!map->map_array_type) {
+		/* set the initial set type */
+		map->map_array_type = array_type;
+	} else if (map->map_array_type != array_type) {
+		return -EINVAL;
+	}
+
+	ret = landlock_store_handle(&handle_new, khandle);
+	if (!ret) {
+		/* map->value_size == sizeof(struct map_landlock_handle) */
+		handle = (struct map_landlock_handle *)
+			(array->value + array->elem_size * index);
+		/* FIXME: make atomic update */
+		if (index < array->n_entries)
+			landlock_put_handle(handle);
+		*handle = handle_new;
+		/* TODO: use atomic_inc? */
+		if (index == array->n_entries)
+			array->n_entries++;
+	}
+	/* FIXME: unlock */
+
+	return ret;
+}
+
+/* called from syscall or from eBPF program */
+static int landlock_array_map_delete_elem(struct bpf_map *map, void *key)
+{
+	struct bpf_array *array = container_of(map, struct bpf_array, map);
+	u32 index = *(u32 *)key;
+
+	/* only remove the last element */
+	/* TODO: use atomic_dec? */
+	if (array->n_entries && index == array->n_entries - 1) {
+		array->n_entries--;
+		landlock_put_handle((struct map_landlock_handle *)
+				(array->value + array->elem_size * index));
+		return 0;
+	}
+	return -EINVAL;
+}
+
+static const struct bpf_map_ops landlock_array_ops = {
+	.map_alloc = landlock_array_map_alloc,
+	.map_free = landlock_array_map_free,
+	.map_get_next_key = array_map_get_next_key,
+	.map_lookup_elem = nop_map_lookup_elem,
+	.map_update_elem = landlock_array_map_update_elem,
+	.map_delete_elem = landlock_array_map_delete_elem,
+};
+
+static struct bpf_map_type_list landlock_array_type __read_mostly = {
+	.ops = &landlock_array_ops,
+	.type = BPF_MAP_TYPE_LANDLOCK_ARRAY,
+};
+
+static int __init register_landlock_array_map(void)
+{
+	bpf_register_map_type(&landlock_array_type);
+	return 0;
+}
+
+late_initcall(register_landlock_array_map);
+#endif /* CONFIG_SECURITY_LANDLOCK */

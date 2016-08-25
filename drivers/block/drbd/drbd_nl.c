@@ -1178,7 +1178,7 @@ static void drbd_setup_queue_param(struct drbd_device *device, struct drbd_backi
 	blk_queue_max_hw_sectors(q, max_hw_sectors);
 	/* This is the workaround for "bio would need to, but cannot, be split" */
 	blk_queue_max_segments(q, max_segments ? max_segments : BLK_MAX_SEGMENTS);
-	blk_queue_segment_boundary(q, PAGE_CACHE_SIZE-1);
+	blk_queue_segment_boundary(q, PAGE_SIZE-1);
 
 	if (b) {
 		struct drbd_connection *connection = first_peer_device(device)->connection;
@@ -2160,19 +2160,34 @@ check_net_options(struct drbd_connection *connection, struct net_conf *new_net_c
 }
 
 struct crypto {
-	struct crypto_hash *verify_tfm;
-	struct crypto_hash *csums_tfm;
-	struct crypto_hash *cram_hmac_tfm;
-	struct crypto_hash *integrity_tfm;
+	struct crypto_ahash *verify_tfm;
+	struct crypto_ahash *csums_tfm;
+	struct crypto_shash *cram_hmac_tfm;
+	struct crypto_ahash *integrity_tfm;
 };
 
 static int
-alloc_hash(struct crypto_hash **tfm, char *tfm_name, int err_alg)
+alloc_shash(struct crypto_shash **tfm, char *tfm_name, int err_alg)
 {
 	if (!tfm_name[0])
 		return NO_ERROR;
 
-	*tfm = crypto_alloc_hash(tfm_name, 0, CRYPTO_ALG_ASYNC);
+	*tfm = crypto_alloc_shash(tfm_name, 0, 0);
+	if (IS_ERR(*tfm)) {
+		*tfm = NULL;
+		return err_alg;
+	}
+
+	return NO_ERROR;
+}
+
+static int
+alloc_ahash(struct crypto_ahash **tfm, char *tfm_name, int err_alg)
+{
+	if (!tfm_name[0])
+		return NO_ERROR;
+
+	*tfm = crypto_alloc_ahash(tfm_name, 0, CRYPTO_ALG_ASYNC);
 	if (IS_ERR(*tfm)) {
 		*tfm = NULL;
 		return err_alg;
@@ -2187,24 +2202,24 @@ alloc_crypto(struct crypto *crypto, struct net_conf *new_net_conf)
 	char hmac_name[CRYPTO_MAX_ALG_NAME];
 	enum drbd_ret_code rv;
 
-	rv = alloc_hash(&crypto->csums_tfm, new_net_conf->csums_alg,
-		       ERR_CSUMS_ALG);
+	rv = alloc_ahash(&crypto->csums_tfm, new_net_conf->csums_alg,
+			 ERR_CSUMS_ALG);
 	if (rv != NO_ERROR)
 		return rv;
-	rv = alloc_hash(&crypto->verify_tfm, new_net_conf->verify_alg,
-		       ERR_VERIFY_ALG);
+	rv = alloc_ahash(&crypto->verify_tfm, new_net_conf->verify_alg,
+			 ERR_VERIFY_ALG);
 	if (rv != NO_ERROR)
 		return rv;
-	rv = alloc_hash(&crypto->integrity_tfm, new_net_conf->integrity_alg,
-		       ERR_INTEGRITY_ALG);
+	rv = alloc_ahash(&crypto->integrity_tfm, new_net_conf->integrity_alg,
+			 ERR_INTEGRITY_ALG);
 	if (rv != NO_ERROR)
 		return rv;
 	if (new_net_conf->cram_hmac_alg[0] != 0) {
 		snprintf(hmac_name, CRYPTO_MAX_ALG_NAME, "hmac(%s)",
 			 new_net_conf->cram_hmac_alg);
 
-		rv = alloc_hash(&crypto->cram_hmac_tfm, hmac_name,
-			       ERR_AUTH_ALG);
+		rv = alloc_shash(&crypto->cram_hmac_tfm, hmac_name,
+				 ERR_AUTH_ALG);
 	}
 
 	return rv;
@@ -2212,10 +2227,10 @@ alloc_crypto(struct crypto *crypto, struct net_conf *new_net_conf)
 
 static void free_crypto(struct crypto *crypto)
 {
-	crypto_free_hash(crypto->cram_hmac_tfm);
-	crypto_free_hash(crypto->integrity_tfm);
-	crypto_free_hash(crypto->csums_tfm);
-	crypto_free_hash(crypto->verify_tfm);
+	crypto_free_shash(crypto->cram_hmac_tfm);
+	crypto_free_ahash(crypto->integrity_tfm);
+	crypto_free_ahash(crypto->csums_tfm);
+	crypto_free_ahash(crypto->verify_tfm);
 }
 
 int drbd_adm_net_opts(struct sk_buff *skb, struct genl_info *info)
@@ -2292,23 +2307,23 @@ int drbd_adm_net_opts(struct sk_buff *skb, struct genl_info *info)
 	rcu_assign_pointer(connection->net_conf, new_net_conf);
 
 	if (!rsr) {
-		crypto_free_hash(connection->csums_tfm);
+		crypto_free_ahash(connection->csums_tfm);
 		connection->csums_tfm = crypto.csums_tfm;
 		crypto.csums_tfm = NULL;
 	}
 	if (!ovr) {
-		crypto_free_hash(connection->verify_tfm);
+		crypto_free_ahash(connection->verify_tfm);
 		connection->verify_tfm = crypto.verify_tfm;
 		crypto.verify_tfm = NULL;
 	}
 
-	crypto_free_hash(connection->integrity_tfm);
+	crypto_free_ahash(connection->integrity_tfm);
 	connection->integrity_tfm = crypto.integrity_tfm;
 	if (connection->cstate >= C_WF_REPORT_PARAMS && connection->agreed_pro_version >= 100)
 		/* Do this without trying to take connection->data.mutex again.  */
 		__drbd_send_protocol(connection, P_PROTOCOL_UPDATE);
 
-	crypto_free_hash(connection->cram_hmac_tfm);
+	crypto_free_shash(connection->cram_hmac_tfm);
 	connection->cram_hmac_tfm = crypto.cram_hmac_tfm;
 
 	mutex_unlock(&connection->resource->conf_update);
@@ -3618,14 +3633,15 @@ static int nla_put_status_info(struct sk_buff *skb, struct drbd_device *device,
 		goto nla_put_failure;
 	if (nla_put_u32(skb, T_sib_reason, sib ? sib->sib_reason : SIB_GET_STATUS_REPLY) ||
 	    nla_put_u32(skb, T_current_state, device->state.i) ||
-	    nla_put_u64(skb, T_ed_uuid, device->ed_uuid) ||
-	    nla_put_u64(skb, T_capacity, drbd_get_capacity(device->this_bdev)) ||
-	    nla_put_u64(skb, T_send_cnt, device->send_cnt) ||
-	    nla_put_u64(skb, T_recv_cnt, device->recv_cnt) ||
-	    nla_put_u64(skb, T_read_cnt, device->read_cnt) ||
-	    nla_put_u64(skb, T_writ_cnt, device->writ_cnt) ||
-	    nla_put_u64(skb, T_al_writ_cnt, device->al_writ_cnt) ||
-	    nla_put_u64(skb, T_bm_writ_cnt, device->bm_writ_cnt) ||
+	    nla_put_u64_0pad(skb, T_ed_uuid, device->ed_uuid) ||
+	    nla_put_u64_0pad(skb, T_capacity,
+			     drbd_get_capacity(device->this_bdev)) ||
+	    nla_put_u64_0pad(skb, T_send_cnt, device->send_cnt) ||
+	    nla_put_u64_0pad(skb, T_recv_cnt, device->recv_cnt) ||
+	    nla_put_u64_0pad(skb, T_read_cnt, device->read_cnt) ||
+	    nla_put_u64_0pad(skb, T_writ_cnt, device->writ_cnt) ||
+	    nla_put_u64_0pad(skb, T_al_writ_cnt, device->al_writ_cnt) ||
+	    nla_put_u64_0pad(skb, T_bm_writ_cnt, device->bm_writ_cnt) ||
 	    nla_put_u32(skb, T_ap_bio_cnt, atomic_read(&device->ap_bio_cnt)) ||
 	    nla_put_u32(skb, T_ap_pending_cnt, atomic_read(&device->ap_pending_cnt)) ||
 	    nla_put_u32(skb, T_rs_pending_cnt, atomic_read(&device->rs_pending_cnt)))
@@ -3642,13 +3658,16 @@ static int nla_put_status_info(struct sk_buff *skb, struct drbd_device *device,
 			goto nla_put_failure;
 
 		if (nla_put_u32(skb, T_disk_flags, device->ldev->md.flags) ||
-		    nla_put_u64(skb, T_bits_total, drbd_bm_bits(device)) ||
-		    nla_put_u64(skb, T_bits_oos, drbd_bm_total_weight(device)))
+		    nla_put_u64_0pad(skb, T_bits_total, drbd_bm_bits(device)) ||
+		    nla_put_u64_0pad(skb, T_bits_oos,
+				     drbd_bm_total_weight(device)))
 			goto nla_put_failure;
 		if (C_SYNC_SOURCE <= device->state.conn &&
 		    C_PAUSED_SYNC_T >= device->state.conn) {
-			if (nla_put_u64(skb, T_bits_rs_total, device->rs_total) ||
-			    nla_put_u64(skb, T_bits_rs_failed, device->rs_failed))
+			if (nla_put_u64_0pad(skb, T_bits_rs_total,
+					     device->rs_total) ||
+			    nla_put_u64_0pad(skb, T_bits_rs_failed,
+					     device->rs_failed))
 				goto nla_put_failure;
 		}
 	}

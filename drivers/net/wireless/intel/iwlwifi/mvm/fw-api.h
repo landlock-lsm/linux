@@ -80,10 +80,42 @@
 #include "fw-api-stats.h"
 #include "fw-api-tof.h"
 
-/* Tx queue numbers */
+/* Tx queue numbers for non-DQA mode */
 enum {
 	IWL_MVM_OFFCHANNEL_QUEUE = 8,
 	IWL_MVM_CMD_QUEUE = 9,
+};
+
+/*
+ * DQA queue numbers
+ *
+ * @IWL_MVM_DQA_CMD_QUEUE: a queue reserved for sending HCMDs to the FW
+ * @IWL_MVM_DQA_P2P_DEVICE_QUEUE: a queue reserved for P2P device frames
+ * @IWL_MVM_DQA_GCAST_QUEUE: a queue reserved for P2P GO/SoftAP GCAST frames
+ * @IWL_MVM_DQA_BSS_CLIENT_QUEUE: a queue reserved for BSS activity, to ensure
+ *	that we are never left without the possibility to connect to an AP.
+ * @IWL_MVM_DQA_MIN_MGMT_QUEUE: first TXQ in pool for MGMT and non-QOS frames.
+ *	Each MGMT queue is mapped to a single STA
+ *	MGMT frames are frames that return true on ieee80211_is_mgmt()
+ * @IWL_MVM_DQA_MAX_MGMT_QUEUE: last TXQ in pool for MGMT frames
+ * @IWL_MVM_DQA_AP_PROBE_RESP_QUEUE: a queue reserved for P2P GO/SoftAP probe
+ *	responses
+ * @IWL_MVM_DQA_MIN_DATA_QUEUE: first TXQ in pool for DATA frames.
+ *	DATA frames are intended for !ieee80211_is_mgmt() frames, but if
+ *	the MGMT TXQ pool is exhausted, mgmt frames can be sent on DATA queues
+ *	as well
+ * @IWL_MVM_DQA_MAX_DATA_QUEUE: last TXQ in pool for DATA frames
+ */
+enum iwl_mvm_dqa_txq {
+	IWL_MVM_DQA_CMD_QUEUE = 0,
+	IWL_MVM_DQA_P2P_DEVICE_QUEUE = 2,
+	IWL_MVM_DQA_GCAST_QUEUE = 3,
+	IWL_MVM_DQA_BSS_CLIENT_QUEUE = 4,
+	IWL_MVM_DQA_MIN_MGMT_QUEUE = 5,
+	IWL_MVM_DQA_MAX_MGMT_QUEUE = 8,
+	IWL_MVM_DQA_AP_PROBE_RESP_QUEUE = 9,
+	IWL_MVM_DQA_MIN_DATA_QUEUE = 10,
+	IWL_MVM_DQA_MAX_DATA_QUEUE = 31,
 };
 
 enum iwl_mvm_tx_fifo {
@@ -118,6 +150,8 @@ enum {
 	SCAN_REQ_UMAC = 0xd,
 	SCAN_ABORT_UMAC = 0xe,
 	SCAN_COMPLETE_UMAC = 0xf,
+
+	BA_WINDOW_STATUS_NOTIFICATION_ID = 0x13,
 
 	/* station table */
 	ADD_STA_KEY = 0x17,
@@ -213,6 +247,8 @@ enum {
 
 	MFUART_LOAD_NOTIFICATION = 0xb1,
 
+	RSS_CONFIG_CMD = 0xb3,
+
 	REPLY_RX_PHY_CMD = 0xc0,
 	REPLY_RX_MPDU_CMD = 0xc1,
 	FRAME_RELEASE = 0xc3,
@@ -275,16 +311,43 @@ enum {
 /* Please keep this enum *SORTED* by hex value.
  * Needed for binary search, otherwise a warning will be triggered.
  */
+enum iwl_mac_conf_subcmd_ids {
+	LINK_QUALITY_MEASUREMENT_CMD = 0x1,
+	LINK_QUALITY_MEASUREMENT_COMPLETE_NOTIF = 0xFE,
+};
+
 enum iwl_phy_ops_subcmd_ids {
 	CMD_DTS_MEASUREMENT_TRIGGER_WIDE = 0x0,
+	CTDP_CONFIG_CMD = 0x03,
+	TEMP_REPORTING_THRESHOLDS_CMD = 0x04,
+	CT_KILL_NOTIFICATION = 0xFE,
 	DTS_MEASUREMENT_NOTIF_WIDE = 0xFF,
+};
+
+enum iwl_system_subcmd_ids {
+	SHARED_MEM_CFG_CMD = 0x0,
+};
+
+enum iwl_data_path_subcmd_ids {
+	UPDATE_MU_GROUPS_CMD = 0x1,
+	TRIGGER_RX_QUEUES_NOTIF_CMD = 0x2,
+	MU_GROUP_MGMT_NOTIF = 0xFE,
+	RX_QUEUES_NOTIFICATION = 0xFF,
+};
+
+enum iwl_prot_offload_subcmd_ids {
+	STORED_BEACON_NTF = 0xFF,
 };
 
 /* command groups */
 enum {
 	LEGACY_GROUP = 0x0,
 	LONG_GROUP = 0x1,
+	SYSTEM_GROUP = 0x2,
+	MAC_CONF_GROUP = 0x3,
 	PHY_OPS_GROUP = 0x4,
+	DATA_PATH_GROUP = 0x5,
+	PROT_OFFLOAD_GROUP = 0xb,
 };
 
 /**
@@ -1271,6 +1334,26 @@ struct iwl_fw_bcast_filter {
 	struct iwl_fw_bcast_filter_attr attrs[MAX_BCAST_FILTER_ATTRS];
 } __packed; /* BCAST_FILTER_S_VER_1 */
 
+#define BA_WINDOW_STREAMS_MAX		16
+#define BA_WINDOW_STATUS_TID_MSK	0x000F
+#define BA_WINDOW_STATUS_STA_ID_POS	4
+#define BA_WINDOW_STATUS_STA_ID_MSK	0x01F0
+#define BA_WINDOW_STATUS_VALID_MSK	BIT(9)
+
+/**
+ * struct iwl_ba_window_status_notif - reordering window's status notification
+ * @bitmap: bitmap of received frames [start_seq_num + 0]..[start_seq_num + 63]
+ * @ra_tid: bit 3:0 - TID, bit 8:4 - STA_ID, bit 9 - valid
+ * @start_seq_num: the start sequence number of the bitmap
+ * @mpdu_rx_count: the number of received MPDUs since entering D0i3
+ */
+struct iwl_ba_window_status_notif {
+	__le64 bitmap[BA_WINDOW_STREAMS_MAX];
+	__le16 ra_tid[BA_WINDOW_STREAMS_MAX];
+	__le32 start_seq_num[BA_WINDOW_STREAMS_MAX];
+	__le16 mpdu_rx_count[BA_WINDOW_STREAMS_MAX];
+} __packed; /* BA_WINDOW_STATUS_NTFY_API_S_VER_1 */
+
 /**
  * struct iwl_fw_bcast_mac - per-mac broadcast filtering configuration.
  * @default_discard: default action for this mac (discard (1) / pass (0)).
@@ -1668,15 +1751,77 @@ struct iwl_ext_dts_measurement_cmd {
 } __packed; /* XVT_FW_DTS_CONTROL_MEASUREMENT_REQUEST_API_S */
 
 /**
- * iwl_dts_measurement_notif - notification received with the measurements
+ * struct iwl_dts_measurement_notif_v1 - measurements notification
  *
  * @temp: the measured temperature
  * @voltage: the measured voltage
  */
-struct iwl_dts_measurement_notif {
+struct iwl_dts_measurement_notif_v1 {
 	__le32 temp;
 	__le32 voltage;
-} __packed; /* TEMPERATURE_MEASUREMENT_TRIGGER_NTFY_S */
+} __packed; /* TEMPERATURE_MEASUREMENT_TRIGGER_NTFY_S_VER_1*/
+
+/**
+ * struct iwl_dts_measurement_notif_v2 - measurements notification
+ *
+ * @temp: the measured temperature
+ * @voltage: the measured voltage
+ * @threshold_idx: the trip index that was crossed
+ */
+struct iwl_dts_measurement_notif_v2 {
+	__le32 temp;
+	__le32 voltage;
+	__le32 threshold_idx;
+} __packed; /* TEMPERATURE_MEASUREMENT_TRIGGER_NTFY_S_VER_2 */
+
+/**
+ * struct ct_kill_notif - CT-kill entry notification
+ *
+ * @temperature: the current temperature in celsius
+ * @reserved: reserved
+ */
+struct ct_kill_notif {
+	__le16 temperature;
+	__le16 reserved;
+} __packed; /* GRP_PHY_CT_KILL_NTF */
+
+/**
+* enum ctdp_cmd_operation - CTDP command operations
+* @CTDP_CMD_OPERATION_START: update the current budget
+* @CTDP_CMD_OPERATION_STOP: stop ctdp
+* @CTDP_CMD_OPERATION_REPORT: get the avgerage budget
+*/
+enum iwl_mvm_ctdp_cmd_operation {
+	CTDP_CMD_OPERATION_START	= 0x1,
+	CTDP_CMD_OPERATION_STOP		= 0x2,
+	CTDP_CMD_OPERATION_REPORT	= 0x4,
+};/* CTDP_CMD_OPERATION_TYPE_E */
+
+/**
+ * struct iwl_mvm_ctdp_cmd - track and manage the FW power consumption budget
+ *
+ * @operation: see &enum iwl_mvm_ctdp_cmd_operation
+ * @budget: the budget in milliwatt
+ * @window_size: defined in API but not used
+ */
+struct iwl_mvm_ctdp_cmd {
+	__le32 operation;
+	__le32 budget;
+	__le32 window_size;
+} __packed;
+
+#define IWL_MAX_DTS_TRIPS	8
+
+/**
+ * struct iwl_temp_report_ths_cmd - set temperature thresholds
+ *
+ * @num_temps: number of temperature thresholds passed
+ * @thresholds: array with the thresholds to be configured
+ */
+struct temp_report_ths_cmd {
+	__le32 num_temps;
+	__le16 thresholds[IWL_MAX_DTS_TRIPS];
+} __packed; /* GRP_PHY_TEMP_REPORTING_THRESHOLDS_CMD */
 
 /***********************************
  * TDLS API
@@ -1821,6 +1966,7 @@ struct iwl_tdls_config_res {
 
 #define TX_FIFO_MAX_NUM		8
 #define RX_FIFO_MAX_NUM		2
+#define TX_FIFO_INTERNAL_MAX_NUM	6
 
 /**
  * Shared memory configuration information from the FW
@@ -1838,6 +1984,12 @@ struct iwl_tdls_config_res {
  * @page_buff_addr: used by UMAC and performance debug (page miss analysis),
  *	when paging is not supported this should be 0
  * @page_buff_size: size of %page_buff_addr
+ * @rxfifo_addr: Start address of rxFifo
+ * @internal_txfifo_addr: start address of internalFifo
+ * @internal_txfifo_size: internal fifos' size
+ *
+ * NOTE: on firmware that don't have IWL_UCODE_TLV_CAPA_EXTEND_SHARED_MEM_CFG
+ *	 set, the last 3 members don't exist.
  */
 struct iwl_shared_mem_cfg {
 	__le32 shared_mem_addr;
@@ -1849,6 +2001,114 @@ struct iwl_shared_mem_cfg {
 	__le32 rxfifo_size[RX_FIFO_MAX_NUM];
 	__le32 page_buff_addr;
 	__le32 page_buff_size;
-} __packed; /* SHARED_MEM_ALLOC_API_S_VER_1 */
+	__le32 rxfifo_addr;
+	__le32 internal_txfifo_addr;
+	__le32 internal_txfifo_size[TX_FIFO_INTERNAL_MAX_NUM];
+} __packed; /* SHARED_MEM_ALLOC_API_S_VER_2 */
+
+/**
+ * VHT MU-MIMO group configuration
+ *
+ * @membership_status: a bitmap of MU groups
+ * @user_position:the position of station in a group. If the station is in the
+ *	group then bits (group * 2) is the position -1
+ */
+struct iwl_mu_group_mgmt_cmd {
+	__le32 reserved;
+	__le32 membership_status[2];
+	__le32 user_position[4];
+} __packed; /* MU_GROUP_ID_MNG_TABLE_API_S_VER_1 */
+
+/**
+ * struct iwl_mu_group_mgmt_notif - VHT MU-MIMO group id notification
+ *
+ * @membership_status: a bitmap of MU groups
+ * @user_position: the position of station in a group. If the station is in the
+ *	group then bits (group * 2) is the position -1
+ */
+struct iwl_mu_group_mgmt_notif {
+	__le32 membership_status[2];
+	__le32 user_position[4];
+} __packed; /* MU_GROUP_MNG_NTFY_API_S_VER_1 */
+
+#define MAX_STORED_BEACON_SIZE 600
+
+/**
+ * Stored beacon notification
+ *
+ * @system_time: system time on air rise
+ * @tsf: TSF on air rise
+ * @beacon_timestamp: beacon on air rise
+ * @phy_flags: general phy flags: band, modulation, etc.
+ * @channel: channel this beacon was received on
+ * @rates: rate in ucode internal format
+ * @byte_count: frame's byte count
+ */
+struct iwl_stored_beacon_notif {
+	__le32 system_time;
+	__le64 tsf;
+	__le32 beacon_timestamp;
+	__le16 phy_flags;
+	__le16 channel;
+	__le32 rates;
+	__le32 byte_count;
+	u8 data[MAX_STORED_BEACON_SIZE];
+} __packed; /* WOWLAN_STROED_BEACON_INFO_S_VER_1 */
+
+#define LQM_NUMBER_OF_STATIONS_IN_REPORT 16
+
+enum iwl_lqm_cmd_operatrions {
+	LQM_CMD_OPERATION_START_MEASUREMENT = 0x01,
+	LQM_CMD_OPERATION_STOP_MEASUREMENT = 0x02,
+};
+
+enum iwl_lqm_status {
+	LQM_STATUS_SUCCESS = 0,
+	LQM_STATUS_TIMEOUT = 1,
+	LQM_STATUS_ABORT = 2,
+};
+
+/**
+ * Link Quality Measurement command
+ * @cmd_operatrion: command operation to be performed (start or stop)
+ *	as defined above.
+ * @mac_id: MAC ID the measurement applies to.
+ * @measurement_time: time of the total measurement to be performed, in uSec.
+ * @timeout: maximum time allowed until a response is sent, in uSec.
+ */
+struct iwl_link_qual_msrmnt_cmd {
+	__le32 cmd_operation;
+	__le32 mac_id;
+	__le32 measurement_time;
+	__le32 timeout;
+} __packed /* LQM_CMD_API_S_VER_1 */;
+
+/**
+ * Link Quality Measurement notification
+ *
+ * @frequent_stations_air_time: an array containing the total air time
+ *	(in uSec) used by the most frequently transmitting stations.
+ * @number_of_stations: the number of uniqe stations included in the array
+ *	(a number between 0 to 16)
+ * @total_air_time_other_stations: the total air time (uSec) used by all the
+ *	stations which are not included in the above report.
+ * @time_in_measurement_window: the total time in uSec in which a measurement
+ *	took place.
+ * @tx_frame_dropped: the number of TX frames dropped due to retry limit during
+ *	measurement
+ * @mac_id: MAC ID the measurement applies to.
+ * @status: return status. may be one of the LQM_STATUS_* defined above.
+ * @reserved: reserved.
+ */
+struct iwl_link_qual_msrmnt_notif {
+	__le32 frequent_stations_air_time[LQM_NUMBER_OF_STATIONS_IN_REPORT];
+	__le32 number_of_stations;
+	__le32 total_air_time_other_stations;
+	__le32 time_in_measurement_window;
+	__le32 tx_frame_dropped;
+	__le32 mac_id;
+	__le32 status;
+	__le32 reserved[3];
+} __packed; /* LQM_MEASUREMENT_COMPLETE_NTF_API_S_VER1 */
 
 #endif /* __fw_api_h__ */

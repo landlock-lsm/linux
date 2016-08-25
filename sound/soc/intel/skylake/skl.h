@@ -66,13 +66,15 @@ struct skl {
 	struct platform_device *dmic_dev;
 	struct platform_device *i2s_dev;
 
-	void *nhlt; /* nhlt ptr */
+	struct nhlt_acpi_table *nhlt; /* nhlt ptr */
 	struct skl_sst *skl_sst; /* sst skl ctx */
 
 	struct skl_dsp_resource resource;
 	struct list_head ppl_list;
 
 	const char *fw_name;
+	char tplg_name[64];
+	unsigned short pci_id;
 	const struct firmware *tplg;
 
 	int supend_active;
@@ -88,16 +90,27 @@ struct skl_dma_params {
 	u8 stream_tag;
 };
 
+struct skl_dsp_ops {
+	int id;
+	struct skl_dsp_loader_ops (*loader_ops)(void);
+	int (*init)(struct device *dev, void __iomem *mmio_base,
+			int irq, const char *fw_name,
+			struct skl_dsp_loader_ops loader_ops,
+			struct skl_sst **skl_sst);
+	void (*cleanup)(struct device *dev, struct skl_sst *ctx);
+};
+
 int skl_platform_unregister(struct device *dev);
 int skl_platform_register(struct device *dev);
 
-void *skl_nhlt_init(struct device *dev);
-void skl_nhlt_free(void *addr);
+struct nhlt_acpi_table *skl_nhlt_init(struct device *dev);
+void skl_nhlt_free(struct nhlt_acpi_table *addr);
 struct nhlt_specific_cfg *skl_get_ep_blob(struct skl *skl, u32 instance,
 			u8 link_type, u8 s_fmt, u8 no_ch, u32 s_rate, u8 dirn);
 
+int skl_nhlt_update_topology_bin(struct skl *skl);
 int skl_init_dsp(struct skl *skl);
-void skl_free_dsp(struct skl *skl);
+int skl_free_dsp(struct skl *skl);
 int skl_suspend_dsp(struct skl *skl);
 int skl_resume_dsp(struct skl *skl);
 #endif /* __SOUND_SOC_SKL_H */

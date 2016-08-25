@@ -17,6 +17,7 @@
 #include <subcmd/parse-options.h>
 #include "util/bpf-loader.h"
 #include "util/debug.h"
+#include <api/fs/fs.h>
 #include <api/fs/tracing_path.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -308,9 +309,11 @@ static int handle_alias(int *argcp, const char ***argv)
 			if (*argcp > 1) {
 				struct strbuf buf;
 
-				strbuf_init(&buf, PATH_MAX);
-				strbuf_addstr(&buf, alias_string);
-				sq_quote_argv(&buf, (*argv) + 1, PATH_MAX);
+				if (strbuf_init(&buf, PATH_MAX) < 0 ||
+				    strbuf_addstr(&buf, alias_string) < 0 ||
+				    sq_quote_argv(&buf, (*argv) + 1,
+						  PATH_MAX) < 0)
+					die("Failed to allocate memory.");
 				free(alias_string);
 				alias_string = buf.buf;
 			}
@@ -454,11 +457,12 @@ static void handle_internal_command(int argc, const char **argv)
 
 static void execv_dashed_external(const char **argv)
 {
-	struct strbuf cmd = STRBUF_INIT;
+	char *cmd;
 	const char *tmp;
 	int status;
 
-	strbuf_addf(&cmd, "perf-%s", argv[0]);
+	if (asprintf(&cmd, "perf-%s", argv[0]) < 0)
+		goto do_die;
 
 	/*
 	 * argv[0] must be the perf command, but the argv array
@@ -467,7 +471,7 @@ static void execv_dashed_external(const char **argv)
 	 * restore it on error.
 	 */
 	tmp = argv[0];
-	argv[0] = cmd.buf;
+	argv[0] = cmd;
 
 	/*
 	 * if we fail because the command is not found, it is
@@ -475,15 +479,16 @@ static void execv_dashed_external(const char **argv)
 	 */
 	status = run_command_v_opt(argv, 0);
 	if (status != -ERR_RUN_COMMAND_EXEC) {
-		if (IS_RUN_COMMAND_ERR(status))
+		if (IS_RUN_COMMAND_ERR(status)) {
+do_die:
 			die("unable to run '%s'", argv[0]);
+		}
 		exit(-status);
 	}
 	errno = ENOENT; /* as if we called execvp */
 
 	argv[0] = tmp;
-
-	strbuf_release(&cmd);
+	zfree(&cmd);
 }
 
 static int run_argv(int *argcp, const char ***argv)
@@ -531,6 +536,7 @@ int main(int argc, const char **argv)
 {
 	const char *cmd;
 	char sbuf[STRERR_BUFSIZE];
+	int value;
 
 	/* libsubcmd init */
 	exec_cmd_init("perf", PREFIX, PERF_EXEC_PATH, EXEC_PATH_ENVIRONMENT);
@@ -540,11 +546,20 @@ int main(int argc, const char **argv)
 	page_size = sysconf(_SC_PAGE_SIZE);
 	cacheline_size = sysconf(_SC_LEVEL1_DCACHE_LINESIZE);
 
+	if (sysctl__read_int("kernel/perf_event_max_stack", &value) == 0)
+		sysctl_perf_event_max_stack = value;
+
+	if (sysctl__read_int("kernel/perf_event_max_contexts_per_stack", &value) == 0)
+		sysctl_perf_event_max_contexts_per_stack = value;
+
 	cmd = extract_argv0_path(argv[0]);
 	if (!cmd)
 		cmd = "perf-help";
 
 	srandom(time(NULL));
+
+	perf_config(perf_default_config, NULL);
+	set_buildid_dir(NULL);
 
 	/* get debugfs/tracefs mount point from /proc/mounts */
 	tracing_path_mount();
@@ -568,7 +583,6 @@ int main(int argc, const char **argv)
 	}
 	if (!prefixcmp(cmd, "trace")) {
 #ifdef HAVE_LIBAUDIT_SUPPORT
-		set_buildid_dir(NULL);
 		setup_path();
 		argv[0] = "trace";
 		return cmd_trace(argc, argv, NULL);
@@ -583,7 +597,6 @@ int main(int argc, const char **argv)
 	argc--;
 	handle_options(&argv, &argc, NULL);
 	commit_pager_choice();
-	set_buildid_dir(NULL);
 
 	if (argc > 0) {
 		if (!prefixcmp(argv[0], "--"))
@@ -612,6 +625,8 @@ int main(int argc, const char **argv)
 	 * forever while the signal goes to some other non interested thread.
 	 */
 	pthread__block_sigwinch();
+
+	perf_debug_setup();
 
 	while (1) {
 		static int done_help;

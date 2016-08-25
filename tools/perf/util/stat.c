@@ -97,7 +97,7 @@ void perf_stat_evsel_id_init(struct perf_evsel *evsel)
 	}
 }
 
-void perf_evsel__reset_stat_priv(struct perf_evsel *evsel)
+static void perf_evsel__reset_stat_priv(struct perf_evsel *evsel)
 {
 	int i;
 	struct perf_stat_evsel *ps = evsel->priv;
@@ -108,7 +108,7 @@ void perf_evsel__reset_stat_priv(struct perf_evsel *evsel)
 	perf_stat_evsel_id_init(evsel);
 }
 
-int perf_evsel__alloc_stat_priv(struct perf_evsel *evsel)
+static int perf_evsel__alloc_stat_priv(struct perf_evsel *evsel)
 {
 	evsel->priv = zalloc(sizeof(struct perf_stat_evsel));
 	if (evsel->priv == NULL)
@@ -117,13 +117,13 @@ int perf_evsel__alloc_stat_priv(struct perf_evsel *evsel)
 	return 0;
 }
 
-void perf_evsel__free_stat_priv(struct perf_evsel *evsel)
+static void perf_evsel__free_stat_priv(struct perf_evsel *evsel)
 {
 	zfree(&evsel->priv);
 }
 
-int perf_evsel__alloc_prev_raw_counts(struct perf_evsel *evsel,
-				      int ncpus, int nthreads)
+static int perf_evsel__alloc_prev_raw_counts(struct perf_evsel *evsel,
+					     int ncpus, int nthreads)
 {
 	struct perf_counts *counts;
 
@@ -134,13 +134,13 @@ int perf_evsel__alloc_prev_raw_counts(struct perf_evsel *evsel,
 	return counts ? 0 : -ENOMEM;
 }
 
-void perf_evsel__free_prev_raw_counts(struct perf_evsel *evsel)
+static void perf_evsel__free_prev_raw_counts(struct perf_evsel *evsel)
 {
 	perf_counts__delete(evsel->prev_raw_counts);
 	evsel->prev_raw_counts = NULL;
 }
 
-int perf_evsel__alloc_stats(struct perf_evsel *evsel, bool alloc_raw)
+static int perf_evsel__alloc_stats(struct perf_evsel *evsel, bool alloc_raw)
 {
 	int ncpus = perf_evsel__nr_cpus(evsel);
 	int nthreads = thread_map__nr(evsel->threads);
@@ -307,6 +307,7 @@ int perf_stat_process_counter(struct perf_stat_config *config,
 	struct perf_counts_values *aggr = &counter->counts->aggr;
 	struct perf_stat_evsel *ps = counter->priv;
 	u64 *count = counter->counts->aggr.values;
+	u64 val;
 	int i, ret;
 
 	aggr->val = aggr->ena = aggr->run = 0;
@@ -346,7 +347,8 @@ int perf_stat_process_counter(struct perf_stat_config *config,
 	/*
 	 * Save the full runtime - to allow normalization during printout:
 	 */
-	perf_stat__update_shadow_stats(counter, count, 0);
+	val = counter->scale * *count;
+	perf_stat__update_shadow_stats(counter, &val, 0);
 
 	return 0;
 }

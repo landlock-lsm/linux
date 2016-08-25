@@ -308,7 +308,7 @@ module_param(radio_nr, int, 0);
 MODULE_PARM_DESC(radio_nr,
 		 "Minor number for radio device (-1 ==> auto assign)");
 
-static struct region_info region_configs[] = {
+static const struct region_info region_configs[] = {
 	/* USA */
 	{
 		.channel_spacing	= 20,
@@ -1828,17 +1828,14 @@ static int bcm2048_deinit(struct bcm2048_device *bdev)
 
 	err = bcm2048_set_audio_route(bdev, 0);
 	if (err < 0)
-		goto exit;
+		return err;
 
 	err = bcm2048_set_dac_output(bdev, 0);
 	if (err < 0)
-		goto exit;
+		return err;
 
 	err = bcm2048_set_power_state(bdev, BCM2048_POWER_OFF);
-	if (err < 0)
-		goto exit;
 
-exit:
 	return err;
 }
 

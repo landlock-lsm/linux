@@ -267,8 +267,7 @@ acpi_tb_install_standard_table(acpi_physical_address address,
 	if (!reload &&
 	    acpi_gbl_disable_ssdt_table_install &&
 	    ACPI_COMPARE_NAME(&new_table_desc.signature, ACPI_SIG_SSDT)) {
-		ACPI_INFO((AE_INFO,
-			   "Ignoring installation of %4.4s at %8.8X%8.8X",
+		ACPI_INFO(("Ignoring installation of %4.4s at %8.8X%8.8X",
 			   new_table_desc.signature.ascii,
 			   ACPI_FORMAT_UINT64(address)));
 		goto release_and_exit;
@@ -300,9 +299,9 @@ acpi_tb_install_standard_table(acpi_physical_address address,
 			ACPI_BIOS_ERROR((AE_INFO,
 					 "Table has invalid signature [%4.4s] (0x%8.8X), "
 					 "must be SSDT or OEMx",
-					 acpi_ut_valid_acpi_name(new_table_desc.
-								 signature.
-								 ascii) ?
+					 acpi_ut_valid_nameseg(new_table_desc.
+							       signature.
+							       ascii) ?
 					 new_table_desc.signature.
 					 ascii : "????",
 					 new_table_desc.signature.integer));
@@ -432,7 +431,7 @@ finish_override:
 		return;
 	}
 
-	ACPI_INFO((AE_INFO, "%4.4s 0x%8.8X%8.8X"
+	ACPI_INFO(("%4.4s 0x%8.8X%8.8X"
 		   " %s table override, new table: 0x%8.8X%8.8X",
 		   old_table_desc->signature.ascii,
 		   ACPI_FORMAT_UINT64(old_table_desc->address),

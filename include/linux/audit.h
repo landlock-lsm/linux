@@ -109,6 +109,10 @@ extern int audit_classify_compat_syscall(int abi, unsigned syscall);
 /* maximized args number that audit_socketcall can process */
 #define AUDITSC_ARGS		6
 
+/* bit values for ->signal->audit_tty */
+#define AUDIT_TTY_ENABLE	BIT(0)
+#define AUDIT_TTY_LOG_PASSWD	BIT(1)
+
 struct filename;
 
 extern void audit_log_session_info(struct audit_buffer *ab);
@@ -230,8 +234,6 @@ extern void __audit_free(struct task_struct *task);
 extern void __audit_syscall_entry(int major, unsigned long a0, unsigned long a1,
 				  unsigned long a2, unsigned long a3);
 extern void __audit_syscall_exit(int ret_success, long ret_value);
-extern void __audit_seccomp_entry(void);
-extern void __audit_seccomp_exit(int do_free);
 extern struct filename *__audit_reusename(const __user char *uptr);
 extern void __audit_getname(struct filename *name);
 
@@ -272,40 +274,17 @@ static inline void audit_syscall_exit(void *pt_regs)
 		__audit_syscall_exit(success, return_code);
 	}
 }
-
-static inline void audit_seccomp_entry(void)
-{
-	if (unlikely(current->audit_context))
-		__audit_seccomp_entry();
-}
-
-static inline void audit_seccomp_exit(int do_free)
-{
-	if (unlikely(current->audit_context))
-		__audit_seccomp_exit(do_free);
-}
-
 static inline struct filename *audit_reusename(const __user char *name)
 {
 	if (unlikely(!audit_dummy_context()))
 		return __audit_reusename(name);
-#ifdef CONFIG_SECURITY_SECCOMP
-	if (current->audit_context)
-		return __audit_reusename(name);
-#endif /* CONFIG_SECURITY_SECCOMP */
 	return NULL;
 }
-
 static inline void audit_getname(struct filename *name)
 {
 	if (unlikely(!audit_dummy_context()))
 		__audit_getname(name);
-#ifdef CONFIG_SECURITY_SECCOMP
-	else if (current->audit_context)
-		__audit_getname(name);
-#endif /* CONFIG_SECURITY_SECCOMP */
 }
-
 static inline void audit_inode(struct filename *name,
 				const struct dentry *dentry,
 				unsigned int parent) {

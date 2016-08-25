@@ -8,8 +8,6 @@ typedef asmlinkage long (*sys_call_ptr_t)(unsigned long, unsigned long,
 					  unsigned long, unsigned long,
 					  unsigned long, unsigned long);
 
-extern const sys_call_ptr_t sys_call_table[];
-
 static inline int syscall_get_arch(void)
 {
 #ifdef CONFIG_X86_32

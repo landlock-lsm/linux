@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, Mellanox Technologies. All rights reserved.
+ * Copyright (c) 2015-2016, Mellanox Technologies. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -54,10 +54,11 @@ void mlx5e_send_nop(struct mlx5e_sq *sq, bool notify_hw)
 
 	sq->skb[pi] = NULL;
 	sq->pc++;
+	sq->stats.nop++;
 
 	if (notify_hw) {
 		cseg->fm_ce_se = MLX5_WQE_CTRL_CQ_UPDATE;
-		mlx5e_tx_notify_hw(sq, wqe, 0);
+		mlx5e_tx_notify_hw(sq, &wqe->ctrl, 0);
 	}
 }
 
@@ -109,12 +110,22 @@ u16 mlx5e_select_queue(struct net_device *dev, struct sk_buff *skb,
 {
 	struct mlx5e_priv *priv = netdev_priv(dev);
 	int channel_ix = fallback(dev, skb);
-	int up = skb_vlan_tag_present(skb)        ?
-		 skb->vlan_tci >> VLAN_PRIO_SHIFT :
-		 priv->default_vlan_prio;
-	int tc = netdev_get_prio_tc_map(dev, up);
+	int up = 0;
 
-	return priv->channeltc_to_txq_map[channel_ix][tc];
+	if (!netdev_get_num_tc(dev))
+		return channel_ix;
+
+	if (skb_vlan_tag_present(skb))
+		up = skb->vlan_tci >> VLAN_PRIO_SHIFT;
+
+	/* channel_ix can be larger than num_channels since
+	 * dev->num_real_tx_queues = num_channels * num_tc
+	 */
+	if (channel_ix >= priv->params.num_channels)
+		channel_ix = reciprocal_scale(channel_ix,
+					      priv->params.num_channels);
+
+	return priv->channeltc_to_txq_map[channel_ix][up];
 }
 
 static inline u16 mlx5e_get_inline_hdr_size(struct mlx5e_sq *sq,
@@ -124,7 +135,7 @@ static inline u16 mlx5e_get_inline_hdr_size(struct mlx5e_sq *sq,
 	 * headers and occur before the data gather.
 	 * Therefore these headers must be copied into the WQE
 	 */
-#define MLX5E_MIN_INLINE ETH_HLEN
+#define MLX5E_MIN_INLINE (ETH_HLEN + VLAN_HLEN)
 
 	if (bf) {
 		u16 ihs = skb_headlen(skb);
@@ -136,7 +147,7 @@ static inline u16 mlx5e_get_inline_hdr_size(struct mlx5e_sq *sq,
 			return skb_headlen(skb);
 	}
 
-	return MLX5E_MIN_INLINE;
+	return max(skb_network_offset(skb), MLX5E_MIN_INLINE);
 }
 
 static inline void mlx5e_tx_skb_pull_inline(unsigned char **skb_data,
@@ -188,10 +199,17 @@ static netdev_tx_t mlx5e_sq_xmit(struct mlx5e_sq *sq, struct sk_buff *skb)
 
 	memset(wqe, 0, sizeof(*wqe));
 
-	if (likely(skb->ip_summed == CHECKSUM_PARTIAL))
-		eseg->cs_flags	= MLX5_ETH_WQE_L3_CSUM | MLX5_ETH_WQE_L4_CSUM;
-	else
-		sq->stats.csum_offload_none++;
+	if (likely(skb->ip_summed == CHECKSUM_PARTIAL)) {
+		eseg->cs_flags = MLX5_ETH_WQE_L3_CSUM;
+		if (skb->encapsulation) {
+			eseg->cs_flags |= MLX5_ETH_WQE_L3_INNER_CSUM |
+					  MLX5_ETH_WQE_L4_INNER_CSUM;
+			sq->stats.csum_partial_inner++;
+		} else {
+			eseg->cs_flags |= MLX5_ETH_WQE_L4_CSUM;
+		}
+	} else
+		sq->stats.csum_none++;
 
 	if (sq->cc != sq->prev_cc) {
 		sq->prev_cc = sq->cc;
@@ -199,15 +217,20 @@ static netdev_tx_t mlx5e_sq_xmit(struct mlx5e_sq *sq, struct sk_buff *skb)
 	}
 
 	if (skb_is_gso(skb)) {
-		u32 payload_len;
-
 		eseg->mss    = cpu_to_be16(skb_shinfo(skb)->gso_size);
 		opcode       = MLX5_OPCODE_LSO;
-		ihs          = skb_transport_offset(skb) + tcp_hdrlen(skb);
-		payload_len  = skb->len - ihs;
+
+		if (skb->encapsulation) {
+			ihs = skb_inner_transport_offset(skb) + inner_tcp_hdrlen(skb);
+			sq->stats.tso_inner_packets++;
+			sq->stats.tso_inner_bytes += skb->len - ihs;
+		} else {
+			ihs = skb_transport_offset(skb) + tcp_hdrlen(skb);
+			sq->stats.tso_packets++;
+			sq->stats.tso_bytes += skb->len - ihs;
+		}
+
 		num_bytes = skb->len + (skb_shinfo(skb)->gso_segs - 1) * ihs;
-		sq->stats.tso_packets++;
-		sq->stats.tso_bytes += payload_len;
 	} else {
 		bf = sq->bf_budget &&
 		     !skb->xmit_more &&
@@ -295,18 +318,19 @@ static netdev_tx_t mlx5e_sq_xmit(struct mlx5e_sq *sq, struct sk_buff *skb)
 	if (!skb->xmit_more || netif_xmit_stopped(sq->txq)) {
 		int bf_sz = 0;
 
-		if (bf && sq->uar_bf_map)
+		if (bf && test_bit(MLX5E_SQ_STATE_BF_ENABLE, &sq->state))
 			bf_sz = wi->num_wqebbs << 3;
 
 		cseg->fm_ce_se = MLX5_WQE_CTRL_CQ_UPDATE;
-		mlx5e_tx_notify_hw(sq, wqe, bf_sz);
+		mlx5e_tx_notify_hw(sq, &wqe->ctrl, bf_sz);
 	}
 
 	/* fill sq edge with nops to avoid wqe wrap around */
 	while ((sq->pc & wq->sz_m1) > sq->edge)
 		mlx5e_send_nop(sq, false);
 
-	sq->bf_budget = bf ? sq->bf_budget - 1 : 0;
+	if (bf)
+		sq->bf_budget--;
 
 	sq->stats.packets++;
 	sq->stats.bytes += num_bytes;
@@ -329,7 +353,36 @@ netdev_tx_t mlx5e_xmit(struct sk_buff *skb, struct net_device *dev)
 	return mlx5e_sq_xmit(sq, skb);
 }
 
-bool mlx5e_poll_tx_cq(struct mlx5e_cq *cq)
+void mlx5e_free_tx_descs(struct mlx5e_sq *sq)
+{
+	struct mlx5e_tx_wqe_info *wi;
+	struct sk_buff *skb;
+	u16 ci;
+	int i;
+
+	while (sq->cc != sq->pc) {
+		ci = sq->cc & sq->wq.sz_m1;
+		skb = sq->skb[ci];
+		wi = &sq->wqe_info[ci];
+
+		if (!skb) { /* nop */
+			sq->cc++;
+			continue;
+		}
+
+		for (i = 0; i < wi->num_dma; i++) {
+			struct mlx5e_sq_dma *dma =
+				mlx5e_dma_get(sq, sq->dma_fifo_cc++);
+
+			mlx5e_tx_dma_unmap(sq->pdev, dma);
+		}
+
+		dev_kfree_skb_any(skb);
+		sq->cc += wi->num_wqebbs;
+	}
+}
+
+bool mlx5e_poll_tx_cq(struct mlx5e_cq *cq, int napi_budget)
 {
 	struct mlx5e_sq *sq;
 	u32 dma_fifo_cc;
@@ -339,6 +392,9 @@ bool mlx5e_poll_tx_cq(struct mlx5e_cq *cq)
 	int i;
 
 	sq = container_of(cq, struct mlx5e_sq, cq);
+
+	if (unlikely(test_bit(MLX5E_SQ_STATE_TX_TIMEOUT, &sq->state)))
+		return false;
 
 	npkts = 0;
 	nbytes = 0;
@@ -377,7 +433,6 @@ bool mlx5e_poll_tx_cq(struct mlx5e_cq *cq)
 			wi = &sq->wqe_info[ci];
 
 			if (unlikely(!skb)) { /* nop */
-				sq->stats.nop++;
 				sqcc++;
 				continue;
 			}
@@ -401,7 +456,7 @@ bool mlx5e_poll_tx_cq(struct mlx5e_cq *cq)
 			npkts++;
 			nbytes += wi->num_bytes;
 			sqcc += wi->num_wqebbs;
-			dev_kfree_skb(skb);
+			napi_consume_skb(skb, napi_budget);
 		} while (!last_wqe);
 	}
 

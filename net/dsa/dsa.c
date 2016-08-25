@@ -51,11 +51,12 @@ void unregister_switch_driver(struct dsa_switch_driver *drv)
 EXPORT_SYMBOL_GPL(unregister_switch_driver);
 
 static struct dsa_switch_driver *
-dsa_switch_probe(struct device *host_dev, int sw_addr, char **_name)
+dsa_switch_probe(struct device *parent, struct device *host_dev, int sw_addr,
+		 const char **_name, void **priv)
 {
 	struct dsa_switch_driver *ret;
 	struct list_head *list;
-	char *name;
+	const char *name;
 
 	ret = NULL;
 	name = NULL;
@@ -66,7 +67,7 @@ dsa_switch_probe(struct device *host_dev, int sw_addr, char **_name)
 
 		drv = list_entry(list, struct dsa_switch_driver, list);
 
-		name = drv->probe(host_dev, sw_addr);
+		name = drv->probe(parent, host_dev, sw_addr, priv);
 		if (name != NULL) {
 			ret = drv;
 			break;
@@ -181,7 +182,7 @@ __ATTRIBUTE_GROUPS(dsa_hwmon);
 /* basic switch operations **************************************************/
 static int dsa_cpu_dsa_setup(struct dsa_switch *ds, struct net_device *master)
 {
-	struct dsa_chip_data *cd = ds->pd;
+	struct dsa_chip_data *cd = ds->cd;
 	struct device_node *port_dn;
 	struct phy_device *phydev;
 	int ret, port, mode;
@@ -218,7 +219,7 @@ static int dsa_switch_setup_one(struct dsa_switch *ds, struct device *parent)
 {
 	struct dsa_switch_driver *drv = ds->drv;
 	struct dsa_switch_tree *dst = ds->dst;
-	struct dsa_chip_data *pd = ds->pd;
+	struct dsa_chip_data *cd = ds->cd;
 	bool valid_name_found = false;
 	int index = ds->index;
 	int i, ret;
@@ -229,7 +230,7 @@ static int dsa_switch_setup_one(struct dsa_switch *ds, struct device *parent)
 	for (i = 0; i < DSA_MAX_PORTS; i++) {
 		char *name;
 
-		name = pd->port_names[i];
+		name = cd->port_names[i];
 		if (name == NULL)
 			continue;
 
@@ -245,7 +246,7 @@ static int dsa_switch_setup_one(struct dsa_switch *ds, struct device *parent)
 		} else if (!strcmp(name, "dsa")) {
 			ds->dsa_port_mask |= 1 << i;
 		} else {
-			ds->phys_port_mask |= 1 << i;
+			ds->enabled_port_mask |= 1 << i;
 		}
 		valid_name_found = true;
 	}
@@ -258,7 +259,7 @@ static int dsa_switch_setup_one(struct dsa_switch *ds, struct device *parent)
 	/* Make the built-in MII bus mask match the number of ports,
 	 * switch drivers can override this later
 	 */
-	ds->phys_mii_mask = ds->phys_port_mask;
+	ds->phys_mii_mask = ds->enabled_port_mask;
 
 	/*
 	 * If the CPU connects to this switch, set the switch tree
@@ -266,7 +267,7 @@ static int dsa_switch_setup_one(struct dsa_switch *ds, struct device *parent)
 	 * switch.
 	 */
 	if (dst->cpu_switch == index) {
-		switch (ds->tag_protocol) {
+		switch (drv->tag_protocol) {
 #ifdef CONFIG_NET_DSA_TAG_DSA
 		case DSA_TAG_PROTO_DSA:
 			dst->rcv = dsa_netdev_ops.rcv;
@@ -294,7 +295,7 @@ static int dsa_switch_setup_one(struct dsa_switch *ds, struct device *parent)
 			goto out;
 		}
 
-		dst->tag_protocol = ds->tag_protocol;
+		dst->tag_protocol = drv->tag_protocol;
 	}
 
 	/*
@@ -324,13 +325,13 @@ static int dsa_switch_setup_one(struct dsa_switch *ds, struct device *parent)
 	 * Create network devices for physical switch ports.
 	 */
 	for (i = 0; i < DSA_MAX_PORTS; i++) {
-		if (!(ds->phys_port_mask & (1 << i)))
+		if (!(ds->enabled_port_mask & (1 << i)))
 			continue;
 
-		ret = dsa_slave_create(ds, parent, i, pd->port_names[i]);
+		ret = dsa_slave_create(ds, parent, i, cd->port_names[i]);
 		if (ret < 0) {
 			netdev_err(dst->master_netdev, "[%d]: can't create dsa slave device for port %d(%s): %d\n",
-				   index, i, pd->port_names[i], ret);
+				   index, i, cd->port_names[i], ret);
 			ret = 0;
 		}
 	}
@@ -378,16 +379,17 @@ static struct dsa_switch *
 dsa_switch_setup(struct dsa_switch_tree *dst, int index,
 		 struct device *parent, struct device *host_dev)
 {
-	struct dsa_chip_data *pd = dst->pd->chip + index;
+	struct dsa_chip_data *cd = dst->pd->chip + index;
 	struct dsa_switch_driver *drv;
 	struct dsa_switch *ds;
 	int ret;
-	char *name;
+	const char *name;
+	void *priv;
 
 	/*
 	 * Probe for switch model.
 	 */
-	drv = dsa_switch_probe(host_dev, pd->sw_addr, &name);
+	drv = dsa_switch_probe(parent, host_dev, cd->sw_addr, &name, &priv);
 	if (drv == NULL) {
 		netdev_err(dst->master_netdev, "[%d]: could not detect attached switch\n",
 			   index);
@@ -400,16 +402,16 @@ dsa_switch_setup(struct dsa_switch_tree *dst, int index,
 	/*
 	 * Allocate and initialise switch state.
 	 */
-	ds = devm_kzalloc(parent, sizeof(*ds) + drv->priv_size, GFP_KERNEL);
+	ds = devm_kzalloc(parent, sizeof(*ds), GFP_KERNEL);
 	if (ds == NULL)
 		return ERR_PTR(-ENOMEM);
 
 	ds->dst = dst;
 	ds->index = index;
-	ds->pd = pd;
+	ds->cd = cd;
 	ds->drv = drv;
-	ds->tag_protocol = drv->tag_protocol;
-	ds->master_dev = host_dev;
+	ds->priv = priv;
+	ds->dev = parent;
 
 	ret = dsa_switch_setup_one(ds, parent);
 	if (ret)
@@ -422,7 +424,7 @@ static void dsa_switch_destroy(struct dsa_switch *ds)
 {
 	struct device_node *port_dn;
 	struct phy_device *phydev;
-	struct dsa_chip_data *cd = ds->pd;
+	struct dsa_chip_data *cd = ds->cd;
 	int port;
 
 #ifdef CONFIG_NET_DSA_HWMON
@@ -430,33 +432,28 @@ static void dsa_switch_destroy(struct dsa_switch *ds)
 		hwmon_device_unregister(ds->hwmon_dev);
 #endif
 
-	/* Disable configuration of the CPU and DSA ports */
-	for (port = 0; port < DSA_MAX_PORTS; port++) {
-		if (!(dsa_is_cpu_port(ds, port) || dsa_is_dsa_port(ds, port)))
-			continue;
-
-		port_dn = cd->port_dn[port];
-		if (of_phy_is_fixed_link(port_dn)) {
-			phydev = of_phy_find_device(port_dn);
-			if (phydev) {
-				int addr = phydev->mdio.addr;
-
-				phy_device_free(phydev);
-				of_node_put(port_dn);
-				fixed_phy_del(addr);
-			}
-		}
-	}
-
 	/* Destroy network devices for physical switch ports. */
 	for (port = 0; port < DSA_MAX_PORTS; port++) {
-		if (!(ds->phys_port_mask & (1 << port)))
+		if (!(ds->enabled_port_mask & (1 << port)))
 			continue;
 
 		if (!ds->ports[port])
 			continue;
 
 		dsa_slave_destroy(ds->ports[port]);
+	}
+
+	/* Remove any fixed link PHYs */
+	for (port = 0; port < DSA_MAX_PORTS; port++) {
+		port_dn = cd->port_dn[port];
+		if (of_phy_is_fixed_link(port_dn)) {
+			phydev = of_phy_find_device(port_dn);
+			if (phydev) {
+				phy_device_free(phydev);
+				of_node_put(port_dn);
+				fixed_phy_unregister(phydev);
+			}
+		}
 	}
 
 	mdiobus_unregister(ds->slave_mii_bus);
@@ -662,9 +659,6 @@ static int dsa_of_probe(struct device *dev)
 	const char *port_name;
 	int chip_index, port_index;
 	const unsigned int *sw_addr, *port_reg;
-	int gpio;
-	enum of_gpio_flags of_flags;
-	unsigned long flags;
 	u32 eeprom_len;
 	int ret;
 
@@ -742,19 +736,6 @@ static int dsa_of_probe(struct device *dev)
 			 */
 			put_device(cd->host_dev);
 			cd->host_dev = &mdio_bus_switch->dev;
-		}
-		gpio = of_get_named_gpio_flags(child, "reset-gpios", 0,
-					       &of_flags);
-		if (gpio_is_valid(gpio)) {
-			flags = (of_flags == OF_GPIO_ACTIVE_LOW ?
-				 GPIOF_ACTIVE_LOW : 0);
-			ret = devm_gpio_request_one(dev, gpio, flags,
-						    "switch_reset");
-			if (ret)
-				goto out_free_chip;
-
-			cd->reset = gpio_to_desc(gpio);
-			gpiod_direction_output(cd->reset, 0);
 		}
 
 		for_each_available_child_of_node(child, port) {
@@ -935,6 +916,14 @@ static void dsa_remove_dst(struct dsa_switch_tree *dst)
 {
 	int i;
 
+	dst->master_netdev->dsa_ptr = NULL;
+
+	/* If we used a tagging format that doesn't have an ethertype
+	 * field, make sure that all packets from this point get sent
+	 * without the tag and go through the regular receive path.
+	 */
+	wmb();
+
 	for (i = 0; i < dst->pd->nr_chips; i++) {
 		struct dsa_switch *ds = dst->ds[i];
 
@@ -987,14 +976,6 @@ static int dsa_suspend(struct device *d)
 	struct platform_device *pdev = to_platform_device(d);
 	struct dsa_switch_tree *dst = platform_get_drvdata(pdev);
 	int i, ret = 0;
-
-	dst->master_netdev->dsa_ptr = NULL;
-
-	/* If we used a tagging format that doesn't have an ethertype
-	 * field, make sure that all packets from this point get sent
-	 * without the tag and go through the regular receive path.
-	 */
-	wmb();
 
 	for (i = 0; i < dst->pd->nr_chips; i++) {
 		struct dsa_switch *ds = dst->ds[i];

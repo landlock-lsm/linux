@@ -90,7 +90,7 @@ acpi_ut_remove_allocation(struct acpi_debug_mem_block *address,
  ******************************************************************************/
 
 acpi_status
-acpi_ut_create_list(char *list_name,
+acpi_ut_create_list(const char *list_name,
 		    u16 object_size, struct acpi_memory_list **return_cache)
 {
 	struct acpi_memory_list *cache;
@@ -712,7 +712,7 @@ void acpi_ut_dump_allocations(u32 component, const char *module)
 	/* Print summary */
 
 	if (!num_outstanding) {
-		ACPI_INFO((AE_INFO, "No outstanding allocations"));
+		ACPI_INFO(("No outstanding allocations"));
 	} else {
 		ACPI_ERROR((AE_INFO, "%u(0x%X) Outstanding allocations",
 			    num_outstanding, num_outstanding));

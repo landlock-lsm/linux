@@ -3226,6 +3226,7 @@ static void qeth_l3_remove_device(struct ccwgroup_device *cgdev)
 		qeth_l3_set_offline(cgdev);
 
 	if (card->dev) {
+		netif_napi_del(&card->napi);
 		unregister_netdev(card->dev);
 		card->dev = NULL;
 	}
@@ -3624,7 +3625,7 @@ static int qeth_l3_register_notifiers(void)
 		return rc;
 	}
 #else
-	pr_warning("There is no IPv6 support for the layer 3 discipline\n");
+	pr_warn("There is no IPv6 support for the layer 3 discipline\n");
 #endif
 	return 0;
 }

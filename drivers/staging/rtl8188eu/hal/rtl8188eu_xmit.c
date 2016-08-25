@@ -11,11 +11,6 @@
  * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
  * more details.
  *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110, USA
- *
- *
  ******************************************************************************/
 #define _RTL8188E_XMIT_C_
 #include <osdep_service.h>
@@ -415,7 +410,7 @@ static u32 xmitframe_need_length(struct xmit_frame *pxmitframe)
 {
 	struct pkt_attrib *pattrib = &pxmitframe->attrib;
 
-	u32 len = 0;
+	u32 len;
 
 	/*  no consider fragement */
 	len = pattrib->hdrlen + pattrib->iv_len +
@@ -614,7 +609,7 @@ s32 rtl8188eu_xmitframe_complete(struct adapter *adapt, struct xmit_priv *pxmitp
 
 static s32 xmitframe_direct(struct adapter *adapt, struct xmit_frame *pxmitframe)
 {
-	s32 res = _SUCCESS;
+	s32 res;
 
 	res = rtw_xmitframe_coalesce(adapt, pxmitframe->pkt, pxmitframe);
 	if (res == _SUCCESS)

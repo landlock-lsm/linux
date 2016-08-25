@@ -130,9 +130,15 @@ ENDPROC(__guest_exit)
 ENTRY(__fpsimd_guest_restore)
 	stp	x4, lr, [sp, #-16]!
 
+alternative_if_not ARM64_HAS_VIRT_HOST_EXTN
 	mrs	x2, cptr_el2
 	bic	x2, x2, #CPTR_EL2_TFP
 	msr	cptr_el2, x2
+alternative_else
+	mrs	x2, cpacr_el1
+	orr	x2, x2, #CPACR_EL1_FPEN
+	msr	cpacr_el1, x2
+alternative_endif
 	isb
 
 	mrs	x3, tpidr_el2
@@ -158,3 +164,22 @@ ENTRY(__fpsimd_guest_restore)
 
 	eret
 ENDPROC(__fpsimd_guest_restore)
+
+/*
+ * When using the extended idmap, we don't have a trampoline page we can use
+ * while we switch pages tables during __kvm_hyp_reset. Accessing the idmap
+ * directly would be ideal, but if we're using the extended idmap then the
+ * idmap is located above HYP_PAGE_OFFSET, and the address will be masked by
+ * kvm_call_hyp using kern_hyp_va.
+ *
+ * x0: HYP boot pgd
+ * x1: HYP phys_idmap_start
+ */
+ENTRY(__extended_idmap_trampoline)
+	mov	x4, x1
+	adr_l	x3, __kvm_hyp_reset
+
+	/* insert __kvm_hyp_reset()s offset into phys_idmap_start */
+	bfi	x4, x3, #0, #PAGE_SHIFT
+	br	x4
+ENDPROC(__extended_idmap_trampoline)

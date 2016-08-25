@@ -188,7 +188,7 @@ static void ieee80211_frame_acked(struct sta_info *sta, struct sk_buff *skb)
 	struct ieee80211_sub_if_data *sdata = sta->sdata;
 
 	if (ieee80211_hw_check(&local->hw, REPORTS_TX_ACK_STATUS))
-		sta->rx_stats.last_rx = jiffies;
+		sta->status_stats.last_ack = jiffies;
 
 	if (ieee80211_is_data_qos(mgmt->frame_control)) {
 		struct ieee80211_hdr *hdr = (void *) skb->data;
@@ -647,7 +647,7 @@ void ieee80211_tx_status_noskb(struct ieee80211_hw *hw,
 		sta->status_stats.retry_count += retry_count;
 
 		if (acked) {
-			sta->rx_stats.last_rx = jiffies;
+			sta->status_stats.last_ack = jiffies;
 
 			if (sta->status_stats.lost_packets)
 				sta->status_stats.lost_packets = 0;
@@ -697,7 +697,7 @@ void ieee80211_tx_monitor(struct ieee80211_local *local, struct sk_buff *skb,
 					 rtap_len, shift);
 
 	/* XXX: is this sufficient for BPF? */
-	skb_set_mac_header(skb, 0);
+	skb_reset_mac_header(skb);
 	skb->ip_summed = CHECKSUM_UNNECESSARY;
 	skb->pkt_type = PACKET_OTHERHOST;
 	skb->protocol = htons(ETH_P_802_2);

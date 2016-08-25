@@ -23,13 +23,6 @@
 #include <linux/slab.h>
 #include <linux/syscalls.h>
 
-#include <linux/bitops.h>	/* BIT_ULL() */
-#include <linux/fs.h>
-#include <linux/fs_struct.h>
-#include <linux/mount.h>
-#include <linux/namei.h>	/* user_lpath*() path_put() */
-#include <linux/path.h>
-
 #ifdef CONFIG_HAVE_ARCH_SECCOMP_FILTER
 #include <asm/syscall.h>
 #endif
@@ -41,33 +34,10 @@
 #include <linux/security.h>
 #include <linux/tracehook.h>
 #include <linux/uaccess.h>
-#include <linux/ftrace.h>	/* for arch_syscall_match_sym_name() overload */
 
-#ifdef CONFIG_SECURITY_SECCOMP
-#include <linux/kernel.h>	/* FIELD_SIZEOF() */
-
-#ifdef CONFIG_COMPAT
-/* struct seccomp_checker_group */
-struct compat_seccomp_checker_group {
-	__u8 version;
-	__u8 id;
-	unsigned int len;
-	compat_uptr_t checkers;	/* const struct seccomp_checker (*)[] */
-};
-
-/* struct seccomp_checker */
-struct compat_seccomp_checker {
-	__u32 check;
-	__u32 type;
-	unsigned int len;
-	compat_uptr_t checker;	/* const struct seccomp_object_path * */
-};
-
-extern struct syscall_argdesc (*compat_seccomp_syscalls_argdesc)[];
-#endif /* CONFIG_COMPAT */
-
-extern struct syscall_argdesc (*seccomp_syscalls_argdesc)[];
-#endif /* CONFIG_SECURITY_SECCOMP */
+#ifdef CONFIG_SECURITY_LANDLOCK
+#include <linux/bpf.h>	/* bpf_prog_put(), BPF_PROG_TYPE_LANDLOCK_*  */
+#endif /* CONFIG_SECURITY_LANDLOCK */
 
 /**
  * struct seccomp_filter - container for seccomp BPF programs
@@ -79,8 +49,6 @@ extern struct syscall_argdesc (*seccomp_syscalls_argdesc)[];
  * @prev: points to a previously installed, or inherited, filter
  * @len: the number of instructions in the program
  * @insnsi: the BPF program instructions to evaluate
- *
- * @checker_group: the list of argument checkers usable by a filter
  *
  * seccomp_filter objects are organized in a tree linked via the @prev
  * pointer.  For any task, it appears to be a singly-linked list starting
@@ -96,53 +64,15 @@ struct seccomp_filter {
 	atomic_t usage;
 	struct seccomp_filter *prev;
 	struct bpf_prog *prog;
-#ifdef CONFIG_SECURITY_SECCOMP
-	struct seccomp_filter_checker_group *checker_group;
-#endif
+#ifdef CONFIG_SECURITY_LANDLOCK
+	struct seccomp_filter *landlock_prev;
+#endif /* CONFIG_SECURITY_LANDLOCK */
 };
 
-/* Argument group attached to seccomp filters
- *
- * @usage keep track of the references
- * @prev link to the previous checker_group
- * @id is given by userland to easely check a filter statically and not
- *     leak data from the kernel
- * @checkers_len is the number of @checkers elements
- * @checkers contains the checkers
- *
- * seccomp_filter_checker_group checkers are organized in a tree linked via the
- * @prev pointer. For any task, it appears to be a singly-linked list starting
- * with current->seccomp.filter->checker_group, the most recently added argument
- * group. All filters created by a process share the argument groups created by
- * this process until the filter creation but they can not be changed. However,
- * multiple argument groups may share a @prev node, which results in a
- * unidirectional tree existing in memory. They are not inherited through
- * fork().
- */
-#ifdef CONFIG_SECURITY_SECCOMP
-struct seccomp_filter_checker_group {
-	atomic_t usage;
-	struct seccomp_filter_checker_group *prev;
-	u8 id;
-	unsigned int checkers_len;
-	struct seccomp_filter_checker checkers[];
-};
-#endif /* CONFIG_SECURITY_SECCOMP */
+static void put_seccomp_filter(struct seccomp_filter *filter);
 
 /* Limit any path through the tree to 256KB worth of instructions. */
 #define MAX_INSNS_PER_PATH ((1 << 18) / sizeof(struct sock_filter))
-
-static void clean_seccomp_data(struct seccomp_data *sd)
-{
-	sd->is_valid_syscall = 0;
-	sd->checker_group = 0;
-	sd->arg_matches[0] = 0ULL;
-	sd->arg_matches[1] = 0ULL;
-	sd->arg_matches[2] = 0ULL;
-	sd->arg_matches[3] = 0ULL;
-	sd->arg_matches[4] = 0ULL;
-	sd->arg_matches[5] = 0ULL;
-}
 
 /*
  * Endianness is explicitly ignored and left for BPF program authors to manage
@@ -164,7 +94,6 @@ static void populate_seccomp_data(struct seccomp_data *sd)
 	sd->args[4] = args[4];
 	sd->args[5] = args[5];
 	sd->instruction_pointer = KSTK_EIP(task);
-	clean_seccomp_data(sd);
 }
 
 /**
@@ -249,215 +178,6 @@ static int seccomp_check_filter(struct sock_filter *filter, unsigned int flen)
 	return 0;
 }
 
-#ifdef CONFIG_SECURITY_SECCOMP
-seccomp_argrule_t *get_argrule_checker(u32 check)
-{
-	switch (check) {
-	case SECCOMP_CHECK_FS_LITERAL:
-	case SECCOMP_CHECK_FS_BENEATH:
-		return seccomp_argrule_path;
-	}
-	return NULL;
-}
-
-struct syscall_argdesc *syscall_nr_to_argdesc(int nr)
-{
-	unsigned int nr_syscalls;
-	struct syscall_argdesc (*seccomp_sa)[];
-
-#ifdef CONFIG_COMPAT
-	if (is_compat_task()) {
-		nr_syscalls = IA32_NR_syscalls;
-		seccomp_sa = compat_seccomp_syscalls_argdesc;
-	} else /* falls below */
-#endif	/* CONFIG_COMPAT */
-	{
-		nr_syscalls = NR_syscalls;
-		seccomp_sa = seccomp_syscalls_argdesc;
-	}
-
-	if (nr >= nr_syscalls || nr < 0)
-		return NULL;
-	if (unlikely(!seccomp_sa)) {
-		WARN_ON(1);
-		return NULL;
-	}
-
-	return &(*seccomp_sa)[nr];
-}
-
-/* Return a new empty history entry for the check type or NULL if ENOMEM */
-static struct seccomp_argeval_history *new_argeval_history(u32 check)
-{
-	struct seccomp_argeval_checked **arg_checked;
-	struct seccomp_argeval_history **history;
-	bool found = false;
-
-	/* Find the check type */
-	arg_checked = &current->seccomp.arg_checked;
-	while (*arg_checked) {
-		if ((*arg_checked)->check == check) {
-			found = true;
-			break;
-		}
-		arg_checked = &(*arg_checked)->next;
-	}
-	if (!found) {
-		*arg_checked = kmalloc(sizeof(**arg_checked), GFP_KERNEL);
-		if (!*arg_checked)
-			return NULL;
-		(*arg_checked)->check = check;
-		(*arg_checked)->history = NULL;
-		(*arg_checked)->next = NULL;
-	}
-
-	/* Append to history */
-	history = &(*arg_checked)->history;
-	while (*history)
-		history = &(*history)->next;
-	*history = kzalloc(sizeof(**history), GFP_KERNEL);
-
-	return *history;
-}
-
-/* Return the argument group address that match the group ID, or NULL
- * otherwise.
- */
-static struct seccomp_filter_checker_group *seccomp_update_argrule_data(
-		struct seccomp_filter *filter,
-		struct seccomp_data *sd, u16 ret_data)
-{
-	int i, j;
-	u8 match;
-	struct seccomp_filter_checker_group *walker, *checker_group = NULL;
-	const struct syscall_argdesc *argdesc;
-	struct seccomp_filter_checker *checker;
-	seccomp_argrule_t *engine;
-	struct seccomp_argeval_history *history;
-
-	const u8 group_id = ret_data & SECCOMP_RET_CHECKER_GROUP;
-	const u8 to_check = (ret_data & SECCOMP_RET_ARG_MATCHES) >> 8;
-
-	clean_seccomp_data(sd);
-
-	/* Find the matching group in those accessible to this filter */
-	for (walker = filter->checker_group; walker; walker = walker->prev) {
-		if (walker->id == group_id) {
-			checker_group = walker;
-			break;
-		}
-	}
-	if (!checker_group)
-		return NULL;
-	sd->checker_group = checker_group->id;
-
-	argdesc = syscall_nr_to_argdesc(sd->nr);
-	if (!argdesc)
-		return checker_group;
-	sd->is_valid_syscall = 1;
-
-	for (i = 0; i < checker_group->checkers_len; i++) {
-		checker = &checker_group->checkers[i];
-		engine = get_argrule_checker(checker->check);
-		if (engine) {
-			match = (*engine)(&argdesc->args, &sd->args, to_check, checker);
-
-			/* Append the results to be able to replay the checks */
-			history = new_argeval_history(checker->check);
-			if (!history) {
-				/* XXX: return -ENOMEM somehow? */
-				break;
-			}
-			history->checker = checker;
-			history->asked = to_check;
-			history->result = match;
-
-			/* Store the matches after the history record */
-			for (j = 0; j < 6; j++) {
-				sd->arg_matches[j] |=
-				    ((BIT_ULL(j) & match) >> j) << i;
-			}
-		}
-	}
-	return checker_group;
-}
-
-static void free_seccomp_argeval_cache_entry(u32 type,
-					     struct seccomp_argeval_cache_entry
-					     *entry)
-{
-	while (entry) {
-		struct seccomp_argeval_cache_entry *freeme = entry;
-
-		switch (type) {
-		case SECCOMP_OBJTYPE_PATH:
-			if (entry->fs.path) {
-				/* Pointer checks done in path_put() */
-				path_put(entry->fs.path);
-				kfree(entry->fs.path);
-			}
-			break;
-		default:
-			WARN_ON(1);
-		}
-		entry = entry->next;
-		kfree(freeme);
-	}
-}
-
-static void free_seccomp_argeval_cache(struct seccomp_argeval_cache *arg_cache)
-{
-	while (arg_cache) {
-		struct seccomp_argeval_cache *freeme = arg_cache;
-
-		free_seccomp_argeval_cache_entry(arg_cache->type, arg_cache->entry);
-		arg_cache = arg_cache->next;
-		kfree(freeme);
-	}
-}
-
-void flush_seccomp_cache(struct task_struct *tsk)
-{
-	free_seccomp_argeval_cache(tsk->seccomp.arg_cache);
-	tsk->seccomp.arg_cache = NULL;
-}
-
-static void free_seccomp_argeval_history(struct seccomp_argeval_history *history)
-{
-	struct seccomp_argeval_history *walker = history;
-
-	while (walker) {
-		struct seccomp_argeval_history *freeme = walker;
-
-		/* Must not free history->checker owned by
-		 * current.seccomp->checker_group->checkers[]
-		 */
-		walker = walker->next;
-		kfree(freeme);
-	}
-}
-
-static void free_seccomp_argeval_checked(struct seccomp_argeval_checked *checked)
-{
-	struct seccomp_argeval_checked *walker = checked;
-
-	while (walker) {
-		struct seccomp_argeval_checked *freeme = walker;
-
-		free_seccomp_argeval_history(walker->history);
-		walker = walker->next;
-		kfree(freeme);
-	}
-}
-
-static inline void free_seccomp_argeval_syscall(struct seccomp_argeval_syscall *orig_syscall)
-{
-	kfree(orig_syscall);
-}
-#endif /* CONFIG_SECURITY_SECCOMP */
-
-static void put_seccomp_filter(struct task_struct *tsk);
-
 /**
  * seccomp_run_filters - evaluates all seccomp filters against @syscall
  * @syscall: number of the current system call
@@ -466,11 +186,12 @@ static void put_seccomp_filter(struct task_struct *tsk);
  */
 static u32 seccomp_run_filters(struct seccomp_data *sd)
 {
-#ifdef CONFIG_SECURITY_SECCOMP
-	struct seccomp_filter_checker_group *walker, *arg_match = NULL;
-#endif
 	struct seccomp_data sd_local;
 	u32 ret = SECCOMP_RET_ALLOW;
+#ifdef CONFIG_SECURITY_LANDLOCK
+	struct seccomp_landlock_ret *landlock_ret, *init_landlock_ret =
+		current->seccomp.landlock_ret;
+#endif /* CONFIG_SECURITY_LANDLOCK */
 	/* Make sure cross-thread synced filter points somewhere sane. */
 	struct seccomp_filter *f =
 			lockless_dereference(current->seccomp.filter);
@@ -483,74 +204,44 @@ static u32 seccomp_run_filters(struct seccomp_data *sd)
 		populate_seccomp_data(&sd_local);
 		sd = &sd_local;
 	}
-#ifdef CONFIG_SECURITY_SECCOMP
-	/* Backup the current syscall and its arguments (used by the filters),
-	 * to not be misled in the LSM checks by a potential ptrace setregs
-	 * command.
-	 */
-	if (!current->seccomp.orig_syscall) {
-		current->seccomp.orig_syscall =
-		    kmalloc(sizeof(*current->seccomp.orig_syscall), GFP_KERNEL);
-		if (!current->seccomp.orig_syscall)
-			return SECCOMP_RET_KILL;
+#ifdef CONFIG_SECURITY_LANDLOCK
+	for (landlock_ret = init_landlock_ret;
+			landlock_ret;
+			landlock_ret = landlock_ret->prev) {
+		/* No need to clean the cookie. */
+		landlock_ret->triggered = false;
 	}
-	current->seccomp.orig_syscall->nr = sd->nr;
-	current->seccomp.orig_syscall->args[0] = sd->args[0];
-	current->seccomp.orig_syscall->args[1] = sd->args[1];
-	current->seccomp.orig_syscall->args[2] = sd->args[2];
-	current->seccomp.orig_syscall->args[3] = sd->args[3];
-	current->seccomp.orig_syscall->args[4] = sd->args[4];
-	current->seccomp.orig_syscall->args[5] = sd->args[5];
-
-	/* Cleanup old (syscall-lifetime) history and cache */
-	free_seccomp_argeval_checked(current->seccomp.arg_checked);
-	current->seccomp.arg_checked = NULL;
-	flush_seccomp_cache(current);
-#endif
+#endif /* CONFIG_SECURITY_LANDLOCK */
 
 	/*
 	 * All filters in the list are evaluated and the lowest BPF return
 	 * value always takes priority (ignoring the DATA).
 	 */
 	for (; f; f = f->prev) {
-		u32 cur_ret;
-
-#ifdef CONFIG_SECURITY_SECCOMP
-		if (arg_match) {
-			bool found = false;
-
-			/* Find if the argument group is accessible from this filter */
-			for (walker = f->checker_group; walker; walker = walker->prev) {
-				if (walker == arg_match) {
-					found = true;
+		u32 cur_ret = BPF_PROG_RUN(f->prog, (void *)sd);
+		u32 action = cur_ret & SECCOMP_RET_ACTION;
+#ifdef CONFIG_SECURITY_LANDLOCK
+		u32 data = cur_ret & SECCOMP_RET_DATA;
+		if (action == SECCOMP_RET_LANDLOCK) {
+			/*
+			 * Keep track of filters from the current task that
+			 * trigger a RET_LANDLOCK.
+			 */
+			for (landlock_ret = init_landlock_ret;
+					landlock_ret;
+					landlock_ret = landlock_ret->prev) {
+				if (landlock_ret->filter == f) {
+					landlock_ret->triggered = true;
+					landlock_ret->cookie = data;
 					break;
 				}
 			}
-			if (!found)
-				clean_seccomp_data(sd);
 		}
-#endif /* CONFIG_SECURITY_SECCOMP */
-		cur_ret = BPF_PROG_RUN(f->prog, (void *)sd);
+#endif /* CONFIG_SECURITY_LANDLOCK */
 
-#ifdef CONFIG_SECURITY_SECCOMP
-		/* Intermediate return values */
-		if ((cur_ret & SECCOMP_RET_INTER) == SECCOMP_RET_ARGEVAL) {
-			/* XXX: sd modification /!\ */
-			arg_match = seccomp_update_argrule_data(f, sd,
-					(cur_ret & SECCOMP_RET_DATA));
-		} else if (arg_match) {
-			clean_seccomp_data(sd);
-			arg_match = NULL;
-		}
-#endif /* CONFIG_SECURITY_SECCOMP */
-
-		if ((cur_ret & SECCOMP_RET_INTER) < (ret & SECCOMP_RET_ACTION))
+		if (action < (ret & SECCOMP_RET_ACTION))
 			ret = cur_ret;
 	}
-#ifdef CONFIG_SECURITY_SECCOMP
-	if (arg_match && sd != &sd_local)
-		clean_seccomp_data(sd);
-#endif /* CONFIG_SECURITY_SECCOMP */
 	return ret;
 }
 #endif /* CONFIG_SECCOMP_FILTER */
@@ -664,7 +355,7 @@ static inline void seccomp_sync_threads(void)
 		 * current's path will hold a reference.  (This also
 		 * allows a put before the assignment.)
 		 */
-		put_seccomp_filter(thread);
+		put_seccomp_filter(thread->seccomp.filter);
 		smp_store_release(&thread->seccomp.filter,
 				  caller->seccomp.filter);
 
@@ -728,13 +419,6 @@ static struct seccomp_filter *seccomp_prepare_filter(struct sock_fprog *fprog)
 		return ERR_PTR(ret);
 	}
 
-#ifdef CONFIG_SECURITY_SECCOMP
-	sfilter->checker_group =
-		lockless_dereference(current->seccomp.checker_group);
-	if (sfilter->checker_group)
-		atomic_inc(&sfilter->checker_group->usage);
-#endif /* CONFIG_SECURITY_SECCOMP */
-
 	atomic_set(&sfilter->usage, 1);
 
 	return sfilter;
@@ -753,7 +437,7 @@ seccomp_prepare_user_filter(const char __user *user_filter)
 	struct seccomp_filter *filter = ERR_PTR(-EFAULT);
 
 #ifdef CONFIG_COMPAT
-	if (is_compat_task()) {
+	if (in_compat_syscall()) {
 		struct compat_sock_fprog fprog32;
 		if (copy_from_user(&fprog32, user_filter, sizeof(fprog32)))
 			goto out;
@@ -782,6 +466,9 @@ static long seccomp_attach_filter(unsigned int flags,
 {
 	unsigned long total_insns;
 	struct seccomp_filter *walker;
+#ifdef CONFIG_SECURITY_LANDLOCK
+	struct seccomp_landlock_ret *landlock_ret;
+#endif /* CONFIG_SECURITY_LANDLOCK */
 
 	assert_spin_locked(&current->sighand->siglock);
 
@@ -806,6 +493,21 @@ static long seccomp_attach_filter(unsigned int flags,
 	 * task reference.
 	 */
 	filter->prev = current->seccomp.filter;
+#ifdef CONFIG_SECURITY_LANDLOCK
+	filter->landlock_prev = current->seccomp.landlock_filter;
+	current->seccomp.landlock_filter = filter;
+
+	/* Dedicated Landlock result */
+	landlock_ret = kmalloc(sizeof(*landlock_ret), GFP_KERNEL);
+	if (!landlock_ret)
+		return -ENOMEM;
+	landlock_ret->prev = current->seccomp.landlock_ret;
+	atomic_inc(&filter->usage);
+	landlock_ret->filter = filter;
+	landlock_ret->cookie = 0;
+	landlock_ret->triggered = false;
+	current->seccomp.landlock_ret = landlock_ret;
+#endif /* CONFIG_SECURITY_LANDLOCK */
 	current->seccomp.filter = filter;
 
 	/* Now that the new filter is in place, synchronize to all threads. */
@@ -814,6 +516,55 @@ static long seccomp_attach_filter(unsigned int flags,
 
 	return 0;
 }
+
+#ifdef CONFIG_SECURITY_LANDLOCK
+struct seccomp_landlock_ret *dup_landlock_ret(
+		struct seccomp_landlock_ret *ret_orig)
+{
+	struct seccomp_landlock_ret *ret_new;
+
+	if (!ret_orig)
+		return NULL;
+	ret_new = kmalloc(sizeof(*ret_new), GFP_KERNEL);
+	if (!ret_new)
+		return ERR_PTR(-ENOMEM);
+	ret_new->filter = ret_orig->filter;
+	if (ret_new->filter)
+		atomic_inc(&ret_new->filter->usage);
+	ret_new->cookie = 0;
+	ret_new->triggered = false;
+	ret_new->prev = NULL;
+	return ret_new;
+}
+
+static void put_landlock_prog(struct seccomp_landlock_prog *landlock_prog)
+{
+	struct seccomp_landlock_prog *orig = landlock_prog;
+
+	/* Clean up single-reference branches iteratively. */
+	while (orig && atomic_dec_and_test(&orig->usage)) {
+		struct seccomp_landlock_prog *freeme = orig;
+
+		put_seccomp_filter(orig->filter);
+		bpf_prog_put(orig->prog);
+		orig = orig->prev;
+		kfree(freeme);
+	}
+}
+
+void put_landlock_ret(struct seccomp_landlock_ret *landlock_ret)
+{
+	struct seccomp_landlock_ret *orig = landlock_ret;
+
+	while (orig) {
+		struct seccomp_landlock_ret *freeme = orig;
+
+		put_seccomp_filter(orig->filter);
+		orig = orig->prev;
+		kfree(freeme);
+	}
+}
+#endif /* CONFIG_SECURITY_LANDLOCK */
 
 /* get_seccomp_filter - increments the reference count of the filter on @tsk */
 void get_seccomp_filter(struct task_struct *tsk)
@@ -825,71 +576,36 @@ void get_seccomp_filter(struct task_struct *tsk)
 	atomic_inc(&orig->usage);
 }
 
-#ifdef CONFIG_SECURITY_SECCOMP
-/* Do not free @checker */
-static void put_seccomp_obj(struct seccomp_filter_checker *checker)
-{
-	switch (checker->type) {
-	case SECCOMP_OBJTYPE_PATH:
-		/* Pointer checks done in path_put() */
-		path_put(&checker->object_path.path);
-		break;
-	default:
-		WARN_ON(1);
-	}
-}
-
-/* Free @checker_group */
-static void put_seccomp_checker_group(struct seccomp_filter_checker_group *checker_group)
-{
-	int i;
-	struct seccomp_filter_checker_group *orig = checker_group;
-
-	/* Clean up single-reference branches iteratively. */
-	while (orig && atomic_dec_and_test(&orig->usage)) {
-		struct seccomp_filter_checker_group *freeme = orig;
-
-		for (i = 0; i < freeme->checkers_len; i++)
-			put_seccomp_obj(&freeme->checkers[i]);
-		orig = orig->prev;
-		kfree(freeme);
-	}
-}
-#endif /* CONFIG_SECURITY_SECCOMP */
-
 static inline void seccomp_filter_free(struct seccomp_filter *filter)
 {
 	if (filter) {
-#ifdef CONFIG_SECURITY_SECCOMP
-		put_seccomp_checker_group(filter->checker_group);
-#endif /* CONFIG_SECURITY_SECCOMP */
 		bpf_prog_destroy(filter->prog);
 		kfree(filter);
 	}
 }
 
-/* put_seccomp_filter - decrements the ref count of tsk->seccomp.filter */
-static void put_seccomp_filter(struct task_struct *tsk)
+/* put_seccomp_filter - decrements the ref count of a filter */
+static void put_seccomp_filter(struct seccomp_filter *filter)
 {
-	struct seccomp_filter *orig = tsk->seccomp.filter;
+	struct seccomp_filter *orig = filter;
+
 	/* Clean up single-reference branches iteratively. */
 	while (orig && atomic_dec_and_test(&orig->usage)) {
 		struct seccomp_filter *freeme = orig;
+
 		orig = orig->prev;
+		/* must not put orig->landlock_prev */
 		seccomp_filter_free(freeme);
 	}
 }
 
 void put_seccomp(struct task_struct *tsk)
 {
-	put_seccomp_filter(tsk);
-#ifdef CONFIG_SECURITY_SECCOMP
-	/* Free in that order because of referenced checkers */
-	free_seccomp_argeval_checked(tsk->seccomp.arg_checked);
-	free_seccomp_argeval_cache(tsk->seccomp.arg_cache);
-	free_seccomp_argeval_syscall(tsk->seccomp.orig_syscall);
-	put_seccomp_checker_group(tsk->seccomp.checker_group);
-#endif
+	put_seccomp_filter(tsk->seccomp.filter);
+#ifdef CONFIG_SECURITY_LANDLOCK
+	put_landlock_prog(tsk->seccomp.landlock_prog);
+	put_landlock_ret(tsk->seccomp.landlock_ret);
+#endif /* CONFIG_SECURITY_LANDLOCK */
 }
 
 /**
@@ -918,24 +634,17 @@ static void seccomp_send_sigsys(int syscall, int reason)
  * To be fully secure this must be combined with rlimit
  * to limit the stack allocations too.
  */
-static int mode1_syscalls[] = {
+static const int mode1_syscalls[] = {
 	__NR_seccomp_read, __NR_seccomp_write, __NR_seccomp_exit, __NR_seccomp_sigreturn,
 	0, /* null terminated */
 };
 
-#ifdef CONFIG_COMPAT
-static int mode1_syscalls_32[] = {
-	__NR_seccomp_read_32, __NR_seccomp_write_32, __NR_seccomp_exit_32, __NR_seccomp_sigreturn_32,
-	0, /* null terminated */
-};
-#endif
-
 static void __secure_computing_strict(int this_syscall)
 {
-	int *syscall_whitelist = mode1_syscalls;
+	const int *syscall_whitelist = mode1_syscalls;
 #ifdef CONFIG_COMPAT
-	if (is_compat_task())
-		syscall_whitelist = mode1_syscalls_32;
+	if (in_compat_syscall())
+		syscall_whitelist = get_compat_mode1_syscalls();
 #endif
 	do {
 		if (*syscall_whitelist == this_syscall)
@@ -982,16 +691,13 @@ int __secure_computing(void)
 static u32 __seccomp_phase1_filter(int this_syscall, struct seccomp_data *sd)
 {
 	u32 filter_ret, action;
-	int data, ret;
+	int data;
 
 	/*
 	 * Make sure that any changes to mode from another thread have
 	 * been seen after TIF_SECCOMP was seen.
 	 */
 	rmb();
-
-	/* Enable caching */
-	audit_seccomp_entry();
 
 	filter_ret = seccomp_run_filters(sd);
 	data = filter_ret & SECCOMP_RET_DATA;
@@ -1014,15 +720,12 @@ static u32 __seccomp_phase1_filter(int this_syscall, struct seccomp_data *sd)
 		goto skip;
 
 	case SECCOMP_RET_TRACE:
-		ret = filter_ret;  /* Save the rest for phase 2. */
-		goto audit_exit;
+		return filter_ret;  /* Save the rest for phase 2. */
 
-	case SECCOMP_RET_ARGEVAL:
-		/* Handled in seccomp_run_filters() */
-		BUG();
+	case SECCOMP_RET_LANDLOCK:
+		/* fall through */
 	case SECCOMP_RET_ALLOW:
-		ret = SECCOMP_PHASE1_OK;
-		goto audit_exit;
+		return SECCOMP_PHASE1_OK;
 
 	case SECCOMP_RET_KILL:
 	default:
@@ -1032,12 +735,7 @@ static u32 __seccomp_phase1_filter(int this_syscall, struct seccomp_data *sd)
 
 	unreachable();
 
-audit_exit:
-	audit_seccomp_exit(0);
-	return ret;
-
 skip:
-	audit_seccomp_exit(1);
 	audit_seccomp(this_syscall, 0, action);
 	return SECCOMP_PHASE1_SKIP;
 }
@@ -1231,163 +929,77 @@ static inline long seccomp_set_mode_filter(unsigned int flags,
 }
 #endif
 
-#ifdef CONFIG_SECURITY_SECCOMP
 
-/* Limit checkers number to 64 to be able to show matches with a bitmask. */
-#define SECCOMP_CHECKERS_MAX \
-	(FIELD_SIZEOF(struct seccomp_data, arg_matches[0]) * BITS_PER_BYTE)
+#ifdef CONFIG_SECURITY_LANDLOCK
 
-/* Limit arg group list and their checkers to 256KB. */
-#define SECCOMP_GROUP_CHECKERS_MAX_SIZE (1 << 18)
+/* Limit Landlock programs to 256KB. */
+#define LANDLOCK_PROG_LIST_MAX_PAGES (1 << 6)
 
-static long seccomp_add_checker_group(unsigned int flags, const char __user *group)
+static long landlock_set_hook(unsigned int flags, const char __user *user_bpf_fd)
 {
-	struct seccomp_checker_group kgroup;
-	struct seccomp_checker (*kcheckers)[], *user_checker;
-	struct seccomp_filter_checker_group *filter_group, *walker;
-	struct seccomp_filter_checker *kernel_obj;
-	unsigned int i;
-	unsigned long group_size, kcheckers_size, full_group_size;
 	long result;
+	unsigned long prog_list_pages;
+	struct seccomp_landlock_prog *landlock_prog, *cp_walker;
+	int bpf_fd;
+	struct bpf_prog *prog;
 
-	/* FIXME: Deny unsecure path evaluation (i.e. without audit_names) for
-	 * the entire task life.
-	 */
-	if (!current->audit_context)
-		return -EPERM;
 	if (!task_no_new_privs(current) &&
 	    security_capable_noaudit(current_cred(),
 				     current_user_ns(), CAP_SYS_ADMIN) != 0)
 		return -EACCES;
-	if (flags != 0 || !group)
+	if (!user_bpf_fd)
 		return -EINVAL;
 
-#ifdef CONFIG_COMPAT
-	if (is_compat_task()) {
-		struct compat_seccomp_checker_group kgroup32;
+	/* could be used for TSYNC */
+	if (flags)
+		return -EINVAL;
 
-		if (copy_from_user(&kgroup32, group, sizeof(kgroup32)))
-			return -EFAULT;
-		kgroup.version = kgroup32.version;
-		kgroup.id = kgroup32.id;
-		kgroup.len = kgroup32.len;
-		kgroup.checkers = compat_ptr(kgroup32.checkers);
-	} else			/* Falls through to the if below */
-#endif /* CONFIG_COMPAT */
-	if (copy_from_user(&kgroup, group, sizeof(kgroup)))
+	if (copy_from_user(&bpf_fd, user_bpf_fd, sizeof(user_bpf_fd)))
 		return -EFAULT;
-
-	if (kgroup.version != 1)
-		return -EINVAL;
-	/* The group ID 0 means no evaluated checkers */
-	if (kgroup.id == 0)
-		return -EINVAL;
-	if (kgroup.len == 0)
-		return -EINVAL;
-	if (kgroup.len > SECCOMP_CHECKERS_MAX)
-		return -E2BIG;
-
-	/* Validate resulting checker_group ID and length. */
-	group_size = sizeof(*filter_group) +
-		kgroup.len * sizeof(filter_group->checkers[0]);
-	full_group_size = group_size;
-	for (walker = current->seccomp.checker_group;
-			walker; walker = walker->prev) {
-		if (walker->id == kgroup.id)
-			return -EINVAL;
-		/* TODO: add penalty? */
-		full_group_size += sizeof(*walker) +
-			walker->checkers_len * sizeof(walker->checkers[0]);
-	}
-	if (full_group_size > SECCOMP_GROUP_CHECKERS_MAX_SIZE)
-		return -ENOMEM;
-
-	kcheckers_size = kgroup.len * sizeof((*kcheckers)[0]);
-	kcheckers = kmalloc(kcheckers_size, GFP_KERNEL);
-	if (!kcheckers)
-		return -ENOMEM;
-
-#ifdef CONFIG_COMPAT
-	if (is_compat_task()) {
-		unsigned int i, kcheckers32_size;
-		struct compat_seccomp_checker (*kcheckers32)[];
-
-		kcheckers32_size = kgroup.len * sizeof((*kcheckers32)[0]);
-		kcheckers32 = kmalloc(kcheckers32_size, GFP_KERNEL);
-		if (!kcheckers32) {
-			result = -ENOMEM;
-			goto free_kcheckers;
-		}
-		if (copy_from_user(kcheckers32, kgroup.checkers, kcheckers32_size)) {
-			kfree(kcheckers32);
-			result = -EFAULT;
-			goto free_kcheckers;
-		}
-		for (i = 0; i < kgroup.len; i++) {
-			(*kcheckers)[i].check = (*kcheckers32)[i].check;
-			(*kcheckers)[i].type = (*kcheckers32)[i].type;
-			(*kcheckers)[i].len = (*kcheckers32)[i].len;
-			(*kcheckers)[i].object_path = compat_ptr((*kcheckers32)[i].checker);
-		}
-		kfree(kcheckers32);
-	} else			/* Falls through to the if below */
-#endif /* CONFIG_COMPAT */
-	if (copy_from_user(kcheckers, kgroup.checkers, kcheckers_size)) {
-		result = -EFAULT;
-		goto free_kcheckers;
+	prog = bpf_prog_get(bpf_fd);
+	if (IS_ERR(prog))
+		return PTR_ERR(prog);
+	switch (prog->type) {
+	case BPF_PROG_TYPE_LANDLOCK_FILE_OPEN:
+	case BPF_PROG_TYPE_LANDLOCK_FILE_PERMISSION:
+	case BPF_PROG_TYPE_LANDLOCK_MMAP_FILE:
+		break;
+	default:
+		result = -EINVAL;
+		goto put_prog;
 	}
 
-	/* filter_group->checkers must be zeroed to correctly be freed on error */
-	filter_group = kzalloc(group_size, GFP_KERNEL);
-	if (!filter_group) {
+	/* validate allocated memory */
+	prog_list_pages = prog->pages;
+	for (cp_walker = current->seccomp.landlock_prog; cp_walker;
+			cp_walker = cp_walker->prev) {
+		/* TODO: add penalty for each prog? */
+		prog_list_pages += cp_walker->prog->pages;
+	}
+	if (prog_list_pages > LANDLOCK_PROG_LIST_MAX_PAGES) {
 		result = -ENOMEM;
-		goto free_kcheckers;
-	}
-	filter_group->prev = NULL;
-	filter_group->id = kgroup.id;
-	filter_group->checkers_len = kgroup.len;
-	for (i = 0; i < filter_group->checkers_len; i++) {
-		user_checker = &(*kcheckers)[i];
-		kernel_obj = &filter_group->checkers[i];
-		switch (user_checker->check) {
-		case SECCOMP_CHECK_FS_LITERAL:
-		case SECCOMP_CHECK_FS_BENEATH:
-			kernel_obj->check = user_checker->check;
-			result =
-			    seccomp_set_argcheck_fs(user_checker, kernel_obj);
-			if (result)
-				goto free_group;
-			break;
-		default:
-			result = -EINVAL;
-			goto free_group;
-		}
+		goto put_prog;
 	}
 
-	atomic_set(&filter_group->usage, 1);
-	filter_group->prev = current->seccomp.checker_group;
-	/* No need to update filter_group->prev->usage because it get one
-	 * reference from this filter but lose one from
-	 * current->seccomp.checker_group.
-	 */
-	current->seccomp.checker_group = filter_group;
-	/* XXX: Return the number of groups? */
-	result = 0;
-	goto free_kcheckers;
-
-free_group:
-	for (i = 0; i < filter_group->checkers_len; i++) {
-		kernel_obj = &filter_group->checkers[i];
-		if (kernel_obj->type)
-			put_seccomp_obj(kernel_obj);
+	landlock_prog = kmalloc(sizeof(*landlock_prog), GFP_KERNEL);
+	if (!landlock_prog) {
+		result = -ENOMEM;
+		goto put_prog;
 	}
-	kfree(filter_group);
+	landlock_prog->prog = prog;
+	landlock_prog->filter = current->seccomp.filter;
+	if (landlock_prog->filter)
+		atomic_inc(&landlock_prog->filter->usage);
+	atomic_set(&landlock_prog->usage, 1);
+	landlock_prog->prev = current->seccomp.landlock_prog;
+	current->seccomp.landlock_prog = landlock_prog;
+	return 0;
 
-free_kcheckers:
-	kfree(kcheckers);
+put_prog:
+	bpf_prog_put(prog);
 	return result;
 }
-#endif /* CONFIG_SECURITY_SECCOMP */
+#endif /* CONFIG_SECURITY_LANDLOCK */
 
 /* Common entry point for both prctl and syscall. */
 static long do_seccomp(unsigned int op, unsigned int flags,
@@ -1400,10 +1012,10 @@ static long do_seccomp(unsigned int op, unsigned int flags,
 		return seccomp_set_mode_strict();
 	case SECCOMP_SET_MODE_FILTER:
 		return seccomp_set_mode_filter(flags, uargs);
-#ifdef CONFIG_SECURITY_SECCOMP
-	case SECCOMP_ADD_CHECKER_GROUP:
-		return seccomp_add_checker_group(flags, uargs);
-#endif /* CONFIG_SECURITY_SECCOMP */
+#ifdef CONFIG_SECURITY_LANDLOCK
+	case SECCOMP_SET_LANDLOCK_HOOK:
+		return landlock_set_hook(flags, uargs);
+#endif /* CONFIG_SECURITY_LANDLOCK */
 	default:
 		return -EINVAL;
 	}
@@ -1513,7 +1125,7 @@ long seccomp_get_filter(struct task_struct *task, unsigned long filter_off,
 	if (copy_to_user(data, fprog->filter, bpf_classic_proglen(fprog)))
 		ret = -EFAULT;
 
-	put_seccomp_filter(task);
+	put_seccomp_filter(task->seccomp.filter);
 	return ret;
 
 out:

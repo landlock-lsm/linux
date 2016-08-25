@@ -7,6 +7,7 @@
  *
  * Copyright(c) 2007 - 2014 Intel Corporation. All rights reserved.
  * Copyright(c) 2013 - 2015 Intel Mobile Communications GmbH
+ * Copyright(c) 2016        Intel Deutschland GmbH
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of version 2 of the GNU General Public License as
@@ -33,6 +34,7 @@
  *
  * Copyright(c) 2005 - 2014 Intel Corporation. All rights reserved.
  * Copyright(c) 2013 - 2015 Intel Mobile Communications GmbH
+ * Copyright(c) 2016        Intel Deutschland GmbH
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -506,7 +508,7 @@ struct iwl_trans_config {
 	bool sw_csum_tx;
 	const struct iwl_hcmd_arr *command_groups;
 	int command_groups_size;
- 
+
 	u32 sdio_adma_addr;
 };
 
@@ -519,7 +521,7 @@ struct iwl_trans;
 
 struct iwl_trans_txq_scd_cfg {
 	u8 fifo;
-	s8 sta_id;
+	u8 sta_id;
 	u8 tid;
 	bool aggregate;
 	int frame_limit;
@@ -618,9 +620,9 @@ struct iwl_trans_ops {
 	void (*fw_alive)(struct iwl_trans *trans, u32 scd_addr);
 	void (*stop_device)(struct iwl_trans *trans, bool low_power);
 
-	void (*d3_suspend)(struct iwl_trans *trans, bool test);
+	void (*d3_suspend)(struct iwl_trans *trans, bool test, bool reset);
 	int (*d3_resume)(struct iwl_trans *trans, enum iwl_d3_status *status,
-			 bool test);
+			 bool test, bool reset);
 
 	int (*send_cmd)(struct iwl_trans *trans, struct iwl_host_cmd *cmd);
 
@@ -736,6 +738,11 @@ enum iwl_plat_pm_mode {
 	IWL_PLAT_PM_MODE_D0I3,
 };
 
+/* Max time to wait for trans to become idle/non-idle on d0i3
+ * enter/exit (in msecs).
+ */
+#define IWL_TRANS_IDLE_TIMEOUT 2000
+
 /**
  * struct iwl_trans - transport common data
  *
@@ -746,6 +753,7 @@ enum iwl_plat_pm_mode {
  * @dev - pointer to struct device * that represents the device
  * @max_skb_frags: maximum number of fragments an SKB can have when transmitted.
  *	0 indicates that frag SKBs (NETIF_F_SG) aren't supported.
+ * @hw_rf_id a u32 with the device RF ID
  * @hw_id: a u32 with the ID of the device / sub-device.
  *	Set during transport allocation.
  * @hw_id_str: a string with info about HW ID. Set during transport allocation.
@@ -790,6 +798,7 @@ struct iwl_trans {
 	struct device *dev;
 	u32 max_skb_frags;
 	u32 hw_rev;
+	u32 hw_rf_id;
 	u32 hw_id;
 	char hw_id_str[52];
 
@@ -831,6 +840,7 @@ struct iwl_trans {
 
 	enum iwl_plat_pm_mode system_pm_mode;
 	enum iwl_plat_pm_mode runtime_pm_mode;
+	bool suspending;
 
 	/* pointer to trans specific struct */
 	/*Ensure that this pointer will always be aligned to sizeof pointer */
@@ -920,22 +930,23 @@ static inline void iwl_trans_stop_device(struct iwl_trans *trans)
 	_iwl_trans_stop_device(trans, true);
 }
 
-static inline void iwl_trans_d3_suspend(struct iwl_trans *trans, bool test)
+static inline void iwl_trans_d3_suspend(struct iwl_trans *trans, bool test,
+					bool reset)
 {
 	might_sleep();
 	if (trans->ops->d3_suspend)
-		trans->ops->d3_suspend(trans, test);
+		trans->ops->d3_suspend(trans, test, reset);
 }
 
 static inline int iwl_trans_d3_resume(struct iwl_trans *trans,
 				      enum iwl_d3_status *status,
-				      bool test)
+				      bool test, bool reset)
 {
 	might_sleep();
 	if (!trans->ops->d3_resume)
 		return 0;
 
-	return trans->ops->d3_resume(trans, status, test);
+	return trans->ops->d3_resume(trans, status, test, reset);
 }
 
 static inline void iwl_trans_ref(struct iwl_trans *trans)

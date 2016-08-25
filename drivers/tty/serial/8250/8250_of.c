@@ -29,7 +29,7 @@ struct of_serial_info {
 };
 
 #ifdef CONFIG_ARCH_TEGRA
-void tegra_serial_handle_break(struct uart_port *p)
+static void tegra_serial_handle_break(struct uart_port *p)
 {
 	unsigned int status, tmout = 10000;
 
@@ -335,6 +335,7 @@ static struct platform_driver of_platform_serial_driver = {
 	.driver = {
 		.name = "of_serial",
 		.of_match_table = of_platform_serial_table,
+		.pm = &of_serial_pm_ops,
 	},
 	.probe = of_platform_serial_probe,
 	.remove = of_platform_serial_remove,

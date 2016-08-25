@@ -595,6 +595,10 @@ struct usb_gadget_ops {
  *	only supports HNP on a different root port.
  * @b_hnp_enable: OTG device feature flag, indicating that the A-Host
  *	enabled HNP support.
+ * @hnp_polling_support: OTG device feature flag, indicating if the OTG device
+ *	in peripheral mode can support HNP polling.
+ * @host_request_flag: OTG device feature flag, indicating if A-Peripheral
+ *	or B-Peripheral wants to take host role.
  * @quirk_ep_out_aligned_size: epout requires buffer size to be aligned to
  *	MaxPacketSize.
  * @is_selfpowered: if the gadget is self-powered.
@@ -642,6 +646,8 @@ struct usb_gadget {
 	unsigned			b_hnp_enable:1;
 	unsigned			a_hnp_support:1;
 	unsigned			a_alt_hnp_support:1;
+	unsigned			hnp_polling_support:1;
+	unsigned			host_request_flag:1;
 	unsigned			quirk_ep_out_aligned_size:1;
 	unsigned			quirk_altset_not_supp:1;
 	unsigned			quirk_stall_not_supp:1;
@@ -726,6 +732,16 @@ static inline int gadget_is_dualspeed(struct usb_gadget *g)
 static inline int gadget_is_superspeed(struct usb_gadget *g)
 {
 	return g->max_speed >= USB_SPEED_SUPER;
+}
+
+/**
+ * gadget_is_superspeed_plus() - return true if the hardware handles
+ *	superspeed plus
+ * @g: controller that might support superspeed plus
+ */
+static inline int gadget_is_superspeed_plus(struct usb_gadget *g)
+{
+	return g->max_speed >= USB_SPEED_SUPER_PLUS;
 }
 
 /**
@@ -1018,6 +1034,8 @@ static inline int usb_gadget_activate(struct usb_gadget *gadget)
  * @udc_name: A name of UDC this driver should be bound to. If udc_name is NULL,
  *	this driver will be bound to any available UDC.
  * @pending: UDC core private data used for deferred probe of this driver.
+ * @match_existing_only: If udc is not found, return an error and don't add this
+ *      gadget driver to list of pending driver
  *
  * Devices are disabled till a gadget driver successfully bind()s, which
  * means the driver will handle setup() requests needed to enumerate (and
@@ -1081,6 +1099,7 @@ struct usb_gadget_driver {
 
 	char			*udc_name;
 	struct list_head	pending;
+	unsigned                match_existing_only:1;
 };
 
 
@@ -1126,6 +1145,7 @@ extern int usb_add_gadget_udc_release(struct device *parent,
 		struct usb_gadget *gadget, void (*release)(struct device *dev));
 extern int usb_add_gadget_udc(struct device *parent, struct usb_gadget *gadget);
 extern void usb_del_gadget_udc(struct usb_gadget *gadget);
+extern char *usb_get_gadget_udc_name(void);
 
 /*-------------------------------------------------------------------------*/
 
@@ -1194,7 +1214,8 @@ struct usb_function;
 int usb_assign_descriptors(struct usb_function *f,
 		struct usb_descriptor_header **fs,
 		struct usb_descriptor_header **hs,
-		struct usb_descriptor_header **ss);
+		struct usb_descriptor_header **ss,
+		struct usb_descriptor_header **ssp);
 void usb_free_all_descriptors(struct usb_function *f);
 
 struct usb_descriptor_header *usb_otg_descriptor_alloc(
@@ -1205,9 +1226,13 @@ int usb_otg_descriptor_init(struct usb_gadget *gadget,
 
 /* utility to simplify map/unmap of usb_requests to/from DMA */
 
+extern int usb_gadget_map_request_by_dev(struct device *dev,
+		struct usb_request *req, int is_in);
 extern int usb_gadget_map_request(struct usb_gadget *gadget,
 		struct usb_request *req, int is_in);
 
+extern void usb_gadget_unmap_request_by_dev(struct device *dev,
+		struct usb_request *req, int is_in);
 extern void usb_gadget_unmap_request(struct usb_gadget *gadget,
 		struct usb_request *req, int is_in);
 

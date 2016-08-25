@@ -26,7 +26,7 @@
 #include <linux/slab.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
-#include <linux/gpio.h>
+#include <linux/gpio/driver.h>
 #include <linux/ioport.h>
 #include <linux/of_device.h>
 #include <linux/of_irq.h>
@@ -98,11 +98,6 @@ struct iproc_gpio {
 	struct pinctrl_desc pctldesc;
 };
 
-static inline struct iproc_gpio *to_iproc_gpio(struct gpio_chip *gc)
-{
-	return container_of(gc, struct iproc_gpio, gc);
-}
-
 /*
  * Mapping from PINCONF pins to GPIO pins is 1-to-1
  */
@@ -147,7 +142,7 @@ static inline bool iproc_get_bit(struct iproc_gpio *chip, unsigned int reg,
 static void iproc_gpio_irq_handler(struct irq_desc *desc)
 {
 	struct gpio_chip *gc = irq_desc_get_handler_data(desc);
-	struct iproc_gpio *chip = to_iproc_gpio(gc);
+	struct iproc_gpio *chip = gpiochip_get_data(gc);
 	struct irq_chip *irq_chip = irq_desc_get_chip(desc);
 	int i, bit;
 
@@ -180,7 +175,7 @@ static void iproc_gpio_irq_handler(struct irq_desc *desc)
 static void iproc_gpio_irq_ack(struct irq_data *d)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
-	struct iproc_gpio *chip = to_iproc_gpio(gc);
+	struct iproc_gpio *chip = gpiochip_get_data(gc);
 	unsigned gpio = d->hwirq;
 	unsigned int offset = IPROC_GPIO_REG(gpio,
 			IPROC_GPIO_INT_CLR_OFFSET);
@@ -199,7 +194,7 @@ static void iproc_gpio_irq_ack(struct irq_data *d)
 static void iproc_gpio_irq_set_mask(struct irq_data *d, bool unmask)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
-	struct iproc_gpio *chip = to_iproc_gpio(gc);
+	struct iproc_gpio *chip = gpiochip_get_data(gc);
 	unsigned gpio = d->hwirq;
 
 	iproc_set_bit(chip, IPROC_GPIO_INT_MSK_OFFSET, gpio, unmask);
@@ -208,7 +203,7 @@ static void iproc_gpio_irq_set_mask(struct irq_data *d, bool unmask)
 static void iproc_gpio_irq_mask(struct irq_data *d)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
-	struct iproc_gpio *chip = to_iproc_gpio(gc);
+	struct iproc_gpio *chip = gpiochip_get_data(gc);
 	unsigned long flags;
 
 	spin_lock_irqsave(&chip->lock, flags);
@@ -219,7 +214,7 @@ static void iproc_gpio_irq_mask(struct irq_data *d)
 static void iproc_gpio_irq_unmask(struct irq_data *d)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
-	struct iproc_gpio *chip = to_iproc_gpio(gc);
+	struct iproc_gpio *chip = gpiochip_get_data(gc);
 	unsigned long flags;
 
 	spin_lock_irqsave(&chip->lock, flags);
@@ -230,7 +225,7 @@ static void iproc_gpio_irq_unmask(struct irq_data *d)
 static int iproc_gpio_irq_set_type(struct irq_data *d, unsigned int type)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
-	struct iproc_gpio *chip = to_iproc_gpio(gc);
+	struct iproc_gpio *chip = gpiochip_get_data(gc);
 	unsigned gpio = d->hwirq;
 	bool level_triggered = false;
 	bool dual_edge = false;
@@ -292,7 +287,7 @@ static struct irq_chip iproc_gpio_irq_chip = {
  */
 static int iproc_gpio_request(struct gpio_chip *gc, unsigned offset)
 {
-	struct iproc_gpio *chip = to_iproc_gpio(gc);
+	struct iproc_gpio *chip = gpiochip_get_data(gc);
 	unsigned gpio = gc->base + offset;
 
 	/* not all Iproc GPIO pins can be muxed individually */
@@ -304,7 +299,7 @@ static int iproc_gpio_request(struct gpio_chip *gc, unsigned offset)
 
 static void iproc_gpio_free(struct gpio_chip *gc, unsigned offset)
 {
-	struct iproc_gpio *chip = to_iproc_gpio(gc);
+	struct iproc_gpio *chip = gpiochip_get_data(gc);
 	unsigned gpio = gc->base + offset;
 
 	if (!chip->pinmux_is_supported)
@@ -315,7 +310,7 @@ static void iproc_gpio_free(struct gpio_chip *gc, unsigned offset)
 
 static int iproc_gpio_direction_input(struct gpio_chip *gc, unsigned gpio)
 {
-	struct iproc_gpio *chip = to_iproc_gpio(gc);
+	struct iproc_gpio *chip = gpiochip_get_data(gc);
 	unsigned long flags;
 
 	spin_lock_irqsave(&chip->lock, flags);
@@ -330,7 +325,7 @@ static int iproc_gpio_direction_input(struct gpio_chip *gc, unsigned gpio)
 static int iproc_gpio_direction_output(struct gpio_chip *gc, unsigned gpio,
 					int val)
 {
-	struct iproc_gpio *chip = to_iproc_gpio(gc);
+	struct iproc_gpio *chip = gpiochip_get_data(gc);
 	unsigned long flags;
 
 	spin_lock_irqsave(&chip->lock, flags);
@@ -345,7 +340,7 @@ static int iproc_gpio_direction_output(struct gpio_chip *gc, unsigned gpio,
 
 static void iproc_gpio_set(struct gpio_chip *gc, unsigned gpio, int val)
 {
-	struct iproc_gpio *chip = to_iproc_gpio(gc);
+	struct iproc_gpio *chip = gpiochip_get_data(gc);
 	unsigned long flags;
 
 	spin_lock_irqsave(&chip->lock, flags);
@@ -357,7 +352,7 @@ static void iproc_gpio_set(struct gpio_chip *gc, unsigned gpio, int val)
 
 static int iproc_gpio_get(struct gpio_chip *gc, unsigned gpio)
 {
-	struct iproc_gpio *chip = to_iproc_gpio(gc);
+	struct iproc_gpio *chip = gpiochip_get_data(gc);
 	unsigned int offset = IPROC_GPIO_REG(gpio,
 					      IPROC_GPIO_DATA_IN_OFFSET);
 	unsigned int shift = IPROC_GPIO_SHIFT(gpio);
@@ -384,7 +379,7 @@ static const struct pinctrl_ops iproc_pctrl_ops = {
 	.get_groups_count = iproc_get_groups_count,
 	.get_group_name = iproc_get_group_name,
 	.dt_node_to_map = pinconf_generic_dt_node_to_map_pin,
-	.dt_free_map = pinctrl_utils_dt_free_map,
+	.dt_free_map = pinctrl_utils_free_map,
 };
 
 static int iproc_gpio_set_pull(struct iproc_gpio *chip, unsigned gpio,
@@ -628,18 +623,13 @@ static int iproc_gpio_register_pinconf(struct iproc_gpio *chip)
 	pctldesc->npins = gc->ngpio;
 	pctldesc->confops = &iproc_pconf_ops;
 
-	chip->pctl = pinctrl_register(pctldesc, chip->dev, chip);
+	chip->pctl = devm_pinctrl_register(chip->dev, pctldesc, chip);
 	if (IS_ERR(chip->pctl)) {
 		dev_err(chip->dev, "unable to register pinctrl device\n");
 		return PTR_ERR(chip->pctl);
 	}
 
 	return 0;
-}
-
-static void iproc_gpio_unregister_pinconf(struct iproc_gpio *chip)
-{
-	pinctrl_unregister(chip->pctl);
 }
 
 static const struct of_device_id iproc_gpio_of_match[] = {
@@ -706,7 +696,7 @@ static int iproc_gpio_probe(struct platform_device *pdev)
 	chip->pinmux_is_supported = of_property_read_bool(dev->of_node,
 							"gpio-ranges");
 
-	ret = gpiochip_add(gc);
+	ret = gpiochip_add_data(gc, chip);
 	if (ret < 0) {
 		dev_err(dev, "unable to add GPIO chip\n");
 		return ret;
@@ -725,7 +715,7 @@ static int iproc_gpio_probe(struct platform_device *pdev)
 					   handle_simple_irq, IRQ_TYPE_NONE);
 		if (ret) {
 			dev_err(dev, "no GPIO irqchip\n");
-			goto err_unregister_pinconf;
+			goto err_rm_gpiochip;
 		}
 
 		gpiochip_set_chained_irqchip(gc, &iproc_gpio_irq_chip, irq,
@@ -733,9 +723,6 @@ static int iproc_gpio_probe(struct platform_device *pdev)
 	}
 
 	return 0;
-
-err_unregister_pinconf:
-	iproc_gpio_unregister_pinconf(chip);
 
 err_rm_gpiochip:
 	gpiochip_remove(gc);

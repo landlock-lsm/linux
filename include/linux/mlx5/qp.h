@@ -172,6 +172,7 @@ enum {
 enum {
 	MLX5_FENCE_MODE_NONE			= 0 << 5,
 	MLX5_FENCE_MODE_INITIATOR_SMALL		= 1 << 5,
+	MLX5_FENCE_MODE_FENCE			= 2 << 5,
 	MLX5_FENCE_MODE_STRONG_ORDERING		= 3 << 5,
 	MLX5_FENCE_MODE_SMALL_AND_FENCE		= 4 << 5,
 };
@@ -460,10 +461,9 @@ struct mlx5_core_qp {
 };
 
 struct mlx5_qp_path {
-	u8			fl;
+	u8			fl_free_ar;
 	u8			rsvd3;
-	u8			free_ar;
-	u8			pkey_index;
+	__be16			pkey_index;
 	u8			rsvd0;
 	u8			grh_mlid;
 	__be16			rlid;
@@ -499,7 +499,8 @@ struct mlx5_qp_context {
 	u8			reserved2[4];
 	__be32			next_send_psn;
 	__be32			cqn_send;
-	u8			reserved3[8];
+	__be32			deth_sqpn;
+	u8			reserved3[4];
 	__be32			last_acked_psn;
 	__be32			ssn;
 	__be32			params2;
@@ -559,6 +560,7 @@ struct mlx5_modify_qp_mbox_in {
 	__be32			optparam;
 	u8			rsvd0[4];
 	struct mlx5_qp_context	ctx;
+	u8			rsvd2[16];
 };
 
 struct mlx5_modify_qp_mbox_out {
@@ -621,9 +623,9 @@ static inline struct mlx5_core_qp *__mlx5_qp_lookup(struct mlx5_core_dev *dev, u
 	return radix_tree_lookup(&dev->priv.qp_table.tree, qpn);
 }
 
-static inline struct mlx5_core_mr *__mlx5_mr_lookup(struct mlx5_core_dev *dev, u32 key)
+static inline struct mlx5_core_mkey *__mlx5_mr_lookup(struct mlx5_core_dev *dev, u32 key)
 {
-	return radix_tree_lookup(&dev->priv.mr_table.tree, key);
+	return radix_tree_lookup(&dev->priv.mkey_table.tree, key);
 }
 
 struct mlx5_page_fault_resume_mbox_in {
@@ -667,6 +669,12 @@ int mlx5_core_create_sq_tracked(struct mlx5_core_dev *dev, u32 *in, int inlen,
 				struct mlx5_core_qp *sq);
 void mlx5_core_destroy_sq_tracked(struct mlx5_core_dev *dev,
 				  struct mlx5_core_qp *sq);
+int mlx5_core_alloc_q_counter(struct mlx5_core_dev *dev, u16 *counter_id);
+int mlx5_core_dealloc_q_counter(struct mlx5_core_dev *dev, u16 counter_id);
+int mlx5_core_query_q_counter(struct mlx5_core_dev *dev, u16 counter_id,
+			      int reset, void *out, int out_size);
+int mlx5_core_query_out_of_buffer(struct mlx5_core_dev *dev, u16 counter_id,
+				  u32 *out_of_buffer);
 
 static inline const char *mlx5_qp_type_str(int type)
 {

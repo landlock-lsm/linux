@@ -1,0 +1,19 @@
+config SECURITY_LANDLOCK
+	bool "Landlock sandbox support"
+	depends on SECURITY
+	select BPF_SYSCALL
+	select SECCOMP
+	default y
+	help
+	  Landlock is a stacked LSM which allows any user to load a security policy
+	  to restrict their processes (i.e. create a sandbox). The policy is a list
+	  of stacked eBPF programs for some LSM hooks. Each program can do some
+	  access comparison to check if an access request is legitimate.
+
+	  It is recommended to enable cgroups to be able to match a policy
+	  according to a group of processes.
+
+	  Further information about eBPF can be found in
+	  Documentation/networking/filter.txt
+
+	  If you are unsure how to answer this question, answer Y.

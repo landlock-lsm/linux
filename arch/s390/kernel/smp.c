@@ -798,7 +798,7 @@ static void smp_start_secondary(void *cpuvoid)
 	set_cpu_online(smp_processor_id(), true);
 	inc_irq_stat(CPU_RST);
 	local_irq_enable();
-	cpu_startup_entry(CPUHP_ONLINE);
+	cpu_startup_entry(CPUHP_AP_ONLINE_IDLE);
 }
 
 /* Upping and downing of CPUs */
@@ -832,7 +832,7 @@ int __cpu_up(unsigned int cpu, struct task_struct *tidle)
 	pcpu_attach_task(pcpu, tidle);
 	pcpu_start_fn(pcpu, smp_start_secondary, NULL);
 	/* Wait until cpu puts itself in the online & active maps */
-	while (!cpu_online(cpu) || !cpu_active(cpu))
+	while (!cpu_online(cpu))
 		cpu_relax();
 	return 0;
 }

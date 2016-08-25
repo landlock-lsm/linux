@@ -65,7 +65,6 @@ extern int gup_hugepte(pte_t *ptep, unsigned long sz, unsigned long addr,
 		       struct page **pages, int *nr);
 #ifndef CONFIG_TRANSPARENT_HUGEPAGE
 #define pmd_large(pmd)		0
-#define has_transparent_hugepage() 0
 #endif
 pte_t *__find_linux_pte_or_hugepte(pgd_t *pgdir, unsigned long ea,
 				   bool *is_thp, unsigned *shift);
@@ -78,6 +77,9 @@ static inline pte_t *find_linux_pte_or_hugepte(pgd_t *pgdir, unsigned long ea,
 	}
 	return __find_linux_pte_or_hugepte(pgdir, ea, is_thp, shift);
 }
+
+unsigned long vmalloc_to_phys(void *vmalloc_addr);
+
 #endif /* __ASSEMBLY__ */
 
 #endif /* _ASM_POWERPC_PGTABLE_H */

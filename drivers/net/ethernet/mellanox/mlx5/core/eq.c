@@ -202,7 +202,7 @@ static int mlx5_eq_int(struct mlx5_core_dev *dev, struct mlx5_eq *eq)
 	struct mlx5_eqe *eqe;
 	int eqes_found = 0;
 	int set_ci = 0;
-	u32 cqn;
+	u32 cqn = -1;
 	u32 rsn;
 	u8 port;
 
@@ -320,6 +320,9 @@ static int mlx5_eq_int(struct mlx5_core_dev *dev, struct mlx5_eq *eq)
 
 	eq_update_ci(eq, 1);
 
+	if (cqn != -1)
+		tasklet_schedule(&eq->tasklet_ctx.task);
+
 	return eqes_found;
 }
 
@@ -403,6 +406,12 @@ int mlx5_create_map_eq(struct mlx5_core_dev *dev, struct mlx5_eq *eq, u8 vecidx,
 	if (err)
 		goto err_irq;
 
+	INIT_LIST_HEAD(&eq->tasklet_ctx.list);
+	INIT_LIST_HEAD(&eq->tasklet_ctx.process_list);
+	spin_lock_init(&eq->tasklet_ctx.lock);
+	tasklet_init(&eq->tasklet_ctx.task, mlx5_cq_tasklet_cb,
+		     (unsigned long)&eq->tasklet_ctx);
+
 	/* EQs are created in ARMED state
 	 */
 	eq_update_ci(eq, 1);
@@ -436,11 +445,17 @@ int mlx5_destroy_unmap_eq(struct mlx5_core_dev *dev, struct mlx5_eq *eq)
 		mlx5_core_warn(dev, "failed to destroy a previously created eq: eqn %d\n",
 			       eq->eqn);
 	synchronize_irq(eq->irqn);
+	tasklet_disable(&eq->tasklet_ctx.task);
 	mlx5_buf_free(dev, &eq->buf);
 
 	return err;
 }
 EXPORT_SYMBOL_GPL(mlx5_destroy_unmap_eq);
+
+u32 mlx5_get_msix_vec(struct mlx5_core_dev *dev, int vecidx)
+{
+	return dev->priv.msix_arr[MLX5_EQ_VEC_ASYNC].vector;
+}
 
 int mlx5_eq_init(struct mlx5_core_dev *dev)
 {

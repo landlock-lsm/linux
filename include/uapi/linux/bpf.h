@@ -81,6 +81,30 @@ enum bpf_map_type {
 	BPF_MAP_TYPE_ARRAY,
 	BPF_MAP_TYPE_PROG_ARRAY,
 	BPF_MAP_TYPE_PERF_EVENT_ARRAY,
+	BPF_MAP_TYPE_PERCPU_HASH,
+	BPF_MAP_TYPE_PERCPU_ARRAY,
+	BPF_MAP_TYPE_STACK_TRACE,
+	BPF_MAP_TYPE_LANDLOCK_ARRAY,
+};
+
+enum bpf_map_array_type {
+	BPF_MAP_ARRAY_TYPE_UNSPEC,
+	BPF_MAP_ARRAY_TYPE_LANDLOCK_FS,
+	BPF_MAP_ARRAY_TYPE_LANDLOCK_CGROUP,
+};
+
+enum bpf_map_handle_type {
+	BPF_MAP_HANDLE_TYPE_UNSPEC,
+	BPF_MAP_HANDLE_TYPE_LANDLOCK_FS_FD,
+	BPF_MAP_HANDLE_TYPE_LANDLOCK_FS_GLOB,
+	BPF_MAP_HANDLE_TYPE_LANDLOCK_CGROUP_FD,
+};
+
+enum bpf_map_array_op {
+	BPF_MAP_ARRAY_OP_UNSPEC,
+	BPF_MAP_ARRAY_OP_OR,
+	BPF_MAP_ARRAY_OP_AND,
+	BPF_MAP_ARRAY_OP_XOR,
 };
 
 enum bpf_prog_type {
@@ -89,6 +113,10 @@ enum bpf_prog_type {
 	BPF_PROG_TYPE_KPROBE,
 	BPF_PROG_TYPE_SCHED_CLS,
 	BPF_PROG_TYPE_SCHED_ACT,
+	BPF_PROG_TYPE_TRACEPOINT,
+	BPF_PROG_TYPE_LANDLOCK_FILE_OPEN,
+	BPF_PROG_TYPE_LANDLOCK_FILE_PERMISSION,
+	BPF_PROG_TYPE_LANDLOCK_MMAP_FILE,
 };
 
 #define BPF_PSEUDO_MAP_FD	1
@@ -98,12 +126,15 @@ enum bpf_prog_type {
 #define BPF_NOEXIST	1 /* create new element if it didn't exist */
 #define BPF_EXIST	2 /* update existing element */
 
+#define BPF_F_NO_PREALLOC	(1U << 0)
+
 union bpf_attr {
 	struct { /* anonymous struct used by BPF_MAP_CREATE command */
 		__u32	map_type;	/* one of enum bpf_map_type */
 		__u32	key_size;	/* size of key in bytes */
 		__u32	value_size;	/* size of value in bytes */
 		__u32	max_entries;	/* max number of entries in a map */
+		__u32	map_flags;	/* prealloc or not */
 	};
 
 	struct { /* anonymous struct used by BPF_MAP_*_ELEM commands */
@@ -270,6 +301,84 @@ enum bpf_func_id {
 	 */
 	BPF_FUNC_perf_event_output,
 	BPF_FUNC_skb_load_bytes,
+
+	/**
+	 * bpf_get_stackid(ctx, map, flags) - walk user or kernel stack and return id
+	 * @ctx: struct pt_regs*
+	 * @map: pointer to stack_trace map
+	 * @flags: bits 0-7 - numer of stack frames to skip
+	 *         bit 8 - collect user stack instead of kernel
+	 *         bit 9 - compare stacks by hash only
+	 *         bit 10 - if two different stacks hash into the same stackid
+	 *                  discard old
+	 *         other bits - reserved
+	 * Return: >= 0 stackid on success or negative error
+	 */
+	BPF_FUNC_get_stackid,
+
+	/**
+	 * bpf_csum_diff(from, from_size, to, to_size, seed) - calculate csum diff
+	 * @from: raw from buffer
+	 * @from_size: length of from buffer
+	 * @to: raw to buffer
+	 * @to_size: length of to buffer
+	 * @seed: optional seed
+	 * Return: csum result
+	 */
+	BPF_FUNC_csum_diff,
+
+	/**
+	 * bpf_skb_[gs]et_tunnel_opt(skb, opt, size)
+	 * retrieve or populate tunnel options metadata
+	 * @skb: pointer to skb
+	 * @opt: pointer to raw tunnel option data
+	 * @size: size of @opt
+	 * Return: 0 on success for set, option size for get
+	 */
+	BPF_FUNC_skb_get_tunnel_opt,
+	BPF_FUNC_skb_set_tunnel_opt,
+
+	/**
+	 * bpf_landlock_cmp_fs_prop_with_struct_file(prop, map, map_op, file)
+	 * Compare file system handles with a struct file
+	 *
+	 * @prop: properties to check against (e.g. LANDLOCK_FLAG_FS_DENTRY)
+	 * @map: handles to compare against
+	 * @map_op: which elements of the map to use (e.g. BPF_MAP_ARRAY_OP_OR)
+	 * @file: struct file address to compare with (taken from the context)
+	 *
+	 * Return: 0 if the file match the handles, 1 otherwise, or a negative
+	 * value if an error occurred.
+	 */
+	BPF_FUNC_landlock_cmp_fs_prop_with_struct_file,
+
+	/**
+	 * bpf_landlock_cmp_fs_beneath_with_struct_file(opt, map, map_op, file)
+	 * Check if a struct file is a leaf of file system handles
+	 *
+	 * @opt: check options (e.g. LANDLOCK_FLAG_OPT_REVERSE)
+	 * @map: handles to compare against
+	 * @map_op: which elements of the map to use (e.g. BPF_MAP_ARRAY_OP_OR)
+	 * @file: struct file address to compare with (taken from the context)
+	 *
+	 * Return: 0 if the file is the same or beneath the handles,
+	 * 1 otherwise, or a negative value if an error occurred.
+	 */
+	BPF_FUNC_landlock_cmp_fs_beneath_with_struct_file,
+
+	/**
+	 * bpf_landlock_cmp_cgroup_beneath(opt, map, map_op)
+	 * Check if the current process is a leaf of cgroup handles
+	 *
+	 * @opt: check options (e.g. LANDLOCK_FLAG_OPT_REVERSE)
+	 * @map: handles to compare against
+	 * @map_op: which elements of the map to use (e.g. BPF_MAP_ARRAY_OP_OR)
+	 *
+	 * Return: 0 if the current cgroup is the sam or beneath the handle,
+	 * 1 otherwise, or a negative value if an error occurred.
+	 */
+	BPF_FUNC_landlock_cmp_cgroup_beneath,
+
 	__BPF_FUNC_MAX_ID,
 };
 
@@ -277,6 +386,7 @@ enum bpf_func_id {
 
 /* BPF_FUNC_skb_store_bytes flags. */
 #define BPF_F_RECOMPUTE_CSUM		(1ULL << 0)
+#define BPF_F_INVALIDATE_HASH		(1ULL << 1)
 
 /* BPF_FUNC_l3_csum_replace and BPF_FUNC_l4_csum_replace flags.
  * First 4 bits are for passing the header field size.
@@ -285,6 +395,7 @@ enum bpf_func_id {
 
 /* BPF_FUNC_l4_csum_replace flags. */
 #define BPF_F_PSEUDO_HDR		(1ULL << 4)
+#define BPF_F_MARK_MANGLED_0		(1ULL << 5)
 
 /* BPF_FUNC_clone_redirect and BPF_FUNC_redirect flags. */
 #define BPF_F_INGRESS			(1ULL << 0)
@@ -292,8 +403,19 @@ enum bpf_func_id {
 /* BPF_FUNC_skb_set_tunnel_key and BPF_FUNC_skb_get_tunnel_key flags. */
 #define BPF_F_TUNINFO_IPV6		(1ULL << 0)
 
+/* BPF_FUNC_get_stackid flags. */
+#define BPF_F_SKIP_FIELD_MASK		0xffULL
+#define BPF_F_USER_STACK		(1ULL << 8)
+#define BPF_F_FAST_STACK_CMP		(1ULL << 9)
+#define BPF_F_REUSE_STACKID		(1ULL << 10)
+
 /* BPF_FUNC_skb_set_tunnel_key flags. */
 #define BPF_F_ZERO_CSUM_TX		(1ULL << 1)
+#define BPF_F_DONT_FRAGMENT		(1ULL << 2)
+
+/* BPF_FUNC_perf_event_output flags. */
+#define BPF_F_INDEX_MASK		0xffffffffULL
+#define BPF_F_CURRENT_CPU		BPF_F_INDEX_MASK
 
 /* user accessible mirror of in-kernel sk_buff.
  * new fields can only be added to the end of this structure
@@ -314,6 +436,8 @@ struct __sk_buff {
 	__u32 cb[5];
 	__u32 hash;
 	__u32 tc_classid;
+	__u32 data;
+	__u32 data_end;
 };
 
 struct bpf_tunnel_key {
@@ -324,6 +448,45 @@ struct bpf_tunnel_key {
 	};
 	__u8 tunnel_tos;
 	__u8 tunnel_ttl;
+	__u16 tunnel_ext;
+	__u32 tunnel_label;
+};
+
+/* Handle check flags */
+#define LANDLOCK_FLAG_FS_DENTRY	(1 << 0)
+#define LANDLOCK_FLAG_FS_INODE	(1 << 1)
+#define LANDLOCK_FLAG_FS_DEVICE	(1 << 2)
+#define LANDLOCK_FLAG_FS_MOUNT	(1 << 3)
+#define _LANDLOCK_FLAG_FS_MASK	((1 << 4) - 1)
+
+/* Handle option flags */
+#define LANDLOCK_FLAG_OPT_REVERSE	(1<<0)
+#define _LANDLOCK_FLAG_OPT_MASK	((1 << 1) - 1)
+
+/* Map handle entry */
+struct landlock_handle {
+	__u32 type; /* enum bpf_map_handle_type */
+	union {
+		__u32 fd;
+		__aligned_u64 glob;
+	};
+} __attribute__((aligned(8)));
+
+/**
+ * struct landlock_data
+ *
+ * @hook: LSM hook ID (e.g. BPF_PROG_TYPE_LANDLOCK_FILE_OPEN)
+ * @cookie: value set by a seccomp-filter return value RET_LANDLOCK. This come
+ *          from a trusted seccomp-bpf program: the same process that loaded
+ *          this Landlock hook program.
+ * @args: LSM hook arguments, see include/linux/lsm_hooks.h for there
+ *        description and the LANDLOCK_HOOK* definitions from
+ *        security/landlock/lsm.c for their types.
+ */
+struct landlock_data {
+	__u32 hook;
+	__u16 cookie;
+	__u64 args[6];
 };
 
 #endif /* _UAPI__LINUX_BPF_H__ */

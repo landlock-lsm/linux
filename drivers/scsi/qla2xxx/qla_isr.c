@@ -934,10 +934,6 @@ skip_rio:
 			break;
 
 global_port_update:
-			/* Port unavailable. */
-			ql_log(ql_log_warn, vha, 0x505e,
-			    "Link is offline.\n");
-
 			if (atomic_read(&vha->loop_state) != LOOP_DOWN) {
 				atomic_set(&vha->loop_state, LOOP_DOWN);
 				atomic_set(&vha->loop_down_timer,
@@ -2552,7 +2548,7 @@ void qla24xx_process_response_queue(struct scsi_qla_host *vha,
 	if (!vha->flags.online)
 		return;
 
-	if (rsp->msix->cpuid != smp_processor_id()) {
+	if (rsp->msix && rsp->msix->cpuid != smp_processor_id()) {
 		/* if kernel does not notify qla of IRQ's CPU change,
 		 * then set it here.
 		 */

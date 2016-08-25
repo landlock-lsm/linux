@@ -60,7 +60,9 @@ struct branch {
 	u64 misc;
 };
 
-static size_t intel_bts_info_priv_size(struct auxtrace_record *itr __maybe_unused)
+static size_t
+intel_bts_info_priv_size(struct auxtrace_record *itr __maybe_unused,
+			 struct perf_evlist *evlist __maybe_unused)
 {
 	return INTEL_BTS_AUXTRACE_PRIV_SIZE;
 }
@@ -435,6 +437,11 @@ struct auxtrace_record *intel_bts_recording_init(int *err)
 
 	if (!intel_bts_pmu)
 		return NULL;
+
+	if (setenv("JITDUMP_USE_ARCH_TIMESTAMP", "1", 1)) {
+		*err = -errno;
+		return NULL;
+	}
 
 	btsr = zalloc(sizeof(struct intel_bts_recording));
 	if (!btsr) {

@@ -27,6 +27,8 @@
 #include "debug.h"
 #include "firmware.h"
 #include "usb.h"
+#include "core.h"
+#include "common.h"
 
 
 #define IOCTL_RESP_TIMEOUT		msecs_to_jiffies(2000)
@@ -171,6 +173,7 @@ struct brcmf_usbdev_info {
 	struct urb *bulk_urb; /* used for FW download */
 
 	bool wowl_enabled;
+	struct brcmf_mp_device *settings;
 };
 
 static void brcmf_usb_rx_refill(struct brcmf_usbdev_info *devinfo,
@@ -511,7 +514,7 @@ static void brcmf_usb_rx_complete(struct urb *urb)
 
 	if (devinfo->bus_pub.state == BRCMFMAC_USB_STATE_UP) {
 		skb_put(skb, urb->actual_length);
-		brcmf_rx_frame(devinfo->dev, skb);
+		brcmf_rx_frame(devinfo->dev, skb, true);
 		brcmf_usb_rx_refill(devinfo, req);
 	} else {
 		brcmu_pkt_buf_free_skb(skb);
@@ -1027,6 +1030,9 @@ static void brcmf_usb_detach(struct brcmf_usbdev_info *devinfo)
 
 	kfree(devinfo->tx_reqs);
 	kfree(devinfo->rx_reqs);
+
+	if (devinfo->settings)
+		brcmf_release_module_param(devinfo->settings);
 }
 
 
@@ -1136,7 +1142,7 @@ static int brcmf_usb_bus_setup(struct brcmf_usbdev_info *devinfo)
 	int ret;
 
 	/* Attach to the common driver interface */
-	ret = brcmf_attach(devinfo->dev);
+	ret = brcmf_attach(devinfo->dev, devinfo->settings);
 	if (ret) {
 		brcmf_err("brcmf_attach failed\n");
 		return ret;
@@ -1222,6 +1228,14 @@ static int brcmf_usb_probe_cb(struct brcmf_usbdev_info *devinfo)
 #ifdef CONFIG_PM
 	bus->wowl_supported = true;
 #endif
+
+	devinfo->settings = brcmf_get_module_param(bus->dev, BRCMF_BUSTYPE_USB,
+						   bus_pub->devid,
+						   bus_pub->chiprev);
+	if (!devinfo->settings) {
+		ret = -ENOMEM;
+		goto fail;
+	}
 
 	if (!brcmf_usb_dlneeded(devinfo)) {
 		ret = brcmf_usb_bus_setup(devinfo);
@@ -1354,7 +1368,9 @@ brcmf_usb_probe(struct usb_interface *intf, const struct usb_device_id *id)
 
 	devinfo->ifnum = desc->bInterfaceNumber;
 
-	if (usb->speed == USB_SPEED_SUPER)
+	if (usb->speed == USB_SPEED_SUPER_PLUS)
+		brcmf_dbg(USB, "Broadcom super speed plus USB WLAN interface detected\n");
+	else if (usb->speed == USB_SPEED_SUPER)
 		brcmf_dbg(USB, "Broadcom super speed USB WLAN interface detected\n");
 	else if (usb->speed == USB_SPEED_HIGH)
 		brcmf_dbg(USB, "Broadcom high speed USB WLAN interface detected\n");

@@ -341,6 +341,25 @@ Specify vmlinux path which has debuginfo.
 --buildid-all::
 Record build-id of all DSOs regardless whether it's actually hit or not.
 
+--all-kernel::
+Configure all used events to run in kernel space.
+
+--all-user::
+Configure all used events to run in user space.
+
+--timestamp-filename
+Append timestamp to output file name.
+
+--switch-output::
+Generate multiple perf.data files, timestamp prefixed, switching to a new one
+when receiving a SIGUSR2.
+
+A possible use case is to, given an external event, slice the perf.data file
+that gets then processed, possibly via a perf script, to decide if that
+particular perf.data snapshot should be kept or not.
+
+Implies --timestamp-filename, --no-buildid and --no-buildid-cache.
+
 SEE ALSO
 --------
 linkperf:perf-stat[1], linkperf:perf-list[1]

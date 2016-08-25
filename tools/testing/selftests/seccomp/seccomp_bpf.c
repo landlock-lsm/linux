@@ -5,17 +5,16 @@
  * Test code for seccomp bpf.
  */
 
+#include <sys/types.h>
 #include <asm/siginfo.h>
 #define __have_siginfo_t 1
 #define __have_sigval_t 1
 #define __have_sigevent_t 1
 
-#define _GNU_SOURCE
 #include <errno.h>
 #include <linux/filter.h>
 #include <sys/prctl.h>
 #include <sys/ptrace.h>
-#include <sys/types.h>
 #include <sys/user.h>
 #include <linux/prctl.h>
 #include <linux/ptrace.h>
@@ -33,6 +32,8 @@
 #include <sys/fcntl.h>
 #include <sys/mman.h>
 #include <sys/times.h>
+
+#define _GNU_SOURCE
 #include <unistd.h>
 #include <sys/syscall.h>
 
@@ -83,21 +84,13 @@ struct seccomp_data {
 	__u32 arch;
 	__u64 instruction_pointer;
 	__u64 args[6];
-	__u32 is_valid_syscall; /* SECCOMP_DATA_VALIDSYS_PRESENT */
-	__u32 checker_group; /* SECCOMP_DATA_ARGEVAL_PRESENT */
-	__u64 arg_matches[6]; /* SECCOMP_DATA_ARGEVAL_PRESENT */
 };
-
-#define SECCOMP_DATA_ARGEVAL_PRESENT
 #endif
 
 #if __BYTE_ORDER == __LITTLE_ENDIAN
 #define syscall_arg(_n) (offsetof(struct seccomp_data, args[_n]))
-#define match_arg(_n) (offsetof(struct seccomp_data, arg_matches[_n]))
 #elif __BYTE_ORDER == __BIG_ENDIAN
 #define syscall_arg(_n) (offsetof(struct seccomp_data, args[_n]) + sizeof(__u32))
-#define match_arg(_n) \
-	(offsetof(struct seccomp_data, arg_matches[_n]) + sizeof(__u32))
 #else
 #error "wut? Unknown __BYTE_ORDER?!"
 #endif
@@ -370,6 +363,28 @@ TEST_SIGNAL(unknown_ret_is_kill_inside, SIGSYS)
 	}
 }
 
+/* return code >= 0x80000000 is unused. */
+TEST_SIGNAL(unknown_ret_is_kill_above_allow, SIGSYS)
+{
+	struct sock_filter filter[] = {
+		BPF_STMT(BPF_RET|BPF_K, 0x90000000U),
+	};
+	struct sock_fprog prog = {
+		.len = (unsigned short)ARRAY_SIZE(filter),
+		.filter = filter,
+	};
+	long ret;
+
+	ret = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	ASSERT_EQ(0, ret);
+
+	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog);
+	ASSERT_EQ(0, ret);
+	EXPECT_EQ(0, syscall(__NR_getpid)) {
+		TH_LOG("getpid() shouldn't ever return");
+	}
+}
+
 TEST_SIGNAL(KILL_all, SIGSYS)
 {
 	struct sock_filter filter[] = {
@@ -509,11 +524,7 @@ TEST_SIGNAL(KILL_one_arg_six, SIGSYS)
 TEST(arg_out_of_range)
 {
 	struct sock_filter filter[] = {
-#ifdef SECCOMP_DATA_ARGEVAL_PRESENT
-		BPF_STMT(BPF_LD|BPF_W|BPF_ABS, match_arg(6)),
-#else
 		BPF_STMT(BPF_LD|BPF_W|BPF_ABS, syscall_arg(6)),
-#endif
 		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
 	};
 	struct sock_fprog prog = {
@@ -1112,16 +1123,14 @@ void teardown_trace_fixture(struct __test_metadata *_metadata,
 
 /* "poke" tracer arguments and function. */
 struct tracer_args_poke_t {
-	unsigned long *poke_addr;
-	unsigned long *poke_data;
-	unsigned long poke_len;
+	unsigned long poke_addr;
 };
 
 void tracer_poke(struct __test_metadata *_metadata, pid_t tracee, int status,
 		 void *args)
 {
 	int ret;
-	unsigned long msg, i;
+	unsigned long msg;
 	struct tracer_args_poke_t *info = (struct tracer_args_poke_t *)args;
 
 	ret = ptrace(PTRACE_GETEVENTMSG, tracee, NULL, &msg);
@@ -1135,25 +1144,18 @@ void tracer_poke(struct __test_metadata *_metadata, pid_t tracee, int status,
 	 * Registers are not touched to try to keep this relatively arch
 	 * agnostic.
 	 */
-	for (i = 0; i < info->poke_len; i++) {
-		unsigned long addr = (unsigned long)info->poke_addr +
-			i * sizeof(long);
-
-		ret = ptrace(PTRACE_POKEDATA, tracee,
-				addr, *(info->poke_data + i));
-		EXPECT_EQ(0, ret);
-	}
+	ret = ptrace(PTRACE_POKEDATA, tracee, info->poke_addr, 0x1001);
+	EXPECT_EQ(0, ret);
 }
 
-FIXTURE_DATA(TRACE_poke_sys_read) {
+FIXTURE_DATA(TRACE_poke) {
 	struct sock_fprog prog;
 	pid_t tracer;
 	long poked;
 	struct tracer_args_poke_t tracer_args;
-	unsigned long flag;
 };
 
-FIXTURE_SETUP(TRACE_poke_sys_read)
+FIXTURE_SETUP(TRACE_poke)
 {
 	struct sock_filter filter[] = {
 		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
@@ -1171,24 +1173,21 @@ FIXTURE_SETUP(TRACE_poke_sys_read)
 	self->prog.len = (unsigned short)ARRAY_SIZE(filter);
 
 	/* Set up tracer args. */
-	self->tracer_args.poke_addr = &self->poked;
-	self->flag = 0x2001;
-	self->tracer_args.poke_data = &self->flag;
-	self->tracer_args.poke_len = 1;
+	self->tracer_args.poke_addr = (unsigned long)&self->poked;
 
 	/* Launch tracer. */
 	self->tracer = setup_trace_fixture(_metadata, tracer_poke,
 					   &self->tracer_args);
 }
 
-FIXTURE_TEARDOWN(TRACE_poke_sys_read)
+FIXTURE_TEARDOWN(TRACE_poke)
 {
 	teardown_trace_fixture(_metadata, self->tracer);
 	if (self->prog.filter)
 		free(self->prog.filter);
 }
 
-TEST_F(TRACE_poke_sys_read, read_has_side_effects)
+TEST_F(TRACE_poke, read_has_side_effects)
 {
 	ssize_t ret;
 
@@ -1201,10 +1200,10 @@ TEST_F(TRACE_poke_sys_read, read_has_side_effects)
 	EXPECT_EQ(0, self->poked);
 	ret = read(-1, NULL, 0);
 	EXPECT_EQ(-1, ret);
-	EXPECT_EQ(0x2001, self->poked);
+	EXPECT_EQ(0x1001, self->poked);
 }
 
-TEST_F(TRACE_poke_sys_read, getpid_runs_normally)
+TEST_F(TRACE_poke, getpid_runs_normally)
 {
 	long ret;
 
@@ -1235,6 +1234,10 @@ TEST_F(TRACE_poke_sys_read, getpid_runs_normally)
 # define ARCH_REGS	struct user_pt_regs
 # define SYSCALL_NUM	regs[8]
 # define SYSCALL_RET	regs[0]
+#elif defined(__hppa__)
+# define ARCH_REGS	struct user_regs_struct
+# define SYSCALL_NUM	gr[20]
+# define SYSCALL_RET	gr[28]
 #elif defined(__powerpc__)
 # define ARCH_REGS	struct pt_regs
 # define SYSCALL_NUM	gpr[0]
@@ -1243,6 +1246,12 @@ TEST_F(TRACE_poke_sys_read, getpid_runs_normally)
 # define ARCH_REGS     s390_regs
 # define SYSCALL_NUM   gprs[2]
 # define SYSCALL_RET   gprs[2]
+#elif defined(__mips__)
+# define ARCH_REGS	struct pt_regs
+# define SYSCALL_NUM	regs[2]
+# define SYSCALL_SYSCALL_NUM regs[4]
+# define SYSCALL_RET	regs[2]
+# define SYSCALL_NUM_RET_SHARE_REG
 #else
 # error "Do not know how to find your architecture's registers and syscalls"
 #endif
@@ -1250,7 +1259,7 @@ TEST_F(TRACE_poke_sys_read, getpid_runs_normally)
 /* Use PTRACE_GETREGS and PTRACE_SETREGS when available. This is useful for
  * architectures without HAVE_ARCH_TRACEHOOK (e.g. User-mode Linux).
  */
-#if defined(__x86_64__) || defined(__i386__)
+#if defined(__x86_64__) || defined(__i386__) || defined(__mips__)
 #define HAVE_GETREGS
 #endif
 
@@ -1274,6 +1283,10 @@ int get_syscall(struct __test_metadata *_metadata, pid_t tracee)
 	}
 #endif
 
+#if defined(__mips__)
+	if (regs.SYSCALL_NUM == __NR_O32_Linux)
+		return regs.SYSCALL_SYSCALL_NUM;
+#endif
 	return regs.SYSCALL_NUM;
 }
 
@@ -1294,9 +1307,16 @@ void change_syscall(struct __test_metadata *_metadata,
 	EXPECT_EQ(0, ret);
 
 #if defined(__x86_64__) || defined(__i386__) || defined(__powerpc__) || \
-    defined(__s390__)
+    defined(__s390__) || defined(__hppa__)
 	{
 		regs.SYSCALL_NUM = syscall;
+	}
+#elif defined(__mips__)
+	{
+		if (regs.SYSCALL_NUM == __NR_O32_Linux)
+			regs.SYSCALL_SYSCALL_NUM = syscall;
+		else
+			regs.SYSCALL_NUM = syscall;
 	}
 
 #elif defined(__arm__)
@@ -1328,7 +1348,11 @@ void change_syscall(struct __test_metadata *_metadata,
 
 	/* If syscall is skipped, change return value. */
 	if (syscall == -1)
+#ifdef SYSCALL_NUM_RET_SHARE_REG
+		TH_LOG("Can't modify syscall return on this architecture");
+#else
 		regs.SYSCALL_RET = 1;
+#endif
 
 #ifdef HAVE_GETREGS
 	ret = ptrace(PTRACE_SETREGS, tracee, 0, &regs);
@@ -1466,8 +1490,13 @@ TEST_F(TRACE_syscall, syscall_dropped)
 	ret = prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &self->prog, 0, 0);
 	ASSERT_EQ(0, ret);
 
+#ifdef SYSCALL_NUM_RET_SHARE_REG
+	/* gettid has been skipped */
+	EXPECT_EQ(-1, syscall(__NR_gettid));
+#else
 	/* gettid has been skipped and an altered return value stored. */
 	EXPECT_EQ(1, syscall(__NR_gettid));
+#endif
 	EXPECT_NE(self->mytid, syscall(__NR_gettid));
 }
 
@@ -1480,6 +1509,8 @@ TEST_F(TRACE_syscall, syscall_dropped)
 #  define __NR_seccomp 383
 # elif defined(__aarch64__)
 #  define __NR_seccomp 277
+# elif defined(__hppa__)
+#  define __NR_seccomp 338
 # elif defined(__powerpc__)
 #  define __NR_seccomp 358
 # elif defined(__s390__)
@@ -2218,485 +2249,6 @@ TEST(syscall_restart)
 	if (WIFSIGNALED(status) || WEXITSTATUS(status))
 		_metadata->passed = 0;
 }
-
-#ifdef SECCOMP_DATA_ARGEVAL_PRESENT
-TEST(field_is_valid_syscall)
-{
-	struct sock_filter filter[] = {
-		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
-				offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_getpid, 1, 0),
-		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
-		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
-				offsetof(struct seccomp_data, is_valid_syscall)),
-		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, 1, 1, 0),
-		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ERRNO | EINVAL),
-		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
-	};
-	struct sock_fprog prog = {
-		.len = (unsigned short)ARRAY_SIZE(filter),
-		.filter = filter,
-	};
-
-	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) {
-		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS!");
-	}
-	EXPECT_EQ(0, seccomp(SECCOMP_SET_MODE_FILTER, 0, &prog)) {
-		TH_LOG("Failed to install filter!");
-	}
-
-	EXPECT_EQ(-1, syscall(__NR_getpid));
-	EXPECT_EQ(EINVAL, errno);
-}
-
-#define PATH_DEV_NULL "/dev/null"
-#define PATH_DEV_ZERO "/dev/zero"
-
-/* The sandbox0 allow opening only @allowed_path */
-void apply_sandbox0(struct __test_metadata *_metadata, const char *allowed_path)
-{
-	struct sock_filter filter0[] = {
-		/* Only care about open(2) */
-		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
-				offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_open, 0, 1),
-		/* Check the objects of group 5 matching the first argument */
-		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ARGEVAL | 1 << 8 | 5),
-		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
-	};
-	struct sock_fprog prog0 = {
-		.len = (unsigned short)ARRAY_SIZE(filter0),
-		.filter = filter0,
-	};
-	struct sock_filter filter1[] = {
-		/* Does not need to check for arch nor syscall number because
-		 * of the @checker_group check
-		 */
-		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
-				offsetof(struct seccomp_data, checker_group)),
-		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, 5, 1, 0),
-		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
-		/* Kill if not a valid syscall (unknown open‽) */
-		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
-				offsetof(struct seccomp_data, is_valid_syscall)),
-		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, 1, 1, 0),
-		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_KILL),
-		/* Denied access if the first argument was not validated by the
-		 * checker.
-		 */
-		BPF_STMT(BPF_LD|BPF_W|BPF_ABS, match_arg(0)),
-		/* Match the first two checkers, if any */
-		BPF_JUMP(BPF_JMP|BPF_JSET|BPF_K, 3, 0, 1),
-		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
-		/* Use an impossible errno value to ensure it comes from our
-		 * filter (should be EACCES most of the time).
-		 */
-		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ERRNO | E2BIG),
-	};
-	struct sock_fprog prog1 = {
-		.len = (unsigned short)ARRAY_SIZE(filter1),
-		.filter = filter1,
-	};
-	struct seccomp_object_path path0 = SECCOMP_MAKE_PATH_DENTRY(allowed_path);
-	struct seccomp_checker checker0[] = {
-		SECCOMP_MAKE_OBJ_PATH(FS_LITERAL, &path0),
-	};
-	/* Group 5 */
-	struct seccomp_checker_group checker_group0 = {
-		.version = 1,
-		.id = 5,
-		.len = ARRAY_SIZE(checker0),
-		.checkers = &checker0,
-	};
-
-	/* Set up the test sandbox */
-	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) {
-		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS!");
-	}
-	/* Load the path checkers */
-	EXPECT_EQ(0, seccomp(SECCOMP_ADD_CHECKER_GROUP, 0, &checker_group0)) {
-		TH_LOG("Failed to add checker group!");
-	}
-	/* Load filters in reverse order */
-	EXPECT_EQ(0, seccomp(SECCOMP_SET_MODE_FILTER, 0, &prog1)) {
-		TH_LOG("Failed to install filter!");
-	}
-	EXPECT_EQ(0, seccomp(SECCOMP_SET_MODE_FILTER,
-				SECCOMP_FILTER_FLAG_TSYNC, &prog0)) {
-		TH_LOG("Failed to install filter!");
-	}
-}
-
-TEST(argeval_open_whitelist)
-{
-	int fd;
-
-	/* Validate the first test file */
-	fd = open(PATH_DEV_ZERO, O_RDONLY);
-	EXPECT_NE(-1, fd) {
-		TH_LOG("Failed to open " PATH_DEV_ZERO);
-	}
-	close(fd);
-
-	/* Validate the second test file */
-	fd = open(PATH_DEV_NULL, O_RDONLY);
-	EXPECT_NE(-1, fd) {
-		TH_LOG("Failed to open " PATH_DEV_NULL);
-	}
-	close(fd);
-
-	apply_sandbox0(_metadata, PATH_DEV_ZERO);
-
-	/* Allowed file */
-	fd = open(PATH_DEV_ZERO, O_RDONLY);
-	EXPECT_NE(-1, fd) {
-		TH_LOG("Failed to open " PATH_DEV_ZERO);
-	}
-	close(fd);
-
-	/* Denied file (by the filter) */
-	fd = open(PATH_DEV_NULL, O_RDONLY);
-	EXPECT_EQ(-1, fd) {
-		TH_LOG("Could open " PATH_DEV_NULL);
-	}
-	EXPECT_EQ(E2BIG, errno);
-	close(fd);
-}
-
-FIXTURE_DATA(TRACE_poke_arg_path) {
-	struct sock_fprog prog;
-	pid_t tracer;
-	struct tracer_args_poke_t tracer_args;
-	char *path_orig;
-	char *path_hijack;
-};
-
-FIXTURE_SETUP(TRACE_poke_arg_path)
-{
-	unsigned long orig_delta, orig_size, hijack_delta, hijack_size;
-	struct sock_filter filter[] = {
-		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
-			offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_open, 0, 1),
-		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_TRACE | 0x1001),
-		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
-	};
-
-	memset(&self->prog, 0, sizeof(self->prog));
-	self->prog.filter = malloc(sizeof(filter));
-	ASSERT_NE(NULL, self->prog.filter);
-	memcpy(self->prog.filter, filter, sizeof(filter));
-	self->prog.len = (unsigned short)ARRAY_SIZE(filter);
-
-	/* @path_orig must be writable */
-	orig_delta = sizeof(PATH_DEV_ZERO) % sizeof(long);
-	orig_size = sizeof(PATH_DEV_ZERO) - orig_delta +
-		(orig_delta ? sizeof(long) : 0);
-	self->path_orig = malloc(orig_size);
-	ASSERT_NE(NULL, self->path_orig);
-	memset(self->path_orig, 0, orig_size);
-	memcpy(self->path_orig, PATH_DEV_ZERO, sizeof(PATH_DEV_ZERO));
-	self->tracer_args.poke_addr = (unsigned long *)self->path_orig;
-
-	hijack_delta = sizeof(PATH_DEV_NULL) % sizeof(long);
-	hijack_size = sizeof(PATH_DEV_NULL) - hijack_delta +
-		(hijack_delta ? sizeof(long) : 0);
-	/* @path_hijack must be able to override @path_orig */
-	ASSERT_GE(orig_size, hijack_size);
-	self->path_hijack = malloc(hijack_size);
-	ASSERT_NE(NULL, self->path_hijack);
-	memset(self->path_hijack, 0, hijack_size);
-	memcpy(self->path_hijack, PATH_DEV_NULL, sizeof(PATH_DEV_NULL));
-	self->tracer_args.poke_data = (unsigned long *)self->path_hijack;
-	self->tracer_args.poke_len = hijack_size;
-
-	/* Launch tracer */
-	self->tracer = setup_trace_fixture(_metadata, tracer_poke,
-					   &self->tracer_args);
-}
-
-FIXTURE_TEARDOWN(TRACE_poke_arg_path)
-{
-	teardown_trace_fixture(_metadata, self->tracer);
-	if (self->prog.filter)
-		free(self->prog.filter);
-	if (self->path_orig)
-		free(self->path_orig);
-}
-
-/* Any tracer process can bypass a seccomp filter, so we can't protect against
- * this threat and should deny any ptrace call from a seccomped process to be
- * able to properly sandbox it.
- *
- * However, a seccomped process can fork and ask its child to change a shared
- * memory used to hold the syscall arguments. This can be used to trigger
- * TOCTOU race conditions between the filter evaluation and the effective
- * syscall operations. For test purpose, it is simpler to ask a dedicated
- * tracer process to do the same action after the filter evaluation to acheive
- * the same result. The kernel must detect and block this race condition.
- */
-TEST_F(TRACE_poke_arg_path, argeval_toctou_argument)
-{
-	int fd;
-	char buf;
-	ssize_t len;
-
-	/* Validate the first test file */
-	fd = open(self->path_orig, O_RDONLY);
-	EXPECT_NE(-1, fd) {
-		TH_LOG("Failed to open %s", self->path_orig);
-	}
-	len = read(fd, &buf, sizeof(buf));
-	EXPECT_EQ(1, len) {
-		TH_LOG("Failed to read from %s", self->path_orig);
-	}
-	EXPECT_EQ(0, buf) {
-		TH_LOG("Got unexpected value from %s", self->path_orig);
-	}
-	close(fd);
-
-	/* Validate the second test file */
-	fd = open(self->path_hijack, O_RDONLY);
-	EXPECT_NE(-1, fd) {
-		TH_LOG("Failed to open %s", self->path_hijack);
-	}
-	len = read(fd, &buf, sizeof(buf));
-	EXPECT_EQ(0, len) {
-		TH_LOG("Able to read from %s", self->path_orig);
-	}
-	close(fd);
-
-	apply_sandbox0(_metadata, PATH_DEV_ZERO);
-
-	/* Allowed file: /dev/zero */
-	fd = open(self->path_orig, O_RDONLY);
-	EXPECT_NE(-1, fd) {
-		TH_LOG("Failed to open %s", self->path_orig);
-	}
-	len = read(fd, &buf, sizeof(buf));
-	EXPECT_EQ(1, len) {
-		TH_LOG("Failed to read from %s", self->path_orig);
-	}
-	EXPECT_EQ(0, buf) {
-		TH_LOG("Got unexpected value from %s", self->path_orig);
-	}
-	close(fd);
-
-	/* Denied file: /dev/null */
-	fd = open(self->path_hijack, O_RDONLY);
-	EXPECT_EQ(-1, fd) {
-		TH_LOG("Could open %s", self->path_hijack);
-	}
-	close(fd);
-
-	/* Setup the hijack for every open: replace /dev/zero with /dev/null */
-	EXPECT_EQ(0, seccomp(SECCOMP_SET_MODE_FILTER,
-				SECCOMP_FILTER_FLAG_TSYNC, &self->prog)) {
-		TH_LOG("Failed to install filter!");
-	}
-
-	/* Should read /dev/zero even if it is hijacked with /dev/null after
-	 * the filter
-	 */
-	fd = open(self->path_orig, O_RDONLY);
-	EXPECT_NE(-1, fd) {
-		TH_LOG("Failed to open %s", self->path_orig);
-	}
-	len = read(fd, &buf, sizeof(buf));
-	EXPECT_EQ(1, len) {
-		TH_LOG("Failed to read from %s", self->path_orig);
-	}
-	EXPECT_EQ(0, buf) {
-		TH_LOG("Got unexpected value from %s", self->path_orig);
-	}
-	close(fd);
-
-	/* Now path_orig is definitely hijacked, so it must be denied */
-	fd = open(self->path_orig, O_RDONLY);
-	EXPECT_EQ(-1, fd) {
-		TH_LOG("Could open %s", self->path_orig);
-	}
-	EXPECT_EQ(E2BIG, errno);
-	close(fd);
-}
-
-char *new_file(struct __test_metadata *_metadata, const char *name, char buf)
-{
-	int ret, fd, path_len;
-	char *path;
-	const char tmpl[] = "/tmp/seccomp-test_%s.XXXXXX";
-
-	path_len = sizeof(tmpl) - 2 + strlen(name);
-	path = malloc(path_len);
-	ASSERT_NE(path, NULL);
-	ret = snprintf(path, path_len, tmpl, name);
-	ASSERT_EQ(ret, path_len - 1);
-	fd = mkostemp(path, O_CLOEXEC);
-	ASSERT_NE(fd, -1);
-	ret = write(fd, &buf, sizeof(buf));
-	ASSERT_EQ(ret, sizeof(buf));
-	close(fd);
-	return path;
-}
-
-struct tracer_args_files {
-	char *path_orig, *path_hijack, *path_swap;
-};
-
-/* Move a file after the filter evaluation but before the effective syscall. */
-void tracer_swap_file(struct __test_metadata *_metadata, pid_t tracee,
-		int status, void *args)
-{
-	int ret;
-	unsigned long msg;
-	struct tracer_args_files *info = (struct tracer_args_files *)args;
-
-	ret = ptrace(PTRACE_GETEVENTMSG, tracee, NULL, &msg);
-	EXPECT_EQ(0, ret);
-	/* If this fails, don't try to recover. */
-	ASSERT_EQ(0x1002, msg) {
-		kill(tracee, SIGKILL);
-	}
-	/* Let's start the bonneteau! */
-	ret = rename(info->path_orig, info->path_swap);
-	EXPECT_EQ(0, ret);
-	ret = rename(info->path_hijack, info->path_orig);
-	EXPECT_EQ(0, ret);
-	ret = rename(info->path_swap, info->path_hijack);
-	EXPECT_EQ(0, ret);
-}
-
-FIXTURE_DATA(TRACE_swap_file) {
-	struct sock_fprog prog;
-	pid_t tracer;
-	struct tracer_args_files tracer_args;
-	char *path_orig, *path_hijack, *path_swap;
-};
-
-FIXTURE_SETUP(TRACE_swap_file)
-{
-	int fd;
-	unsigned long orig_delta, orig_size, hijack_delta, hijack_size;
-	struct sock_filter filter[] = {
-		BPF_STMT(BPF_LD|BPF_W|BPF_ABS,
-			offsetof(struct seccomp_data, nr)),
-		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, __NR_open, 0, 1),
-		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_TRACE | 0x1002),
-		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_ALLOW),
-	};
-
-	memset(&self->prog, 0, sizeof(self->prog));
-	self->prog.filter = malloc(sizeof(filter));
-	ASSERT_NE(NULL, self->prog.filter);
-	memcpy(self->prog.filter, filter, sizeof(filter));
-	self->prog.len = (unsigned short)ARRAY_SIZE(filter);
-
-	/* Create all the files */
-	self->path_orig = new_file(_metadata, "orig", 'O');
-	self->tracer_args.path_orig = self->path_orig;
-	self->path_hijack = new_file(_metadata, "hijack", 'H');
-	self->tracer_args.path_hijack = self->path_hijack;
-	self->path_swap = new_file(_metadata, "swap", 'S');
-	self->tracer_args.path_swap = self->path_swap;
-
-	/* Remove the temporary swap file */
-	unlink(self->path_swap);
-
-	/* Launch tracer */
-	self->tracer = setup_trace_fixture(_metadata, tracer_swap_file,
-					   &self->tracer_args);
-}
-
-FIXTURE_TEARDOWN(TRACE_swap_file)
-{
-	teardown_trace_fixture(_metadata, self->tracer);
-	if (self->prog.filter)
-		free(self->prog.filter);
-	if (self->path_orig) {
-		unlink(self->path_orig);
-		free(self->path_orig);
-	}
-	if (self->path_hijack) {
-		unlink(self->path_hijack);
-		free(self->path_hijack);
-	}
-	if (self->path_swap) {
-		unlink(self->path_swap);
-		free(self->path_swap);
-	}
-}
-
-TEST_F(TRACE_swap_file, argeval_toctou_filesystem)
-{
-	int fd;
-	char buf;
-	ssize_t len;
-
-	/* Validate the first test file */
-	fd = open(self->path_orig, O_RDONLY);
-	EXPECT_NE(-1, fd) {
-		TH_LOG("Failed to open %s", self->path_orig);
-	}
-	len = read(fd, &buf, sizeof(buf));
-	EXPECT_EQ(1, len) {
-		TH_LOG("Failed to read from %s", self->path_orig);
-	}
-	EXPECT_EQ('O', buf) {
-		TH_LOG("Got unexpected value from %s", self->path_orig);
-	}
-	close(fd);
-
-	/* Validate the second test file */
-	fd = open(self->path_hijack, O_RDONLY);
-	EXPECT_NE(-1, fd) {
-		TH_LOG("Failed to open %s", self->path_hijack);
-	}
-	len = read(fd, &buf, sizeof(buf));
-	EXPECT_EQ(1, len) {
-		TH_LOG("Failed to read from %s", self->path_hijack);
-	}
-	EXPECT_EQ('H', buf) {
-		TH_LOG("Got unexpected value from %s", self->path_hijack);
-	}
-	close(fd);
-
-	apply_sandbox0(_metadata, self->path_orig);
-
-	/* Setup the hijack for every open */
-	EXPECT_EQ(0, seccomp(SECCOMP_SET_MODE_FILTER,
-				SECCOMP_FILTER_FLAG_TSYNC, &self->prog)) {
-		TH_LOG("Failed to install filter!");
-	}
-
-	/* Hijacked file */
-	fd = open(self->path_orig, O_RDONLY);
-	EXPECT_EQ(-1, fd) {
-		TH_LOG("Could open %s", self->path_hijack);
-	}
-	EXPECT_EQ(EPERM, errno);
-	close(fd);
-
-	/* Denied file */
-	fd = open(self->path_orig, O_RDONLY);
-	EXPECT_EQ(-1, fd) {
-		TH_LOG("Could open %s", self->path_hijack);
-	}
-	EXPECT_EQ(E2BIG, errno);
-	close(fd);
-}
-
-/*
- * TODO: tests to add
- * - symlink following
- * - dentry/inode/device/mount checkers
- * - PATH_BENEATH
- * - object creation with nonexistent file
- * - validate that ptrace's SETREGS is still working on a process using seccomp-objects
- * - TOCTOU with a hard link (should pass)
- * - limits
- */
-
-#endif /* SECCOMP_DATA_ARGEVAL_PRESENT */
 
 /*
  * TODO:

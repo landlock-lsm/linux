@@ -24,10 +24,27 @@
 static struct lock_class_key irq_desc_lock_class;
 
 #if defined(CONFIG_SMP)
+static int __init irq_affinity_setup(char *str)
+{
+	zalloc_cpumask_var(&irq_default_affinity, GFP_NOWAIT);
+	cpulist_parse(str, irq_default_affinity);
+	/*
+	 * Set at least the boot cpu. We don't want to end up with
+	 * bugreports caused by random comandline masks
+	 */
+	cpumask_set_cpu(smp_processor_id(), irq_default_affinity);
+	return 1;
+}
+__setup("irqaffinity=", irq_affinity_setup);
+
 static void __init init_irq_default_affinity(void)
 {
-	alloc_cpumask_var(&irq_default_affinity, GFP_NOWAIT);
-	cpumask_setall(irq_default_affinity);
+#ifdef CONFIG_CPUMASK_OFFSTACK
+	if (!irq_default_affinity)
+		zalloc_cpumask_var(&irq_default_affinity, GFP_NOWAIT);
+#endif
+	if (cpumask_empty(irq_default_affinity))
+		cpumask_setall(irq_default_affinity);
 }
 #else
 static void __init init_irq_default_affinity(void)
@@ -578,7 +595,8 @@ void __irq_put_desc_unlock(struct irq_desc *desc, unsigned long flags, bool bus)
 		chip_bus_sync_unlock(desc);
 }
 
-int irq_set_percpu_devid(unsigned int irq)
+int irq_set_percpu_devid_partition(unsigned int irq,
+				   const struct cpumask *affinity)
 {
 	struct irq_desc *desc = irq_to_desc(irq);
 
@@ -593,7 +611,30 @@ int irq_set_percpu_devid(unsigned int irq)
 	if (!desc->percpu_enabled)
 		return -ENOMEM;
 
+	if (affinity)
+		desc->percpu_affinity = affinity;
+	else
+		desc->percpu_affinity = cpu_possible_mask;
+
 	irq_set_percpu_devid_flags(irq);
+	return 0;
+}
+
+int irq_set_percpu_devid(unsigned int irq)
+{
+	return irq_set_percpu_devid_partition(irq, NULL);
+}
+
+int irq_get_percpu_devid_partition(unsigned int irq, struct cpumask *affinity)
+{
+	struct irq_desc *desc = irq_to_desc(irq);
+
+	if (!desc || !desc->percpu_enabled)
+		return -EINVAL;
+
+	if (affinity)
+		cpumask_copy(affinity, desc->percpu_affinity);
+
 	return 0;
 }
 
