@@ -251,7 +251,7 @@ static int usbctrl_vendorreq(struct adapter *adapt, u8 request, u16 value, u16 i
 	}
 
 	/*  Acquire IO memory for vendorreq */
-	pIo_buf = dvobjpriv->usb_vendor_req_buf;
+	pIo_buf = kmalloc(MAX_USB_IO_CTL_SIZE, GFP_ATOMIC);
 
 	if (pIo_buf == NULL) {
 		DBG_88E("[%s] pIo_buf == NULL\n", __func__);
@@ -303,6 +303,8 @@ static int usbctrl_vendorreq(struct adapter *adapt, u8 request, u16 value, u16 i
 		if ((value >= FW_8188E_START_ADDRESS && value <= FW_8188E_END_ADDRESS) || status == len)
 			break;
 	}
+	kfree(pIo_buf);
+
 release_mutex:
 	mutex_unlock(&dvobjpriv->usb_vendor_req_mutex);
 exit:
@@ -525,7 +527,7 @@ u32 usb_read_port(struct adapter *adapter, u32 addr, u32 cnt, u8 *rmem)
 	return ret;
 }
 
-void usb_read_port_cancel(struct adapter *padapter)
+void rtw_hal_inirp_deinit(struct adapter *padapter)
 {
 	int i;
 	struct recv_buf *precvbuf;
@@ -846,7 +848,7 @@ void rtl8188eu_xmit_tasklet(void *priv)
 			break;
 		}
 
-		ret = rtl8188eu_xmitframe_complete(adapt, pxmitpriv, NULL);
+		ret = rtl8188eu_xmitframe_complete(adapt, pxmitpriv);
 
 		if (!ret)
 			break;

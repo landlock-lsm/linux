@@ -41,6 +41,7 @@
 #include <linux/debugfs.h>
 #include <linux/irq_work.h>
 #include <linux/export.h>
+#include <linux/jump_label.h>
 
 #include <asm/processor.h>
 #include <asm/traps.h>
@@ -425,7 +426,7 @@ static u64 mce_rdmsrl(u32 msr)
 	}
 
 	if (rdmsrl_safe(msr, &v)) {
-		WARN_ONCE(1, "mce: Unable to read msr %d!\n", msr);
+		WARN_ONCE(1, "mce: Unable to read MSR 0x%x!\n", msr);
 		/*
 		 * Return zero in case the access faulted. This should
 		 * not happen normally but can happen if the CPU does
@@ -1309,7 +1310,7 @@ static void __restart_timer(struct timer_list *t, unsigned long interval)
 
 	if (timer_pending(t)) {
 		if (time_before(when, t->expires))
-			mod_timer_pinned(t, when);
+			mod_timer(t, when);
 	} else {
 		t->expires = round_jiffies(when);
 		add_timer_on(t, smp_processor_id());
@@ -1633,17 +1634,6 @@ static int __mcheck_cpu_apply_quirks(struct cpuinfo_x86 *c)
 
 		if (c->x86 == 6 && c->x86_model == 45)
 			quirk_no_way_out = quirk_sandybridge_ifu;
-		/*
-		 * MCG_CAP.MCG_SER_P is necessary but not sufficient to know
-		 * whether this processor will actually generate recoverable
-		 * machine checks. Check to see if this is an E7 model Xeon.
-		 * We can't do a model number check because E5 and E7 use the
-		 * same model number. E5 doesn't support recovery, E7 does.
-		 */
-		if (mca_cfg.recovery || (mca_cfg.ser &&
-			!strncmp(c->x86_model_id,
-				 "Intel(R) Xeon(R) CPU E7-", 24)))
-			set_cpu_cap(c, X86_FEATURE_MCE_RECOVERY);
 	}
 	if (cfg->monarch_timeout < 0)
 		cfg->monarch_timeout = 0;
@@ -1735,7 +1725,7 @@ static void __mcheck_cpu_init_timer(void)
 	struct timer_list *t = this_cpu_ptr(&mce_timer);
 	unsigned int cpu = smp_processor_id();
 
-	setup_timer(t, mce_timer_fn, cpu);
+	setup_pinned_timer(t, mce_timer_fn, cpu);
 	mce_start_timer(cpu, t);
 }
 
@@ -2080,6 +2070,7 @@ void mce_disable_bank(int bank)
  * mce=bootlog Log MCEs from before booting. Disabled by default on AMD.
  * mce=nobootlog Don't log MCEs from before booting.
  * mce=bios_cmci_threshold Don't program the CMCI threshold
+ * mce=recovery force enable memcpy_mcsafe()
  */
 static int __init mcheck_enable(char *str)
 {
@@ -2676,8 +2667,14 @@ static int __init mcheck_debugfs_init(void)
 static int __init mcheck_debugfs_init(void) { return -EINVAL; }
 #endif
 
+DEFINE_STATIC_KEY_FALSE(mcsafe_key);
+EXPORT_SYMBOL_GPL(mcsafe_key);
+
 static int __init mcheck_late_init(void)
 {
+	if (mca_cfg.recovery)
+		static_branch_inc(&mcsafe_key);
+
 	mcheck_debugfs_init();
 
 	/*

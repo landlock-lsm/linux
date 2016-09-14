@@ -15,11 +15,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * version 2 along with this program; If not, see
- * http://www.sun.com/software/products/lustre/docs/GPLv2.pdf
- *
- * Please contact Sun Microsystems, Inc., 4150 Network Circle, Santa Clara,
- * CA 95054 USA or visit www.sun.com if you need additional information or
- * have any questions.
+ * http://www.gnu.org/licenses/gpl-2.0.html
  *
  * GPL HEADER END
  */
@@ -44,6 +40,7 @@
 #include "../include/lprocfs_status.h"
 #include <linux/list.h>
 #include "../include/cl_object.h"
+#include "../include/lustre/lustre_ioctl.h"
 #include "llog_internal.h"
 
 struct obd_device *obd_devs[MAX_OBD_DEVICES];
@@ -60,8 +57,6 @@ unsigned int obd_dump_on_eviction;
 EXPORT_SYMBOL(obd_dump_on_eviction);
 unsigned int obd_max_dirty_pages = 256;
 EXPORT_SYMBOL(obd_max_dirty_pages);
-atomic_t obd_unstable_pages;
-EXPORT_SYMBOL(obd_unstable_pages);
 atomic_t obd_dirty_pages;
 EXPORT_SYMBOL(obd_dirty_pages);
 unsigned int obd_timeout = OBD_TIMEOUT_DEFAULT;   /* seconds */
@@ -119,19 +114,6 @@ int lustre_get_jobid(char *jobid)
 	return -ENOENT;
 }
 EXPORT_SYMBOL(lustre_get_jobid);
-
-static inline void obd_data2conn(struct lustre_handle *conn,
-				 struct obd_ioctl_data *data)
-{
-	memset(conn, 0, sizeof(*conn));
-	conn->cookie = data->ioc_cookie;
-}
-
-static inline void obd_conn2data(struct obd_ioctl_data *data,
-				 struct lustre_handle *conn)
-{
-	data->ioc_cookie = conn->cookie;
-}
 
 static int class_resolve_dev_name(__u32 len, const char *name)
 {
@@ -288,13 +270,6 @@ int class_handle_ioctl(unsigned int cmd, unsigned long arg)
 					sizeof(*data));
 		if (err)
 			err = -EFAULT;
-		goto out;
-	}
-
-	case OBD_IOC_CLOSE_UUID: {
-		CDEBUG(D_IOCTL, "closing all connections to uuid %s (NOOP)\n",
-		       data->ioc_inlbuf1);
-		err = 0;
 		goto out;
 	}
 
@@ -546,23 +521,11 @@ static int __init obdclass_init(void)
 
 static void obdclass_exit(void)
 {
-	int i;
-
 	int lustre_unregister_fs(void);
 
 	lustre_unregister_fs();
 
 	misc_deregister(&obd_psdev);
-	for (i = 0; i < class_devno_max(); i++) {
-		struct obd_device *obd = class_num2obd(i);
-
-		if (obd && obd->obd_set_up &&
-		    OBT(obd) && OBP(obd, detach)) {
-			/* XXX should this call generic detach otherwise? */
-			LASSERT(obd->obd_magic == OBD_DEVICE_MAGIC);
-			OBP(obd, detach)(obd);
-		}
-	}
 	llog_info_fini();
 	cl_global_fini();
 	lu_global_fini();

@@ -342,6 +342,10 @@ PINCTRL
   devm_pinctrl_register()
   devm_pinctrl_unregister()
 
+POWER
+  devm_reboot_mode_register()
+  devm_reboot_mode_unregister()
+
 PWM
   devm_pwm_get()
   devm_pwm_put()
@@ -352,8 +356,15 @@ REGULATOR
   devm_regulator_put()
   devm_regulator_register()
 
+RESET
+  devm_reset_control_get()
+  devm_reset_controller_register()
+
 SLAVE DMA ENGINE
   devm_acpi_dma_controller_register()
 
 SPI
   devm_spi_register_master()
+
+WATCHDOG
+  devm_watchdog_register_device()

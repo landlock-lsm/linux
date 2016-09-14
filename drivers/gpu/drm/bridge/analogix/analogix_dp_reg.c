@@ -74,8 +74,12 @@ void analogix_dp_init_analog_param(struct analogix_dp_device *dp)
 	reg = SEL_24M | TX_DVDD_BIT_1_0625V;
 	writel(reg, dp->reg_base + ANALOGIX_DP_ANALOG_CTL_2);
 
-	if (dp->plat_data && (dp->plat_data->dev_type == RK3288_DP)) {
-		writel(REF_CLK_24M, dp->reg_base + ANALOGIX_DP_PLL_REG_1);
+	if (dp->plat_data && is_rockchip(dp->plat_data->dev_type)) {
+		reg = REF_CLK_24M;
+		if (dp->plat_data->dev_type == RK3288_DP)
+			reg ^= REF_CLK_MASK;
+
+		writel(reg, dp->reg_base + ANALOGIX_DP_PLL_REG_1);
 		writel(0x95, dp->reg_base + ANALOGIX_DP_PLL_REG_2);
 		writel(0x40, dp->reg_base + ANALOGIX_DP_PLL_REG_3);
 		writel(0x58, dp->reg_base + ANALOGIX_DP_PLL_REG_4);
@@ -244,7 +248,7 @@ void analogix_dp_set_analog_power_down(struct analogix_dp_device *dp,
 	u32 reg;
 	u32 phy_pd_addr = ANALOGIX_DP_PHY_PD;
 
-	if (dp->plat_data && (dp->plat_data->dev_type == RK3288_DP))
+	if (dp->plat_data && is_rockchip(dp->plat_data->dev_type))
 		phy_pd_addr = ANALOGIX_DP_PD;
 
 	switch (block) {
@@ -448,7 +452,7 @@ void analogix_dp_init_aux(struct analogix_dp_device *dp)
 	analogix_dp_reset_aux(dp);
 
 	/* Disable AUX transaction H/W retry */
-	if (dp->plat_data && (dp->plat_data->dev_type == RK3288_DP))
+	if (dp->plat_data && is_rockchip(dp->plat_data->dev_type))
 		reg = AUX_BIT_PERIOD_EXPECTED_DELAY(0) |
 		      AUX_HW_RETRY_COUNT_SEL(3) |
 		      AUX_HW_RETRY_INTERVAL_600_MICROSECONDS;
@@ -1317,4 +1321,55 @@ void analogix_dp_disable_scrambling(struct analogix_dp_device *dp)
 	reg = readl(dp->reg_base + ANALOGIX_DP_TRAINING_PTN_SET);
 	reg |= SCRAMBLING_DISABLE;
 	writel(reg, dp->reg_base + ANALOGIX_DP_TRAINING_PTN_SET);
+}
+
+void analogix_dp_enable_psr_crc(struct analogix_dp_device *dp)
+{
+	writel(PSR_VID_CRC_ENABLE, dp->reg_base + ANALOGIX_DP_CRC_CON);
+}
+
+void analogix_dp_send_psr_spd(struct analogix_dp_device *dp,
+			      struct edp_vsc_psr *vsc)
+{
+	unsigned int val;
+
+	/* don't send info frame */
+	val = readl(dp->reg_base + ANALOGIX_DP_PKT_SEND_CTL);
+	val &= ~IF_EN;
+	writel(val, dp->reg_base + ANALOGIX_DP_PKT_SEND_CTL);
+
+	/* configure single frame update mode */
+	writel(PSR_FRAME_UP_TYPE_BURST | PSR_CRC_SEL_HARDWARE,
+	       dp->reg_base + ANALOGIX_DP_PSR_FRAME_UPDATE_CTRL);
+
+	/* configure VSC HB0~HB3 */
+	writel(vsc->sdp_header.HB0, dp->reg_base + ANALOGIX_DP_SPD_HB0);
+	writel(vsc->sdp_header.HB1, dp->reg_base + ANALOGIX_DP_SPD_HB1);
+	writel(vsc->sdp_header.HB2, dp->reg_base + ANALOGIX_DP_SPD_HB2);
+	writel(vsc->sdp_header.HB3, dp->reg_base + ANALOGIX_DP_SPD_HB3);
+
+	/* configure reused VSC PB0~PB3, magic number from vendor */
+	writel(0x00, dp->reg_base + ANALOGIX_DP_SPD_PB0);
+	writel(0x16, dp->reg_base + ANALOGIX_DP_SPD_PB1);
+	writel(0xCE, dp->reg_base + ANALOGIX_DP_SPD_PB2);
+	writel(0x5D, dp->reg_base + ANALOGIX_DP_SPD_PB3);
+
+	/* configure DB0 / DB1 values */
+	writel(vsc->DB0, dp->reg_base + ANALOGIX_DP_VSC_SHADOW_DB0);
+	writel(vsc->DB1, dp->reg_base + ANALOGIX_DP_VSC_SHADOW_DB1);
+
+	/* set reuse spd inforframe */
+	val = readl(dp->reg_base + ANALOGIX_DP_VIDEO_CTL_3);
+	val |= REUSE_SPD_EN;
+	writel(val, dp->reg_base + ANALOGIX_DP_VIDEO_CTL_3);
+
+	/* mark info frame update */
+	val = readl(dp->reg_base + ANALOGIX_DP_PKT_SEND_CTL);
+	val = (val | IF_UP) & ~IF_EN;
+	writel(val, dp->reg_base + ANALOGIX_DP_PKT_SEND_CTL);
+
+	/* send info frame */
+	val = readl(dp->reg_base + ANALOGIX_DP_PKT_SEND_CTL);
+	val |= IF_EN;
+	writel(val, dp->reg_base + ANALOGIX_DP_PKT_SEND_CTL);
 }

@@ -139,12 +139,10 @@ void rtl8188e_InitHalDm(struct adapter *Adapter)
 	pdmpriv->DMFlag = DYNAMIC_FUNC_DISABLE;
 	Update_ODM_ComInfo_88E(Adapter);
 	ODM_DMInit(dm_odm);
-	Adapter->fix_rate = 0xFF;
 }
 
-void rtl8188e_HalDmWatchDog(struct adapter *Adapter)
+void rtw_hal_dm_watchdog(struct adapter *Adapter)
 {
-	bool fw_ps_awake = true;
 	u8 hw_init_completed = false;
 	struct hal_data_8188e *hal_data = GET_HAL_DATA(Adapter);
 	struct mlme_priv *pmlmepriv = NULL;
@@ -154,13 +152,6 @@ void rtl8188e_HalDmWatchDog(struct adapter *Adapter)
 
 	if (!hw_init_completed)
 		goto skip_dm;
-
-	rtw_hal_get_hwreg(Adapter, HW_VAR_FWLPS_RF_ON, (u8 *)(&fw_ps_awake));
-
-	/*  Fw is under p2p powersaving mode, driver should stop dynamic mechanism. */
-	/*  modifed by thomas. 2011.06.11. */
-	if (Adapter->wdinfo.p2p_ps_mode)
-		fw_ps_awake = false;
 
 	/* ODM */
 	pmlmepriv = &Adapter->mlmepriv;
@@ -183,7 +174,7 @@ skip_dm:
 	return;
 }
 
-void rtl8188e_init_dm_priv(struct adapter *Adapter)
+void rtw_hal_dm_init(struct adapter *Adapter)
 {
 	struct hal_data_8188e *hal_data = GET_HAL_DATA(Adapter);
 	struct dm_priv	*pdmpriv = &hal_data->dmpriv;
@@ -196,7 +187,7 @@ void rtl8188e_init_dm_priv(struct adapter *Adapter)
 
 /*  Add new function to reset the state of antenna diversity before link. */
 /*  Compare RSSI for deciding antenna */
-void AntDivCompare8188E(struct adapter *Adapter, struct wlan_bssid_ex *dst, struct wlan_bssid_ex *src)
+void rtw_hal_antdiv_rssi_compared(struct adapter *Adapter, struct wlan_bssid_ex *dst, struct wlan_bssid_ex *src)
 {
 	struct hal_data_8188e *hal_data = GET_HAL_DATA(Adapter);
 
@@ -210,7 +201,7 @@ void AntDivCompare8188E(struct adapter *Adapter, struct wlan_bssid_ex *dst, stru
 }
 
 /*  Add new function to reset the state of antenna diversity before link. */
-u8 AntDivBeforeLink8188E(struct adapter *Adapter)
+u8 rtw_hal_antdiv_before_linked(struct adapter *Adapter)
 {
 	struct hal_data_8188e *hal_data = GET_HAL_DATA(Adapter);
 	struct odm_dm_struct *dm_odm = &hal_data->odmpriv;

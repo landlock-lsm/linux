@@ -4,6 +4,7 @@
  * Copyright (C) 2013,2016 Advanced Micro Devices, Inc.
  *
  * Author: Tom Lendacky <thomas.lendacky@amd.com>
+ * Author: Gary R Hook <gary.hook@amd.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -58,7 +59,7 @@ static struct ccp_device *ccp_rr;
 
 /* Ever-increasing value to produce unique unit numbers */
 static atomic_t ccp_unit_ordinal;
-unsigned int ccp_increment_unit_ordinal(void)
+static unsigned int ccp_increment_unit_ordinal(void)
 {
 	return atomic_inc_return(&ccp_unit_ordinal);
 }
@@ -116,6 +117,29 @@ void ccp_del_device(struct ccp_device *ccp)
 	if (list_empty(&ccp_units))
 		ccp_rr = NULL;
 	write_unlock_irqrestore(&ccp_unit_lock, flags);
+}
+
+
+
+int ccp_register_rng(struct ccp_device *ccp)
+{
+	int ret = 0;
+
+	dev_dbg(ccp->dev, "Registering RNG...\n");
+	/* Register an RNG */
+	ccp->hwrng.name = ccp->rngname;
+	ccp->hwrng.read = ccp_trng_read;
+	ret = hwrng_register(&ccp->hwrng);
+	if (ret)
+		dev_err(ccp->dev, "error registering hwrng (%d)\n", ret);
+
+	return ret;
+}
+
+void ccp_unregister_rng(struct ccp_device *ccp)
+{
+	if (ccp->hwrng.name)
+		hwrng_unregister(&ccp->hwrng);
 }
 
 static struct ccp_device *ccp_get_device(void)
@@ -397,15 +421,43 @@ struct ccp_device *ccp_alloc_struct(struct device *dev)
 
 	spin_lock_init(&ccp->cmd_lock);
 	mutex_init(&ccp->req_mutex);
-	mutex_init(&ccp->ksb_mutex);
-	ccp->ksb_count = KSB_COUNT;
-	ccp->ksb_start = 0;
+	mutex_init(&ccp->sb_mutex);
+	ccp->sb_count = KSB_COUNT;
+	ccp->sb_start = 0;
 
 	ccp->ord = ccp_increment_unit_ordinal();
 	snprintf(ccp->name, MAX_CCP_NAME_LEN, "ccp-%u", ccp->ord);
 	snprintf(ccp->rngname, MAX_CCP_NAME_LEN, "ccp-%u-rng", ccp->ord);
 
 	return ccp;
+}
+
+int ccp_trng_read(struct hwrng *rng, void *data, size_t max, bool wait)
+{
+	struct ccp_device *ccp = container_of(rng, struct ccp_device, hwrng);
+	u32 trng_value;
+	int len = min_t(int, sizeof(trng_value), max);
+
+	/* Locking is provided by the caller so we can update device
+	 * hwrng-related fields safely
+	 */
+	trng_value = ioread32(ccp->io_regs + TRNG_OUT_REG);
+	if (!trng_value) {
+		/* Zero is returned if not data is available or if a
+		 * bad-entropy error is present. Assume an error if
+		 * we exceed TRNG_RETRIES reads of zero.
+		 */
+		if (ccp->hwrng_retries++ > TRNG_RETRIES)
+			return -EIO;
+
+		return 0;
+	}
+
+	/* Reset the counter and save the rng value */
+	ccp->hwrng_retries = 0;
+	memcpy(data, &trng_value, len);
+
+	return len;
 }
 
 #ifdef CONFIG_PM

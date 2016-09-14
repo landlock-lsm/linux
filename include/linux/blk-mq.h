@@ -22,11 +22,10 @@ struct blk_mq_hw_ctx {
 	struct {
 		spinlock_t		lock;
 		struct list_head	dispatch;
+		unsigned long		state;		/* BLK_MQ_S_* flags */
 	} ____cacheline_aligned_in_smp;
 
-	unsigned long		state;		/* BLK_MQ_S_* flags */
-	struct delayed_work	run_work;
-	struct delayed_work	delay_work;
+	struct work_struct	run_work;
 	cpumask_var_t		cpumask;
 	int			next_cpu;
 	int			next_cpu_batch;
@@ -40,8 +39,8 @@ struct blk_mq_hw_ctx {
 
 	struct blk_mq_ctxmap	ctx_map;
 
-	unsigned int		nr_ctx;
 	struct blk_mq_ctx	**ctxs;
+	unsigned int		nr_ctx;
 
 	atomic_t		wait_index;
 
@@ -49,13 +48,15 @@ struct blk_mq_hw_ctx {
 
 	unsigned long		queued;
 	unsigned long		run;
-#define BLK_MQ_MAX_DISPATCH_ORDER	10
+#define BLK_MQ_MAX_DISPATCH_ORDER	7
 	unsigned long		dispatched[BLK_MQ_MAX_DISPATCH_ORDER];
 
 	unsigned int		numa_node;
 	unsigned int		queue_num;
 
 	atomic_t		nr_active;
+
+	struct delayed_work	delay_work;
 
 	struct blk_mq_cpu_notifier	cpu_notifier;
 	struct kobject		kobj;
@@ -96,6 +97,7 @@ typedef int (init_request_fn)(void *, struct request *, unsigned int,
 		unsigned int, unsigned int);
 typedef void (exit_request_fn)(void *, struct request *, unsigned int,
 		unsigned int);
+typedef int (reinit_request_fn)(void *, struct request *);
 
 typedef void (busy_iter_fn)(struct blk_mq_hw_ctx *, struct request *, void *,
 		bool);
@@ -145,6 +147,7 @@ struct blk_mq_ops {
 	 */
 	init_request_fn		*init_request;
 	exit_request_fn		*exit_request;
+	reinit_request_fn	*reinit_request;
 };
 
 enum {
@@ -196,6 +199,8 @@ enum {
 
 struct request *blk_mq_alloc_request(struct request_queue *q, int rw,
 		unsigned int flags);
+struct request *blk_mq_alloc_request_hctx(struct request_queue *q, int op,
+		unsigned int flags, unsigned int hctx_idx);
 struct request *blk_mq_tag_to_rq(struct blk_mq_tags *tags, unsigned int tag);
 struct cpumask *blk_mq_tags_cpumask(struct blk_mq_tags *tags);
 
@@ -243,6 +248,7 @@ void blk_mq_tagset_busy_iter(struct blk_mq_tag_set *tagset,
 void blk_mq_freeze_queue(struct request_queue *q);
 void blk_mq_unfreeze_queue(struct request_queue *q);
 void blk_mq_freeze_queue_start(struct request_queue *q);
+int blk_mq_reinit_tagset(struct blk_mq_tag_set *set);
 
 void blk_mq_update_nr_hw_queues(struct blk_mq_tag_set *set, int nr_hw_queues);
 

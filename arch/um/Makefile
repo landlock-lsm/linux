@@ -78,8 +78,8 @@ include $(ARCH_DIR)/Makefile-os-$(OS)
 
 KBUILD_CPPFLAGS += -I$(srctree)/$(HOST_DIR)/include \
 		   -I$(srctree)/$(HOST_DIR)/include/uapi \
-		   -I$(HOST_DIR)/include/generated \
-		   -I$(HOST_DIR)/include/generated/uapi
+		   -I$(objtree)/$(HOST_DIR)/include/generated \
+		   -I$(objtree)/$(HOST_DIR)/include/generated/uapi
 
 # -Derrno=kernel_errno - This turns all kernel references to errno into
 # kernel_errno to separate them from the libc errno.  This allows -fno-common
@@ -158,7 +158,7 @@ define filechk_gen-asm-offsets
          echo " *"; \
          echo " */"; \
          echo ""; \
-         sed -ne "/^->/{s:^->\([^ ]*\) [\$$#]*\([^ ]*\) \(.*\):#define \1 \2 /* \3 */:; s:->::; p;}"; \
+         sed -ne '/#define/{s/\$$//;s/#//2;s/$$/*\//p;}'; \
          echo ""; )
 endef
 

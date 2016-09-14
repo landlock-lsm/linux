@@ -15,7 +15,7 @@
 #include <linux/kernel.h>
 #include <linux/ctype.h>
 #include <linux/hardirq.h>
-#include <linux/module.h>
+#include <linux/export.h>
 #include <asm/smp.h>
 #include <asm/apic.h>
 #include <asm/ipi.h>
@@ -25,7 +25,7 @@
 static struct apic apic_physflat;
 static struct apic apic_flat;
 
-struct apic __read_mostly *apic = &apic_flat;
+struct apic *apic __ro_after_init = &apic_flat;
 EXPORT_SYMBOL_GPL(apic);
 
 static int flat_acpi_madt_oem_check(char *oem_id, char *oem_table_id)
@@ -154,7 +154,7 @@ static int flat_probe(void)
 	return 1;
 }
 
-static struct apic apic_flat =  {
+static struct apic apic_flat __ro_after_init = {
 	.name				= "flat",
 	.probe				= flat_probe,
 	.acpi_madt_oem_check		= flat_acpi_madt_oem_check,
@@ -181,7 +181,6 @@ static struct apic apic_flat =  {
 
 	.get_apic_id			= flat_get_apic_id,
 	.set_apic_id			= set_apic_id,
-	.apic_id_mask			= 0xFFu << 24,
 
 	.cpu_mask_to_apicid_and		= flat_cpu_mask_to_apicid_and,
 
@@ -249,7 +248,7 @@ static int physflat_probe(void)
 	return 0;
 }
 
-static struct apic apic_physflat =  {
+static struct apic apic_physflat __ro_after_init = {
 
 	.name				= "physical flat",
 	.probe				= physflat_probe,
@@ -278,7 +277,6 @@ static struct apic apic_physflat =  {
 
 	.get_apic_id			= flat_get_apic_id,
 	.set_apic_id			= set_apic_id,
-	.apic_id_mask			= 0xFFu << 24,
 
 	.cpu_mask_to_apicid_and		= default_cpu_mask_to_apicid_and,
 

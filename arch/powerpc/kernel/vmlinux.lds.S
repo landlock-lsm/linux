@@ -52,6 +52,7 @@ SECTIONS
 		/* careful! __ftr_alt_* sections need to be close to .text */
 		*(.text .fixup __ftr_alt_* .ref.text)
 		SCHED_TEXT
+		CPUIDLE_TEXT
 		LOCK_TEXT
 		KPROBES_TEXT
 		IRQENTRY_TEXT
@@ -165,7 +166,7 @@ SECTIONS
 	. = ALIGN(8);
 	.dynsym : AT(ADDR(.dynsym) - LOAD_OFFSET)
 	{
-#ifdef CONFIG_RELOCATABLE_PPC32
+#ifdef CONFIG_PPC32
 		__dynamic_symtab = .;
 #endif
 		*(.dynsym)

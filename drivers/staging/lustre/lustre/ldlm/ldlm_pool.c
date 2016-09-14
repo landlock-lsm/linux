@@ -15,11 +15,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * version 2 along with this program; If not, see
- * http://www.sun.com/software/products/lustre/docs/GPLv2.pdf
- *
- * Please contact Sun Microsystems, Inc., 4150 Network Circle, Santa Clara,
- * CA 95054 USA or visit www.sun.com if you need additional information or
- * have any questions.
+ * http://www.gnu.org/licenses/gpl-2.0.html
  *
  * GPL HEADER END
  */
@@ -999,7 +995,7 @@ static int ldlm_pools_thread_main(void *arg)
 	wake_up(&thread->t_ctl_waitq);
 
 	CDEBUG(D_DLMTRACE, "%s: pool thread starting, process %d\n",
-		"ldlm_poold", current_pid());
+	       "ldlm_poold", current_pid());
 
 	while (1) {
 		struct l_wait_info lwi;
@@ -1029,7 +1025,7 @@ static int ldlm_pools_thread_main(void *arg)
 	wake_up(&thread->t_ctl_waitq);
 
 	CDEBUG(D_DLMTRACE, "%s: pool thread exiting, process %d\n",
-		"ldlm_poold", current_pid());
+	       "ldlm_poold", current_pid());
 
 	complete_and_exit(&ldlm_pools_comp, 0);
 }

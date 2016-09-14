@@ -54,6 +54,15 @@ static void __hyp_text __deactivate_traps(struct kvm_vcpu *vcpu)
 {
 	u32 val;
 
+	/*
+	 * If we pended a virtual abort, preserve it until it gets
+	 * cleared. See B1.9.9 (Virtual Abort exception) for details,
+	 * but the crucial bit is the zeroing of HCR.VA in the
+	 * pseudocode.
+	 */
+	if (vcpu->arch.hcr & HCR_VA)
+		vcpu->arch.hcr = read_sysreg(HCR);
+
 	write_sysreg(0, HCR);
 	write_sysreg(0, HSTR);
 	val = read_sysreg(HDCR);
@@ -134,7 +143,7 @@ static bool __hyp_text __populate_fault_info(struct kvm_vcpu *vcpu)
 	return true;
 }
 
-static int __hyp_text __guest_run(struct kvm_vcpu *vcpu)
+int __hyp_text __kvm_vcpu_run(struct kvm_vcpu *vcpu)
 {
 	struct kvm_cpu_context *host_ctxt;
 	struct kvm_cpu_context *guest_ctxt;
@@ -190,8 +199,6 @@ again:
 
 	return exit_code;
 }
-
-__alias(__guest_run) int __kvm_vcpu_run(struct kvm_vcpu *vcpu);
 
 static const char * const __hyp_panic_string[] = {
 	[ARM_EXCEPTION_RESET]      = "\nHYP panic: RST   PC:%08x CPSR:%08x",

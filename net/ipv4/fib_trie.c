@@ -249,7 +249,7 @@ static inline unsigned long get_index(t_key key, struct key_vector *kv)
  * index into the parent's child array. That is, they will be used to find
  * 'n' among tp's children.
  *
- * The bits from (n->pos + n->bits) to (tn->pos - 1) - "S" - are skipped bits
+ * The bits from (n->pos + n->bits) to (tp->pos - 1) - "S" - are skipped bits
  * for the node n.
  *
  * All the bits we have seen so far are significant to the node n. The rest
@@ -258,7 +258,7 @@ static inline unsigned long get_index(t_key key, struct key_vector *kv)
  * The bits from (n->pos) to (n->pos + n->bits - 1) - "C" - are the index into
  * n's child array, and will of course be different for each child.
  *
- * The rest of the bits, from 0 to (n->pos + n->bits), are completely unknown
+ * The rest of the bits, from 0 to (n->pos -1) - "u" - are completely unknown
  * at this point.
  */
 
@@ -1081,7 +1081,7 @@ int fib_table_insert(struct fib_table *tb, struct fib_config *cfg)
 	struct trie *t = (struct trie *)tb->tb_data;
 	struct fib_alias *fa, *new_fa;
 	struct key_vector *l, *tp;
-	unsigned int nlflags = 0;
+	u16 nlflags = NLM_F_EXCL;
 	struct fib_info *fi;
 	u8 plen = cfg->fc_dst_len;
 	u8 slen = KEYLENGTH - plen;
@@ -1126,6 +1126,8 @@ int fib_table_insert(struct fib_table *tb, struct fib_config *cfg)
 		if (cfg->fc_nlflags & NLM_F_EXCL)
 			goto out;
 
+		nlflags &= ~NLM_F_EXCL;
+
 		/* We have 2 goals:
 		 * 1. Find exact match for type, scope, fib_info to avoid
 		 * duplicate routes
@@ -1151,6 +1153,7 @@ int fib_table_insert(struct fib_table *tb, struct fib_config *cfg)
 			struct fib_info *fi_drop;
 			u8 state;
 
+			nlflags |= NLM_F_REPLACE;
 			fa = fa_first;
 			if (fa_match) {
 				if (fa == fa_match)
@@ -1191,7 +1194,7 @@ int fib_table_insert(struct fib_table *tb, struct fib_config *cfg)
 			if (state & FA_S_ACCESSED)
 				rt_cache_flush(cfg->fc_nlinfo.nl_net);
 			rtmsg_fib(RTM_NEWROUTE, htonl(key), new_fa, plen,
-				tb->tb_id, &cfg->fc_nlinfo, NLM_F_REPLACE);
+				tb->tb_id, &cfg->fc_nlinfo, nlflags);
 
 			goto succeeded;
 		}
@@ -1203,7 +1206,7 @@ int fib_table_insert(struct fib_table *tb, struct fib_config *cfg)
 			goto out;
 
 		if (cfg->fc_nlflags & NLM_F_APPEND)
-			nlflags = NLM_F_APPEND;
+			nlflags |= NLM_F_APPEND;
 		else
 			fa = fa_first;
 	}
@@ -1211,6 +1214,7 @@ int fib_table_insert(struct fib_table *tb, struct fib_config *cfg)
 	if (!(cfg->fc_nlflags & NLM_F_CREATE))
 		goto out;
 
+	nlflags |= NLM_F_CREATE;
 	err = -ENOBUFS;
 	new_fa = kmem_cache_alloc(fn_alias_kmem, GFP_KERNEL);
 	if (!new_fa)
@@ -2452,9 +2456,7 @@ struct fib_route_iter {
 static struct key_vector *fib_route_get_idx(struct fib_route_iter *iter,
 					    loff_t pos)
 {
-	struct fib_table *tb = iter->main_tb;
 	struct key_vector *l, **tp = &iter->tnode;
-	struct trie *t;
 	t_key key;
 
 	/* use cache location of next-to-find key */
@@ -2462,8 +2464,6 @@ static struct key_vector *fib_route_get_idx(struct fib_route_iter *iter,
 		pos -= iter->pos;
 		key = iter->key;
 	} else {
-		t = (struct trie *)tb->tb_data;
-		iter->tnode = t->kv;
 		iter->pos = 0;
 		key = 0;
 	}
@@ -2504,12 +2504,12 @@ static void *fib_route_seq_start(struct seq_file *seq, loff_t *pos)
 		return NULL;
 
 	iter->main_tb = tb;
+	t = (struct trie *)tb->tb_data;
+	iter->tnode = t->kv;
 
 	if (*pos != 0)
 		return fib_route_get_idx(iter, *pos);
 
-	t = (struct trie *)tb->tb_data;
-	iter->tnode = t->kv;
 	iter->pos = 0;
 	iter->key = 0;
 

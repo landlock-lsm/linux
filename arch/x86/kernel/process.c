@@ -7,7 +7,8 @@
 #include <linux/prctl.h>
 #include <linux/slab.h>
 #include <linux/sched.h>
-#include <linux/module.h>
+#include <linux/init.h>
+#include <linux/export.h>
 #include <linux/pm.h>
 #include <linux/tick.h>
 #include <linux/random.h>
@@ -31,6 +32,7 @@
 #include <asm/tlbflush.h>
 #include <asm/mce.h>
 #include <asm/vm86.h>
+#include <asm/switch_to.h>
 
 /*
  * per-CPU TSS segments. Threads are completely 'soft' on Linux,
@@ -300,7 +302,7 @@ void arch_cpu_idle(void)
 /*
  * We use this if we don't have any better idle routine..
  */
-void default_idle(void)
+void __cpuidle default_idle(void)
 {
 	trace_cpu_idle_rcuidle(1, smp_processor_id());
 	safe_halt();
@@ -404,7 +406,7 @@ static int prefer_mwait_c1_over_halt(const struct cpuinfo_x86 *c)
 	if (c->x86_vendor != X86_VENDOR_INTEL)
 		return 0;
 
-	if (!cpu_has(c, X86_FEATURE_MWAIT))
+	if (!cpu_has(c, X86_FEATURE_MWAIT) || static_cpu_has_bug(X86_BUG_MONITOR))
 		return 0;
 
 	return 1;
@@ -415,7 +417,7 @@ static int prefer_mwait_c1_over_halt(const struct cpuinfo_x86 *c)
  * with interrupts enabled and no flags, which is backwards compatible with the
  * original MWAIT implementation.
  */
-static void mwait_idle(void)
+static __cpuidle void mwait_idle(void)
 {
 	if (!current_set_polling_and_test()) {
 		trace_cpu_idle_rcuidle(1, smp_processor_id());
@@ -507,8 +509,18 @@ unsigned long arch_align_stack(unsigned long sp)
 
 unsigned long arch_randomize_brk(struct mm_struct *mm)
 {
-	unsigned long range_end = mm->brk + 0x02000000;
-	return randomize_range(mm->brk, range_end, 0) ? : mm->brk;
+	return randomize_page(mm->brk, 0x02000000);
+}
+
+/*
+ * Return saved PC of a blocked thread.
+ * What is this good for? it will be always the scheduler or ret_from_fork.
+ */
+unsigned long thread_saved_pc(struct task_struct *tsk)
+{
+	struct inactive_task_frame *frame =
+		(struct inactive_task_frame *) READ_ONCE(tsk->thread.sp);
+	return READ_ONCE_NOCHECK(frame->ret_addr);
 }
 
 /*
@@ -555,7 +567,7 @@ unsigned long get_wchan(struct task_struct *p)
 	if (sp < bottom || sp > top)
 		return 0;
 
-	fp = READ_ONCE_NOCHECK(*(unsigned long *)sp);
+	fp = READ_ONCE_NOCHECK(((struct inactive_task_frame *)sp)->bp);
 	do {
 		if (fp < bottom || fp > top)
 			return 0;

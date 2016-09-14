@@ -227,10 +227,9 @@ void tcp_time_wait(struct sock *sk, int state, int timeo);
 #define	TFO_SERVER_COOKIE_NOT_REQD	0x200
 
 /* Force enable TFO on all listeners, i.e., not requiring the
- * TCP_FASTOPEN socket option. SOCKOPT1/2 determine how to set max_qlen.
+ * TCP_FASTOPEN socket option.
  */
 #define	TFO_SERVER_WO_SOCKOPT1	0x400
-#define	TFO_SERVER_WO_SOCKOPT2	0x800
 
 extern struct inet_timewait_death_row tcp_death_row;
 
@@ -589,7 +588,7 @@ static inline int tcp_bound_to_half_wnd(struct tcp_sock *tp, int pktsize)
 	 * On the other hand, for extremely large MSS devices, handling
 	 * smaller than MSS windows in this way does make sense.
 	 */
-	if (tp->max_window >= 512)
+	if (tp->max_window > TCP_MSS_DEFAULT)
 		cutoff = (tp->max_window >> 1);
 	else
 		cutoff = tp->max_window;
@@ -604,8 +603,6 @@ static inline int tcp_bound_to_half_wnd(struct tcp_sock *tp, int pktsize)
 void tcp_get_info(struct sock *, struct tcp_info *);
 
 /* Read 'sendfile()'-style from a TCP socket */
-typedef int (*sk_read_actor_t)(read_descriptor_t *, struct sk_buff *,
-				unsigned int, size_t);
 int tcp_read_sock(struct sock *sk, read_descriptor_t *desc,
 		  sk_read_actor_t recv_actor);
 
@@ -643,7 +640,7 @@ static inline void tcp_fast_path_check(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
-	if (skb_queue_empty(&tp->out_of_order_queue) &&
+	if (RB_EMPTY_ROOT(&tp->out_of_order_queue) &&
 	    tp->rcv_wnd &&
 	    atomic_read(&sk->sk_rmem_alloc) < sk->sk_rcvbuf &&
 	    !tp->urg_data)
@@ -767,6 +764,7 @@ struct tcp_skb_cb {
 	union {
 		struct {
 			/* There is space for up to 20 bytes */
+			__u32 in_flight;/* Bytes in flight when packet sent */
 		} tx;   /* only used for outgoing skbs */
 		union {
 			struct inet_skb_parm	h4;
@@ -859,6 +857,7 @@ union tcp_cc_info;
 struct ack_sample {
 	u32 pkts_acked;
 	s32 rtt_us;
+	u32 in_flight;
 };
 
 struct tcp_congestion_ops {
@@ -1162,6 +1161,7 @@ static inline void tcp_prequeue_init(struct tcp_sock *tp)
 }
 
 bool tcp_prequeue(struct sock *sk, struct sk_buff *skb);
+bool tcp_add_backlog(struct sock *sk, struct sk_buff *skb);
 
 #undef STATE_TRACE
 
@@ -1382,7 +1382,7 @@ union tcp_md5sum_block {
 /* - pool: digest algorithm, hash description and scratch buffer */
 struct tcp_md5sig_pool {
 	struct ahash_request	*md5_req;
-	union tcp_md5sum_block	md5_blk;
+	void			*scratch;
 };
 
 /* - functions */
@@ -1418,7 +1418,6 @@ static inline void tcp_put_md5sig_pool(void)
 	local_bh_enable();
 }
 
-int tcp_md5_hash_header(struct tcp_md5sig_pool *, const struct tcphdr *);
 int tcp_md5_hash_skb_data(struct tcp_md5sig_pool *, const struct sk_buff *,
 			  unsigned int header_len);
 int tcp_md5_hash_key(struct tcp_md5sig_pool *hp,
@@ -1522,6 +1521,8 @@ static inline void tcp_check_send_head(struct sock *sk, struct sk_buff *skb_unli
 {
 	if (sk->sk_send_head == skb_unlinked)
 		sk->sk_send_head = NULL;
+	if (tcp_sk(sk)->highest_sack == skb_unlinked)
+		tcp_sk(sk)->highest_sack = NULL;
 }
 
 static inline void tcp_init_send_head(struct sock *sk)
@@ -1849,6 +1850,8 @@ static inline int tcp_inq(struct sock *sk)
 
 	return answ;
 }
+
+int tcp_peek_len(struct socket *sock);
 
 static inline void tcp_segs_in(struct tcp_sock *tp, const struct sk_buff *skb)
 {

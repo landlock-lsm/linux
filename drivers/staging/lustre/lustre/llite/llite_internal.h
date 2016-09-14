@@ -15,11 +15,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * version 2 along with this program; If not, see
- * http://www.sun.com/software/products/lustre/docs/GPLv2.pdf
- *
- * Please contact Sun Microsystems, Inc., 4150 Network Circle, Santa Clara,
- * CA 95054 USA or visit www.sun.com if you need additional information or
- * have any questions.
+ * http://www.gnu.org/licenses/gpl-2.0.html
  *
  * GPL HEADER END
  */
@@ -43,9 +39,11 @@
 
 /* for struct cl_lock_descr and struct cl_io */
 #include "../include/cl_object.h"
+#include "../include/lustre_lmv.h"
 #include "../include/lustre_mdc.h"
 #include "../include/lustre_intent.h"
 #include <linux/compat.h>
+#include <linux/xattr.h>
 #include <linux/posix_acl_xattr.h>
 #include "vvp_internal.h"
 
@@ -68,6 +66,7 @@ struct ll_dentry_data {
 	struct lookup_intent		*lld_it;
 	unsigned int			lld_sa_generation;
 	unsigned int			lld_invalid:1;
+	unsigned int			lld_nfs_dentry:1;
 	struct rcu_head			lld_rcu_head;
 };
 
@@ -76,27 +75,11 @@ struct ll_dentry_data {
 #define LLI_INODE_MAGIC		 0x111d0de5
 #define LLI_INODE_DEAD		  0xdeadd00d
 
-/* remote client permission cache */
-#define REMOTE_PERM_HASHSIZE 16
-
 struct ll_getname_data {
 	struct dir_context ctx;
 	char	    *lgd_name;      /* points to a buffer with NAME_MAX+1 size */
 	struct lu_fid    lgd_fid;       /* target fid we are looking for */
 	int	      lgd_found;     /* inode matched? */
-};
-
-/* llite setxid/access permission for user on remote client */
-struct ll_remote_perm {
-	struct hlist_node	lrp_list;
-	uid_t		   lrp_uid;
-	gid_t		   lrp_gid;
-	uid_t		   lrp_fsuid;
-	gid_t		   lrp_fsgid;
-	int		   lrp_access_perm; /* MAY_READ/WRITE/EXEC, this
-					     * is access permission with
-					     * lrp_fsuid/lrp_fsgid.
-					     */
 };
 
 struct ll_grouplock {
@@ -133,19 +116,12 @@ struct ll_inode_info {
 	spinlock_t			lli_lock;
 	struct posix_acl		*lli_posix_acl;
 
-	struct hlist_head		*lli_remote_perms;
-	struct mutex				lli_rmtperm_mutex;
-
 	/* identifying fields for both metadata and data stacks. */
 	struct lu_fid		   lli_fid;
-	/* Parent fid for accessing default stripe data on parent directory
-	 * for allocating OST objects after a mknod() and later open-by-FID.
-	 */
+	/* master inode fid for stripe directory */
 	struct lu_fid		   lli_pfid;
 
 	struct list_head	      lli_close_list;
-
-	unsigned long		      lli_rmtperm_time;
 
 	/* handle is to be sent to MDS later on done_writing and setattr.
 	 * Open handle data are needed for the recovery to reconstruct
@@ -196,6 +172,12 @@ struct ll_inode_info {
 			 * -- I am the owner of dir statahead.
 			 */
 			pid_t			   d_opendir_pid;
+			/* directory stripe information */
+			struct lmv_stripe_md		*d_lsm_md;
+			/* striped directory size */
+			loff_t				d_stripe_size;
+			/* striped directory nlink */
+			__u64				d_stripe_nlink;
 		} d;
 
 #define lli_readdir_mutex       u.d.d_readdir_mutex
@@ -203,6 +185,9 @@ struct ll_inode_info {
 #define lli_sai		 u.d.d_sai
 #define lli_sa_lock	     u.d.d_sa_lock
 #define lli_opendir_pid	 u.d.d_opendir_pid
+#define lli_lsm_md		u.d.d_lsm_md
+#define lli_stripe_dir_size	u.d.d_stripe_size
+#define lli_stripe_dir_nlink	u.d.d_stripe_nlink
 
 		/* for non-directory */
 		struct {
@@ -411,7 +396,7 @@ enum stats_track_type {
 #define LL_SBI_FLOCK	     0x04
 #define LL_SBI_USER_XATTR	0x08 /* support user xattr */
 #define LL_SBI_ACL	       0x10 /* support ACL */
-#define LL_SBI_RMT_CLIENT	0x40 /* remote client */
+/* LL_SBI_RMT_CLIENT		 0x40	 remote client */
 #define LL_SBI_MDS_CAPA		 0x80 /* support mds capa, obsolete */
 #define LL_SBI_OSS_CAPA		0x100 /* support oss capa, obsolete */
 #define LL_SBI_LOCALFLOCK       0x200 /* Local flocks support by kernel */
@@ -425,6 +410,7 @@ enum stats_track_type {
 #define LL_SBI_LAYOUT_LOCK    0x20000 /* layout lock support */
 #define LL_SBI_USER_FID2PATH  0x40000 /* allow fid2path by unprivileged users */
 #define LL_SBI_XATTR_CACHE    0x80000 /* support for xattr cache */
+#define LL_SBI_NOROOTSQUASH	0x100000 /* do not apply root squash */
 
 #define LL_SBI_FLAGS {	\
 	"nolck",	\
@@ -433,7 +419,7 @@ enum stats_track_type {
 	"xattr",	\
 	"acl",		\
 	"???",		\
-	"rmt_client",	\
+	"???",		\
 	"mds_capa",	\
 	"oss_capa",	\
 	"flock",	\
@@ -447,27 +433,8 @@ enum stats_track_type {
 	"layout",	\
 	"user_fid2path",\
 	"xattr",	\
+	"norootsquash",	\
 }
-
-#define RCE_HASHES      32
-
-struct rmtacl_ctl_entry {
-	struct list_head       rce_list;
-	pid_t	    rce_key; /* hash key */
-	int	      rce_ops; /* acl operation type */
-};
-
-struct rmtacl_ctl_table {
-	spinlock_t	rct_lock;
-	struct list_head	rct_entries[RCE_HASHES];
-};
-
-#define EE_HASHES       32
-
-struct eacl_table {
-	spinlock_t	et_lock;
-	struct list_head	et_entries[EE_HASHES];
-};
 
 struct ll_sb_info {
 	/* this protects pglist and ra_info.  It isn't safe to
@@ -497,7 +464,7 @@ struct ll_sb_info {
 	 * any page which is sent to a server as part of a bulk request,
 	 * but is uncommitted to stable storage.
 	 */
-	struct cl_client_cache    ll_cache;
+	struct cl_client_cache    *ll_cache;
 
 	struct lprocfs_stats     *ll_ra_stats;
 
@@ -505,7 +472,7 @@ struct ll_sb_info {
 	unsigned int	      ll_namelen;
 	struct file_operations   *ll_fop;
 
-	unsigned int	      ll_md_brw_size; /* used by readdir */
+	unsigned int		  ll_md_brw_pages; /* readdir pages per RPC */
 
 	struct lu_site	   *ll_site;
 	struct cl_device	 *ll_cl;
@@ -533,8 +500,9 @@ struct ll_sb_info {
 	dev_t			  ll_sdev_orig; /* save s_dev before assign for
 						 * clustered nfs
 						 */
-	struct rmtacl_ctl_table   ll_rct;
-	struct eacl_table	 ll_et;
+	/* root squash */
+	struct root_squash_info	  ll_squash;
+
 	__kernel_fsid_t		  ll_fsid;
 	struct kobject		 ll_kobj; /* sysfs object */
 	struct super_block	*ll_sb; /* struct super_block (for sysfs code)*/
@@ -640,6 +608,8 @@ struct ll_file_data {
 	 * false: unknown failure, should report.
 	 */
 	bool fd_write_failed;
+	rwlock_t fd_lock; /* protect lcc list */
+	struct list_head fd_lccs; /* list of ll_cl_context */
 };
 
 struct lov_stripe_md;
@@ -688,14 +658,16 @@ void ll_rw_stats_tally(struct ll_sb_info *sbi, pid_t pid,
 		       size_t count, int rw);
 
 /* llite/dir.c */
-void ll_release_page(struct page *page, int remove);
 extern const struct file_operations ll_dir_operations;
 extern const struct inode_operations ll_dir_inode_operations;
-struct page *ll_get_dir_page(struct inode *dir, __u64 hash,
-			     struct ll_dir_chain *chain);
-int ll_dir_read(struct inode *inode, struct dir_context *ctx);
-
+int ll_dir_read(struct inode *inode, __u64 *ppos, struct md_op_data *op_data,
+		struct dir_context *ctx);
 int ll_get_mdt_idx(struct inode *inode);
+int ll_get_mdt_idx_by_fid(struct ll_sb_info *sbi, const struct lu_fid *fid);
+struct page *ll_get_dir_page(struct inode *dir, struct md_op_data *op_data,
+			     __u64 offset, struct ll_dir_chain *chain);
+void ll_release_page(struct inode *inode, struct page *page, bool remove);
+
 /* llite/namei.c */
 extern const struct inode_operations ll_special_inode_operations;
 
@@ -703,9 +675,11 @@ int ll_objects_destroy(struct ptlrpc_request *request,
 		       struct inode *dir);
 struct inode *ll_iget(struct super_block *sb, ino_t hash,
 		      struct lustre_md *lic);
+int ll_test_inode_by_fid(struct inode *inode, void *opaque);
 int ll_md_blocking_ast(struct ldlm_lock *, struct ldlm_lock_desc *,
 		       void *data, int flag);
 struct dentry *ll_splice_alias(struct inode *inode, struct dentry *de);
+void ll_update_times(struct ptlrpc_request *request, struct inode *inode);
 
 /* llite/rw.c */
 int ll_writepage(struct page *page, struct writeback_control *wbc);
@@ -715,8 +689,9 @@ void ll_readahead_init(struct inode *inode, struct ll_readahead_state *ras);
 int ll_readahead(const struct lu_env *env, struct cl_io *io,
 		 struct cl_page_list *queue, struct ll_readahead_state *ras,
 		 bool hit);
-struct ll_cl_context *ll_cl_init(struct file *file, struct page *vmpage);
-void ll_cl_fini(struct ll_cl_context *lcc);
+struct ll_cl_context *ll_cl_find(struct file *file);
+void ll_cl_add(struct file *file, const struct lu_env *env, struct cl_io *io);
+void ll_cl_remove(struct file *file, const struct lu_env *env);
 
 extern const struct address_space_operations ll_aops;
 
@@ -747,7 +722,10 @@ void ll_pack_inode2opdata(struct inode *inode, struct md_op_data *op_data,
 			  struct lustre_handle *fh);
 int ll_getattr(struct vfsmount *mnt, struct dentry *de, struct kstat *stat);
 struct posix_acl *ll_get_acl(struct inode *inode, int type);
-
+int ll_migrate(struct inode *parent, struct file *file, int mdtidx,
+	       const char *name, int namelen);
+int ll_get_fid_by_name(struct inode *parent, const char *name,
+		       int namelen, struct lu_fid *fid);
 int ll_inode_permission(struct inode *inode, int mask);
 
 int ll_lov_setstripe_ea_info(struct inode *inode, struct dentry *dentry,
@@ -758,8 +736,8 @@ int ll_lov_getstripe_ea_info(struct inode *inode, const char *filename,
 			     struct ptlrpc_request **request);
 int ll_dir_setstripe(struct inode *inode, struct lov_user_md *lump,
 		     int set_default);
-int ll_dir_getstripe(struct inode *inode, struct lov_mds_md **lmmp,
-		     int *lmm_size, struct ptlrpc_request **request);
+int ll_dir_getstripe(struct inode *inode, void **lmmp, int *lmm_size,
+		     struct ptlrpc_request **request, u64 valid);
 int ll_fsync(struct file *file, loff_t start, loff_t end, int data);
 int ll_merge_attr(const struct lu_env *env, struct inode *inode);
 int ll_fid2path(struct inode *inode, void __user *arg);
@@ -791,8 +769,8 @@ int ll_setattr(struct dentry *de, struct iattr *attr);
 int ll_statfs(struct dentry *de, struct kstatfs *sfs);
 int ll_statfs_internal(struct super_block *sb, struct obd_statfs *osfs,
 		       __u64 max_age, __u32 flags);
-void ll_update_inode(struct inode *inode, struct lustre_md *md);
-void ll_read_inode2(struct inode *inode, void *opaque);
+int ll_update_inode(struct inode *inode, struct lustre_md *md);
+int ll_read_inode2(struct inode *inode, void *opaque);
 void ll_delete_inode(struct inode *inode);
 int ll_iocontrol(struct inode *inode, struct file *file,
 		 unsigned int cmd, unsigned long arg);
@@ -807,6 +785,15 @@ int ll_obd_statfs(struct inode *inode, void __user *arg);
 int ll_get_max_mdsize(struct ll_sb_info *sbi, int *max_mdsize);
 int ll_get_default_mdsize(struct ll_sb_info *sbi, int *default_mdsize);
 int ll_process_config(struct lustre_cfg *lcfg);
+
+enum {
+	LUSTRE_OPC_MKDIR	= 0,
+	LUSTRE_OPC_SYMLINK	= 1,
+	LUSTRE_OPC_MKNOD	= 2,
+	LUSTRE_OPC_CREATE	= 3,
+	LUSTRE_OPC_ANY		= 5,
+};
+
 struct md_op_data *ll_prep_md_op_data(struct md_op_data *op_data,
 				      struct inode *i1, struct inode *i2,
 				      const char *name, int namelen,
@@ -814,6 +801,7 @@ struct md_op_data *ll_prep_md_op_data(struct md_op_data *op_data,
 void ll_finish_md_op_data(struct md_op_data *op_data);
 int ll_get_obd_name(struct inode *inode, unsigned int cmd, unsigned long arg);
 char *ll_get_fsname(struct super_block *sb, char *buf, int buflen);
+void ll_compute_rootsquash_state(struct ll_sb_info *sbi);
 void ll_open_cleanup(struct super_block *sb, struct ptlrpc_request *open_req);
 
 /* llite/llite_nfs.c */
@@ -822,6 +810,7 @@ __u32 get_uuid2int(const char *name, int len);
 void get_uuid2fsid(const char *name, int len, __kernel_fsid_t *fsid);
 struct inode *search_inode_for_lustre(struct super_block *sb,
 				      const struct lu_fid *fid);
+int ll_dir_get_parent_fid(struct inode *dir, struct lu_fid *parent_fid);
 
 /* llite/symlink.c */
 extern const struct inode_operations ll_fast_symlink_inode_operations;
@@ -858,11 +847,11 @@ struct vvp_io_args {
 };
 
 struct ll_cl_context {
+	struct list_head	 lcc_list;
 	void	   *lcc_cookie;
+	const struct lu_env	*lcc_env;
 	struct cl_io   *lcc_io;
 	struct cl_page *lcc_page;
-	struct lu_env  *lcc_env;
-	int	     lcc_refcheck;
 };
 
 struct ll_thread_info {
@@ -976,20 +965,9 @@ static inline __u64 ll_file_maxbytes(struct inode *inode)
 }
 
 /* llite/xattr.c */
-int ll_setxattr(struct dentry *dentry, struct inode *inode,
-		const char *name, const void *value, size_t size, int flags);
-ssize_t ll_getxattr(struct dentry *dentry, struct inode *inode,
-		    const char *name, void *buffer, size_t size);
+extern const struct xattr_handler *ll_xattr_handlers[];
+
 ssize_t ll_listxattr(struct dentry *dentry, char *buffer, size_t size);
-int ll_removexattr(struct dentry *dentry, const char *name);
-
-/* llite/remote_perm.c */
-extern struct kmem_cache *ll_remote_perm_cachep;
-extern struct kmem_cache *ll_rmtperm_hash_cachep;
-
-void free_rmtperm_hash(struct hlist_head *hash);
-int ll_update_remote_perm(struct inode *inode, struct mdt_remote_perm *perm);
-int lustre_check_remote_perm(struct inode *inode, int mask);
 
 /**
  * Common IO arguments for various VFS I/O interfaces.
@@ -1004,40 +982,7 @@ void ras_update(struct ll_sb_info *sbi, struct inode *inode,
 void ll_ra_count_put(struct ll_sb_info *sbi, unsigned long len);
 void ll_ra_stats_inc(struct inode *inode, enum ra_stat which);
 
-/* llite/llite_rmtacl.c */
-#ifdef CONFIG_FS_POSIX_ACL
-struct eacl_entry {
-	struct list_head	    ee_list;
-	pid_t		 ee_key; /* hash key */
-	struct lu_fid	 ee_fid;
-	int		   ee_type; /* ACL type for ACCESS or DEFAULT */
-	ext_acl_xattr_header *ee_acl;
-};
-
-u64 rce_ops2valid(int ops);
-struct rmtacl_ctl_entry *rct_search(struct rmtacl_ctl_table *rct, pid_t key);
-int rct_add(struct rmtacl_ctl_table *rct, pid_t key, int ops);
-int rct_del(struct rmtacl_ctl_table *rct, pid_t key);
-void rct_init(struct rmtacl_ctl_table *rct);
-void rct_fini(struct rmtacl_ctl_table *rct);
-
-void ee_free(struct eacl_entry *ee);
-int ee_add(struct eacl_table *et, pid_t key, struct lu_fid *fid, int type,
-	   ext_acl_xattr_header *header);
-struct eacl_entry *et_search_del(struct eacl_table *et, pid_t key,
-				 struct lu_fid *fid, int type);
-void et_search_free(struct eacl_table *et, pid_t key);
-void et_init(struct eacl_table *et);
-void et_fini(struct eacl_table *et);
-#else
-static inline u64 rce_ops2valid(int ops)
-{
-	return 0;
-}
-#endif
-
 /* statahead.c */
-
 #define LL_SA_RPC_MIN	   2
 #define LL_SA_RPC_DEF	   32
 #define LL_SA_RPC_MAX	   8192
@@ -1079,7 +1024,8 @@ struct ll_statahead_info {
 	unsigned int	    sai_ls_all:1,   /* "ls -al", do stat-ahead for
 					     * hidden entries
 					     */
-				sai_agl_valid:1;/* AGL is valid for the dir */
+				sai_agl_valid:1,/* AGL is valid for the dir */
+				sai_in_readpage:1;/* statahead is in readdir() */
 	wait_queue_head_t	sai_waitq;      /* stat-ahead wait queue */
 	struct ptlrpc_thread    sai_thread;     /* stat-ahead thread */
 	struct ptlrpc_thread    sai_agl_thread; /* AGL thread */
@@ -1281,7 +1227,7 @@ static inline int ll_file_nolock(const struct file *file)
 static inline void ll_set_lock_data(struct obd_export *exp, struct inode *inode,
 				    struct lookup_intent *it, __u64 *bits)
 {
-	if (!it->d.lustre.it_lock_set) {
+	if (!it->it_lock_set) {
 		struct lustre_handle handle;
 
 		/* If this inode is a remote object, it will get two
@@ -1292,36 +1238,25 @@ static inline void ll_set_lock_data(struct obd_export *exp, struct inode *inode,
 		 * LOOKUP and PERM locks, so revoking either locks will
 		 * case the dcache being cleared
 		 */
-		if (it->d.lustre.it_remote_lock_mode) {
-			handle.cookie = it->d.lustre.it_remote_lock_handle;
+		if (it->it_remote_lock_mode) {
+			handle.cookie = it->it_remote_lock_handle;
 			CDEBUG(D_DLMTRACE, "setting l_data to inode "DFID"%p for remote lock %#llx\n",
 			       PFID(ll_inode2fid(inode)), inode,
 			       handle.cookie);
-			md_set_lock_data(exp, &handle.cookie, inode, NULL);
+			md_set_lock_data(exp, &handle, inode, NULL);
 		}
 
-		handle.cookie = it->d.lustre.it_lock_handle;
+		handle.cookie = it->it_lock_handle;
 
 		CDEBUG(D_DLMTRACE, "setting l_data to inode "DFID"%p for lock %#llx\n",
 		       PFID(ll_inode2fid(inode)), inode, handle.cookie);
 
-		md_set_lock_data(exp, &handle.cookie, inode,
-				 &it->d.lustre.it_lock_bits);
-		it->d.lustre.it_lock_set = 1;
+		md_set_lock_data(exp, &handle, inode, &it->it_lock_bits);
+		it->it_lock_set = 1;
 	}
 
 	if (bits)
-		*bits = it->d.lustre.it_lock_bits;
-}
-
-static inline void ll_lock_dcache(struct inode *inode)
-{
-	spin_lock(&inode->i_lock);
-}
-
-static inline void ll_unlock_dcache(struct inode *inode)
-{
-	spin_unlock(&inode->i_lock);
+		*bits = it->it_lock_bits;
 }
 
 static inline int d_lustre_invalid(const struct dentry *dentry)

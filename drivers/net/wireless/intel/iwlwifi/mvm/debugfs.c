@@ -1020,6 +1020,8 @@ static ssize_t iwl_dbgfs_max_amsdu_len_write(struct iwl_mvm *mvm,
 	int ret;
 
 	ret = kstrtouint(buf, 0, &max_amsdu_len);
+	if (ret)
+		return ret;
 
 	if (max_amsdu_len > IEEE80211_MAX_MPDU_LEN_VHT_11454)
 		return -EINVAL;
@@ -1562,9 +1564,7 @@ int iwl_mvm_dbgfs_register(struct iwl_mvm *mvm, struct dentry *dbgfs_dir)
 	 * Create a symlink with mac80211. It will be removed when mac80211
 	 * exists (before the opmode exists which removes the target.)
 	 */
-	snprintf(buf, 100, "../../%s/%s",
-		 dbgfs_dir->d_parent->d_parent->d_name.name,
-		 dbgfs_dir->d_parent->d_name.name);
+	snprintf(buf, 100, "../../%pd2", dbgfs_dir->d_parent);
 	if (!debugfs_create_symlink("iwlwifi", mvm->hw->wiphy->debugfsdir, buf))
 		goto err;
 

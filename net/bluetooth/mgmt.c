@@ -38,7 +38,7 @@
 #include "mgmt_util.h"
 
 #define MGMT_VERSION	1
-#define MGMT_REVISION	12
+#define MGMT_REVISION	13
 
 static const u16 mgmt_commands[] = {
 	MGMT_OP_READ_INDEX_LIST,
@@ -104,6 +104,7 @@ static const u16 mgmt_commands[] = {
 	MGMT_OP_REMOVE_ADVERTISING,
 	MGMT_OP_GET_ADV_SIZE_INFO,
 	MGMT_OP_START_LIMITED_DISCOVERY,
+	MGMT_OP_READ_EXT_INFO,
 };
 
 static const u16 mgmt_events[] = {
@@ -141,6 +142,7 @@ static const u16 mgmt_events[] = {
 	MGMT_EV_LOCAL_OOB_DATA_UPDATED,
 	MGMT_EV_ADVERTISING_ADDED,
 	MGMT_EV_ADVERTISING_REMOVED,
+	MGMT_EV_EXT_INFO_CHANGED,
 };
 
 static const u16 mgmt_untrusted_commands[] = {
@@ -149,6 +151,7 @@ static const u16 mgmt_untrusted_commands[] = {
 	MGMT_OP_READ_UNCONF_INDEX_LIST,
 	MGMT_OP_READ_CONFIG_INFO,
 	MGMT_OP_READ_EXT_INDEX_LIST,
+	MGMT_OP_READ_EXT_INFO,
 };
 
 static const u16 mgmt_untrusted_events[] = {
@@ -162,6 +165,7 @@ static const u16 mgmt_untrusted_events[] = {
 	MGMT_EV_NEW_CONFIG_OPTIONS,
 	MGMT_EV_EXT_INDEX_ADDED,
 	MGMT_EV_EXT_INDEX_REMOVED,
+	MGMT_EV_EXT_INFO_CHANGED,
 };
 
 #define CACHE_TIMEOUT	msecs_to_jiffies(2 * 1000)
@@ -256,13 +260,6 @@ static int mgmt_limited_event(u16 event, struct hci_dev *hdev, void *data,
 			       flag, skip_sk);
 }
 
-static int mgmt_generic_event(u16 event, struct hci_dev *hdev, void *data,
-			      u16 len, struct sock *skip_sk)
-{
-	return mgmt_send_event(event, hdev, HCI_CHANNEL_CONTROL, data, len,
-			       HCI_MGMT_GENERIC_EVENTS, skip_sk);
-}
-
 static int mgmt_event(u16 event, struct hci_dev *hdev, void *data, u16 len,
 		      struct sock *skip_sk)
 {
@@ -278,6 +275,14 @@ static u8 le_addr_type(u8 mgmt_addr_type)
 		return ADDR_LE_DEV_RANDOM;
 }
 
+void mgmt_fill_version_info(void *ver)
+{
+	struct mgmt_rp_read_version *rp = ver;
+
+	rp->version = MGMT_VERSION;
+	rp->revision = cpu_to_le16(MGMT_REVISION);
+}
+
 static int read_version(struct sock *sk, struct hci_dev *hdev, void *data,
 			u16 data_len)
 {
@@ -285,8 +290,7 @@ static int read_version(struct sock *sk, struct hci_dev *hdev, void *data,
 
 	BT_DBG("sock %p", sk);
 
-	rp.version = MGMT_VERSION;
-	rp.revision = cpu_to_le16(MGMT_REVISION);
+	mgmt_fill_version_info(&rp);
 
 	return mgmt_cmd_complete(sk, MGMT_INDEX_NONE, MGMT_OP_READ_VERSION, 0,
 				 &rp, sizeof(rp));
@@ -359,7 +363,7 @@ static int read_index_list(struct sock *sk, struct hci_dev *hdev, void *data,
 
 	count = 0;
 	list_for_each_entry(d, &hci_dev_list, list) {
-		if (d->dev_type == HCI_BREDR &&
+		if (d->dev_type == HCI_PRIMARY &&
 		    !hci_dev_test_flag(d, HCI_UNCONFIGURED))
 			count++;
 	}
@@ -384,7 +388,7 @@ static int read_index_list(struct sock *sk, struct hci_dev *hdev, void *data,
 		if (test_bit(HCI_QUIRK_RAW_DEVICE, &d->quirks))
 			continue;
 
-		if (d->dev_type == HCI_BREDR &&
+		if (d->dev_type == HCI_PRIMARY &&
 		    !hci_dev_test_flag(d, HCI_UNCONFIGURED)) {
 			rp->index[count++] = cpu_to_le16(d->id);
 			BT_DBG("Added hci%u", d->id);
@@ -419,7 +423,7 @@ static int read_unconf_index_list(struct sock *sk, struct hci_dev *hdev,
 
 	count = 0;
 	list_for_each_entry(d, &hci_dev_list, list) {
-		if (d->dev_type == HCI_BREDR &&
+		if (d->dev_type == HCI_PRIMARY &&
 		    hci_dev_test_flag(d, HCI_UNCONFIGURED))
 			count++;
 	}
@@ -444,7 +448,7 @@ static int read_unconf_index_list(struct sock *sk, struct hci_dev *hdev,
 		if (test_bit(HCI_QUIRK_RAW_DEVICE, &d->quirks))
 			continue;
 
-		if (d->dev_type == HCI_BREDR &&
+		if (d->dev_type == HCI_PRIMARY &&
 		    hci_dev_test_flag(d, HCI_UNCONFIGURED)) {
 			rp->index[count++] = cpu_to_le16(d->id);
 			BT_DBG("Added hci%u", d->id);
@@ -479,7 +483,7 @@ static int read_ext_index_list(struct sock *sk, struct hci_dev *hdev,
 
 	count = 0;
 	list_for_each_entry(d, &hci_dev_list, list) {
-		if (d->dev_type == HCI_BREDR || d->dev_type == HCI_AMP)
+		if (d->dev_type == HCI_PRIMARY || d->dev_type == HCI_AMP)
 			count++;
 	}
 
@@ -503,7 +507,7 @@ static int read_ext_index_list(struct sock *sk, struct hci_dev *hdev,
 		if (test_bit(HCI_QUIRK_RAW_DEVICE, &d->quirks))
 			continue;
 
-		if (d->dev_type == HCI_BREDR) {
+		if (d->dev_type == HCI_PRIMARY) {
 			if (hci_dev_test_flag(d, HCI_UNCONFIGURED))
 				rp->entry[count].type = 0x01;
 			else
@@ -572,8 +576,8 @@ static int new_options(struct hci_dev *hdev, struct sock *skip)
 {
 	__le32 options = get_missing_options(hdev);
 
-	return mgmt_generic_event(MGMT_EV_NEW_CONFIG_OPTIONS, hdev, &options,
-				  sizeof(options), skip);
+	return mgmt_limited_event(MGMT_EV_NEW_CONFIG_OPTIONS, hdev, &options,
+				  sizeof(options), HCI_MGMT_OPTION_EVENTS, skip);
 }
 
 static int send_options_rsp(struct sock *sk, u16 opcode, struct hci_dev *hdev)
@@ -862,6 +866,82 @@ static int read_controller_info(struct sock *sk, struct hci_dev *hdev,
 				 sizeof(rp));
 }
 
+static inline u16 eir_append_data(u8 *eir, u16 eir_len, u8 type, u8 *data,
+				  u8 data_len)
+{
+	eir[eir_len++] = sizeof(type) + data_len;
+	eir[eir_len++] = type;
+	memcpy(&eir[eir_len], data, data_len);
+	eir_len += data_len;
+
+	return eir_len;
+}
+
+static int read_ext_controller_info(struct sock *sk, struct hci_dev *hdev,
+				    void *data, u16 data_len)
+{
+	struct mgmt_rp_read_ext_info *rp;
+	char buff[512];
+	u16 eir_len = 0;
+	u8 name_len;
+
+	BT_DBG("sock %p %s", sk, hdev->name);
+
+	hci_dev_lock(hdev);
+
+	if (hci_dev_test_flag(hdev, HCI_BREDR_ENABLED))
+		eir_len = eir_append_data(buff, eir_len,
+					  EIR_CLASS_OF_DEV,
+					  hdev->dev_class, 3);
+
+	name_len = strlen(hdev->dev_name);
+	eir_len = eir_append_data(buff, eir_len, EIR_NAME_COMPLETE,
+				  hdev->dev_name, name_len);
+
+	name_len = strlen(hdev->short_name);
+	eir_len = eir_append_data(buff, eir_len, EIR_NAME_SHORT,
+				  hdev->short_name, name_len);
+
+	rp = kzalloc(sizeof(*rp) + eir_len, GFP_KERNEL);
+	if (!rp)
+		return -ENOMEM;
+
+	rp->eir_len = cpu_to_le16(eir_len);
+	memcpy(rp->eir, buff, eir_len);
+
+	bacpy(&rp->bdaddr, &hdev->bdaddr);
+
+	rp->version = hdev->hci_ver;
+	rp->manufacturer = cpu_to_le16(hdev->manufacturer);
+
+	rp->supported_settings = cpu_to_le32(get_supported_settings(hdev));
+	rp->current_settings = cpu_to_le32(get_current_settings(hdev));
+
+	hci_dev_unlock(hdev);
+
+	/* If this command is called at least once, then the events
+	 * for class of device and local name changes are disabled
+	 * and only the new extended controller information event
+	 * is used.
+	 */
+	hci_sock_set_flag(sk, HCI_MGMT_EXT_INFO_EVENTS);
+	hci_sock_clear_flag(sk, HCI_MGMT_DEV_CLASS_EVENTS);
+	hci_sock_clear_flag(sk, HCI_MGMT_LOCAL_NAME_EVENTS);
+
+	return mgmt_cmd_complete(sk, hdev->id, MGMT_OP_READ_EXT_INFO, 0, rp,
+				 sizeof(*rp) + eir_len);
+}
+
+static int ext_info_changed(struct hci_dev *hdev, struct sock *skip)
+{
+	struct mgmt_ev_ext_info_changed ev;
+
+	ev.eir_len = cpu_to_le16(0);
+
+	return mgmt_limited_event(MGMT_EV_EXT_INFO_CHANGED, hdev, &ev,
+				  sizeof(ev), HCI_MGMT_EXT_INFO_EVENTS, skip);
+}
+
 static int send_settings_rsp(struct sock *sk, u16 opcode, struct hci_dev *hdev)
 {
 	__le32 settings = cpu_to_le32(get_current_settings(hdev));
@@ -922,7 +1002,7 @@ static int clean_up_hci_state(struct hci_dev *hdev)
 		hci_req_add(&req, HCI_OP_WRITE_SCAN_ENABLE, 1, &scan);
 	}
 
-	hci_req_clear_adv_instance(hdev, NULL, 0x00, false);
+	hci_req_clear_adv_instance(hdev, NULL, NULL, 0x00, false);
 
 	if (hci_dev_test_flag(hdev, HCI_LE_ADV))
 		__hci_req_disable_advertising(&req);
@@ -1000,8 +1080,8 @@ static int new_settings(struct hci_dev *hdev, struct sock *skip)
 {
 	__le32 ev = cpu_to_le32(get_current_settings(hdev));
 
-	return mgmt_generic_event(MGMT_EV_NEW_SETTINGS, hdev, &ev,
-				  sizeof(ev), skip);
+	return mgmt_limited_event(MGMT_EV_NEW_SETTINGS, hdev, &ev,
+				  sizeof(ev), HCI_MGMT_SETTING_EVENTS, skip);
 }
 
 int mgmt_new_settings(struct hci_dev *hdev)
@@ -1690,7 +1770,7 @@ static int set_le(struct sock *sk, struct hci_dev *hdev, void *data, u16 len)
 	enabled = lmp_host_le_capable(hdev);
 
 	if (!val)
-		hci_req_clear_adv_instance(hdev, NULL, 0x00, true);
+		hci_req_clear_adv_instance(hdev, NULL, NULL, 0x00, true);
 
 	if (!hdev_is_powered(hdev) || val == enabled) {
 		bool changed = false;
@@ -2513,8 +2593,8 @@ static int set_io_capability(struct sock *sk, struct hci_dev *hdev, void *data,
 	BT_DBG("");
 
 	if (cp->io_capability > SMP_IO_KEYBOARD_DISPLAY)
-		return mgmt_cmd_complete(sk, hdev->id, MGMT_OP_SET_IO_CAPABILITY,
-					 MGMT_STATUS_INVALID_PARAMS, NULL, 0);
+		return mgmt_cmd_status(sk, hdev->id, MGMT_OP_SET_IO_CAPABILITY,
+				       MGMT_STATUS_INVALID_PARAMS);
 
 	hci_dev_lock(hdev);
 
@@ -2993,8 +3073,9 @@ static int set_local_name(struct sock *sk, struct hci_dev *hdev, void *data,
 		if (err < 0)
 			goto failed;
 
-		err = mgmt_generic_event(MGMT_EV_LOCAL_NAME_CHANGED, hdev,
-					 data, len, sk);
+		err = mgmt_limited_event(MGMT_EV_LOCAL_NAME_CHANGED, hdev, data,
+					 len, HCI_MGMT_LOCAL_NAME_EVENTS, sk);
+		ext_info_changed(hdev, sk);
 
 		goto failed;
 	}
@@ -4869,7 +4950,7 @@ static int clock_info_cmd_complete(struct mgmt_pending_cmd *cmd, u8 status)
 	int err;
 
 	memset(&rp, 0, sizeof(rp));
-	memcpy(&rp.addr, &cmd->param, sizeof(rp.addr));
+	memcpy(&rp.addr, cmd->param, sizeof(rp.addr));
 
 	if (status)
 		goto complete;
@@ -5499,17 +5580,6 @@ static int set_public_address(struct sock *sk, struct hci_dev *hdev,
 unlock:
 	hci_dev_unlock(hdev);
 	return err;
-}
-
-static inline u16 eir_append_data(u8 *eir, u16 eir_len, u8 type, u8 *data,
-				  u8 data_len)
-{
-	eir[eir_len++] = sizeof(type) + data_len;
-	eir[eir_len++] = type;
-	memcpy(&eir[eir_len], data, data_len);
-	eir_len += data_len;
-
-	return eir_len;
 }
 
 static void read_local_oob_ext_data_complete(struct hci_dev *hdev, u8 status,
@@ -6175,7 +6245,7 @@ static int remove_advertising(struct sock *sk, struct hci_dev *hdev,
 
 	hci_req_init(&req, hdev);
 
-	hci_req_clear_adv_instance(hdev, &req, cp->instance, true);
+	hci_req_clear_adv_instance(hdev, sk, &req, cp->instance, true);
 
 	if (list_empty(&hdev->adv_instances))
 		__hci_req_disable_advertising(&req);
@@ -6356,6 +6426,8 @@ static const struct hci_mgmt_handler mgmt_handlers[] = {
 	{ remove_advertising,	   MGMT_REMOVE_ADVERTISING_SIZE },
 	{ get_adv_size_info,       MGMT_GET_ADV_SIZE_INFO_SIZE },
 	{ start_limited_discovery, MGMT_START_DISCOVERY_SIZE },
+	{ read_ext_controller_info,MGMT_READ_EXT_INFO_SIZE,
+						HCI_MGMT_UNTRUSTED },
 };
 
 void mgmt_index_added(struct hci_dev *hdev)
@@ -6366,7 +6438,7 @@ void mgmt_index_added(struct hci_dev *hdev)
 		return;
 
 	switch (hdev->dev_type) {
-	case HCI_BREDR:
+	case HCI_PRIMARY:
 		if (hci_dev_test_flag(hdev, HCI_UNCONFIGURED)) {
 			mgmt_index_event(MGMT_EV_UNCONF_INDEX_ADDED, hdev,
 					 NULL, 0, HCI_MGMT_UNCONF_INDEX_EVENTS);
@@ -6399,7 +6471,7 @@ void mgmt_index_removed(struct hci_dev *hdev)
 		return;
 
 	switch (hdev->dev_type) {
-	case HCI_BREDR:
+	case HCI_PRIMARY:
 		mgmt_pending_foreach(0, hdev, cmd_complete_rsp, &status);
 
 		if (hci_dev_test_flag(hdev, HCI_UNCONFIGURED)) {
@@ -6494,9 +6566,12 @@ void __mgmt_power_off(struct hci_dev *hdev)
 
 	mgmt_pending_foreach(0, hdev, cmd_complete_rsp, &status);
 
-	if (memcmp(hdev->dev_class, zero_cod, sizeof(zero_cod)) != 0)
-		mgmt_generic_event(MGMT_EV_CLASS_OF_DEV_CHANGED, hdev,
-				   zero_cod, sizeof(zero_cod), NULL);
+	if (memcmp(hdev->dev_class, zero_cod, sizeof(zero_cod)) != 0) {
+		mgmt_limited_event(MGMT_EV_CLASS_OF_DEV_CHANGED, hdev,
+				   zero_cod, sizeof(zero_cod),
+				   HCI_MGMT_DEV_CLASS_EVENTS, NULL);
+		ext_info_changed(hdev, NULL);
+	}
 
 	new_settings(hdev, match.sk);
 
@@ -7092,9 +7167,11 @@ void mgmt_set_class_of_dev_complete(struct hci_dev *hdev, u8 *dev_class,
 	mgmt_pending_foreach(MGMT_OP_ADD_UUID, hdev, sk_lookup, &match);
 	mgmt_pending_foreach(MGMT_OP_REMOVE_UUID, hdev, sk_lookup, &match);
 
-	if (!status)
-		mgmt_generic_event(MGMT_EV_CLASS_OF_DEV_CHANGED, hdev,
-				   dev_class, 3, NULL);
+	if (!status) {
+		mgmt_limited_event(MGMT_EV_CLASS_OF_DEV_CHANGED, hdev, dev_class,
+				   3, HCI_MGMT_DEV_CLASS_EVENTS, NULL);
+		ext_info_changed(hdev, NULL);
+	}
 
 	if (match.sk)
 		sock_put(match.sk);
@@ -7123,8 +7200,9 @@ void mgmt_set_local_name_complete(struct hci_dev *hdev, u8 *name, u8 status)
 			return;
 	}
 
-	mgmt_generic_event(MGMT_EV_LOCAL_NAME_CHANGED, hdev, &ev, sizeof(ev),
-			   cmd ? cmd->sk : NULL);
+	mgmt_limited_event(MGMT_EV_LOCAL_NAME_CHANGED, hdev, &ev, sizeof(ev),
+			   HCI_MGMT_LOCAL_NAME_EVENTS, cmd ? cmd->sk : NULL);
+	ext_info_changed(hdev, cmd ? cmd->sk : NULL);
 }
 
 static inline bool has_uuid(u8 *uuid, u16 uuid_count, u8 (*uuids)[16])

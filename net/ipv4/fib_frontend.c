@@ -93,9 +93,6 @@ struct fib_table *fib_new_table(struct net *net, u32 id)
 		return NULL;
 
 	switch (id) {
-	case RT_TABLE_LOCAL:
-		rcu_assign_pointer(net->ipv4.fib_local, tb);
-		break;
 	case RT_TABLE_MAIN:
 		rcu_assign_pointer(net->ipv4.fib_main, tb);
 		break;
@@ -137,9 +134,6 @@ static void fib_replace_table(struct net *net, struct fib_table *old,
 {
 #ifdef CONFIG_IP_MULTIPLE_TABLES
 	switch (new->tb_id) {
-	case RT_TABLE_LOCAL:
-		rcu_assign_pointer(net->ipv4.fib_local, new);
-		break;
 	case RT_TABLE_MAIN:
 		rcu_assign_pointer(net->ipv4.fib_main, new);
 		break;
@@ -509,6 +503,7 @@ static int rtentry_to_fib_config(struct net *net, int cmd, struct rtentry *rt,
 		if (!dev)
 			return -ENODEV;
 		cfg->fc_oif = dev->ifindex;
+		cfg->fc_table = l3mdev_fib_table(dev);
 		if (colon) {
 			struct in_ifaddr *ifa;
 			struct in_device *in_dev = __in_dev_get_rtnl(dev);
@@ -1027,7 +1022,7 @@ no_promotions:
 			 * First of all, we scan fib_info list searching
 			 * for stray nexthop entries, then ignite fib_flush.
 			 */
-			if (fib_sync_down_addr(dev_net(dev), ifa->ifa_local))
+			if (fib_sync_down_addr(dev, ifa->ifa_local))
 				fib_flush(dev_net(dev));
 		}
 	}
@@ -1249,7 +1244,6 @@ static void ip_fib_net_exit(struct net *net)
 
 	rtnl_lock();
 #ifdef CONFIG_IP_MULTIPLE_TABLES
-	RCU_INIT_POINTER(net->ipv4.fib_local, NULL);
 	RCU_INIT_POINTER(net->ipv4.fib_main, NULL);
 	RCU_INIT_POINTER(net->ipv4.fib_default, NULL);
 #endif

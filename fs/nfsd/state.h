@@ -63,7 +63,6 @@ typedef struct {
 
 struct nfsd4_callback {
 	struct nfs4_client *cb_clp;
-	u32 cb_minorversion;
 	struct rpc_message cb_msg;
 	const struct nfsd4_callback_ops *cb_ops;
 	struct work_struct cb_work;
@@ -345,6 +344,7 @@ struct nfs4_client {
 	u32			cl_exchange_flags;
 	/* number of rpc's in progress over an associated session: */
 	atomic_t		cl_refcount;
+	struct nfs4_op_map      cl_spo_must_allow;
 
 	/* for nfs41 callbacks */
 	/* We currently support a single back channel with a single slot */

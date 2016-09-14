@@ -220,7 +220,7 @@ void cfg80211_stop_p2p_device(struct cfg80211_registered_device *rdev,
 
 	if (rdev->scan_req && rdev->scan_req->wdev == wdev) {
 		if (WARN_ON(!rdev->scan_req->notified))
-			rdev->scan_req->aborted = true;
+			rdev->scan_req->info.aborted = true;
 		___cfg80211_scan_done(rdev, false);
 	}
 }
@@ -748,6 +748,36 @@ int wiphy_register(struct wiphy *wiphy)
 		nl80211_send_reg_change_event(&request);
 	}
 
+	/* Check that nobody globally advertises any capabilities they do not
+	 * advertise on all possible interface types.
+	 */
+	if (wiphy->extended_capabilities_len &&
+	    wiphy->num_iftype_ext_capab &&
+	    wiphy->iftype_ext_capab) {
+		u8 supported_on_all, j;
+		const struct wiphy_iftype_ext_capab *capab;
+
+		capab = wiphy->iftype_ext_capab;
+		for (j = 0; j < wiphy->extended_capabilities_len; j++) {
+			if (capab[0].extended_capabilities_len > j)
+				supported_on_all =
+					capab[0].extended_capabilities[j];
+			else
+				supported_on_all = 0x00;
+			for (i = 1; i < wiphy->num_iftype_ext_capab; i++) {
+				if (j >= capab[i].extended_capabilities_len) {
+					supported_on_all = 0x00;
+					break;
+				}
+				supported_on_all &=
+					capab[i].extended_capabilities[j];
+			}
+			if (WARN_ON(wiphy->extended_capabilities[j] &
+				    ~supported_on_all))
+				break;
+		}
+	}
+
 	rdev->wiphy.registered = true;
 	rtnl_unlock();
 
@@ -875,6 +905,8 @@ void cfg80211_unregister_wdev(struct wireless_dev *wdev)
 
 	if (WARN_ON(wdev->netdev))
 		return;
+
+	nl80211_notify_iface(rdev, wdev, NL80211_CMD_DEL_INTERFACE);
 
 	list_del_rcu(&wdev->list);
 	rdev->devlist_generation++;
@@ -1049,6 +1081,8 @@ static int cfg80211_netdev_notifier_call(struct notifier_block *nb,
 		     wdev->iftype == NL80211_IFTYPE_P2P_CLIENT ||
 		     wdev->iftype == NL80211_IFTYPE_ADHOC) && !wdev->use_4addr)
 			dev->priv_flags |= IFF_DONT_BRIDGE;
+
+		nl80211_notify_iface(rdev, wdev, NL80211_CMD_NEW_INTERFACE);
 		break;
 	case NETDEV_GOING_DOWN:
 		cfg80211_leave(rdev, wdev);
@@ -1057,7 +1091,7 @@ static int cfg80211_netdev_notifier_call(struct notifier_block *nb,
 		cfg80211_update_iface_num(rdev, wdev->iftype, -1);
 		if (rdev->scan_req && rdev->scan_req->wdev == wdev) {
 			if (WARN_ON(!rdev->scan_req->notified))
-				rdev->scan_req->aborted = true;
+				rdev->scan_req->info.aborted = true;
 			___cfg80211_scan_done(rdev, false);
 		}
 
@@ -1127,6 +1161,8 @@ static int cfg80211_netdev_notifier_call(struct notifier_block *nb,
 		 * remove and clean it up.
 		 */
 		if (!list_empty(&wdev->list)) {
+			nl80211_notify_iface(rdev, wdev,
+					     NL80211_CMD_DEL_INTERFACE);
 			sysfs_remove_link(&dev->dev.kobj, "phy80211");
 			list_del_rcu(&wdev->list);
 			rdev->devlist_generation++;
@@ -1216,7 +1252,7 @@ static int __init cfg80211_init(void)
 	if (err)
 		goto out_fail_reg;
 
-	cfg80211_wq = create_singlethread_workqueue("cfg80211");
+	cfg80211_wq = alloc_ordered_workqueue("cfg80211", WQ_MEM_RECLAIM);
 	if (!cfg80211_wq) {
 		err = -ENOMEM;
 		goto out_fail_wq;

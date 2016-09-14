@@ -665,6 +665,8 @@ static int i40e_alloc_vsi_res(struct i40e_vf *vf, enum i40e_vsi_type type)
 		goto error_alloc_vsi_res;
 	}
 	if (type == I40E_VSI_SRIOV) {
+		u64 hena = i40e_pf_get_default_rss_hena(pf);
+
 		vf->lan_vsi_idx = vsi->idx;
 		vf->lan_vsi_id = vsi->id;
 		/* If the port VLAN has been configured and then the
@@ -687,6 +689,10 @@ static int i40e_alloc_vsi_res(struct i40e_vf *vf, enum i40e_vsi_type type)
 					vf->default_lan_addr.addr, vf->vf_id);
 		}
 		spin_unlock_bh(&vsi->mac_filter_list_lock);
+		i40e_write_rx_ctl(&pf->hw, I40E_VFQF_HENA1(0, vf->vf_id),
+				  (u32)hena);
+		i40e_write_rx_ctl(&pf->hw, I40E_VFQF_HENA1(1, vf->vf_id),
+				  (u32)(hena >> 32));
 	}
 
 	/* program mac filter */
@@ -985,7 +991,10 @@ complete_reset:
 		i40e_enable_vf_mappings(vf);
 		set_bit(I40E_VF_STAT_ACTIVE, &vf->vf_states);
 		clear_bit(I40E_VF_STAT_DISABLED, &vf->vf_states);
-		i40e_notify_client_of_vf_reset(pf, abs_vf_id);
+		/* Do not notify the client during VF init */
+		if (vf->pf->num_alloc_vfs)
+			i40e_notify_client_of_vf_reset(pf, abs_vf_id);
+		vf->num_vlan = 0;
 	}
 	/* tell the VF the reset is done */
 	wr32(hw, I40E_VFGEN_RSTAT1(vf->vf_id), I40E_VFR_VFACTIVE);
@@ -1083,7 +1092,6 @@ int i40e_alloc_vfs(struct i40e_pf *pf, u16 num_alloc_vfs)
 			goto err_iov;
 		}
 	}
-	i40e_notify_client_of_vf_enable(pf, num_alloc_vfs);
 	/* allocate memory */
 	vfs = kcalloc(num_alloc_vfs, sizeof(struct i40e_vf), GFP_KERNEL);
 	if (!vfs) {
@@ -1106,6 +1114,8 @@ int i40e_alloc_vfs(struct i40e_pf *pf, u16 num_alloc_vfs)
 
 	}
 	pf->num_alloc_vfs = num_alloc_vfs;
+
+	i40e_notify_client_of_vf_enable(pf, num_alloc_vfs);
 
 err_alloc:
 	if (ret)
@@ -2308,6 +2318,7 @@ err:
 	/* send the response back to the VF */
 	aq_ret = i40e_vc_send_msg_to_vf(vf, I40E_VIRTCHNL_OP_GET_RSS_HENA_CAPS,
 					aq_ret, (u8 *)vrh, len);
+	kfree(vrh);
 	return aq_ret;
 }
 
@@ -2989,6 +3000,7 @@ int i40e_ndo_get_vf_config(struct net_device *netdev,
 	else
 		ivi->linkstate = IFLA_VF_LINK_STATE_DISABLE;
 	ivi->spoofchk = vf->spoofchk;
+	ivi->trusted = vf->trusted;
 	ret = 0;
 
 error_param:

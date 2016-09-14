@@ -208,18 +208,35 @@ static int vc4_hdmi_connector_get_modes(struct drm_connector *connector)
 	return ret;
 }
 
-static struct drm_encoder *
-vc4_hdmi_connector_best_encoder(struct drm_connector *connector)
+/*
+ * drm_helper_probe_single_connector_modes() applies drm_mode_set_crtcinfo to
+ * all modes with flag CRTC_INTERLACE_HALVE_V. We don't want this, as it
+ * screws up vblank timestamping for interlaced modes, so fix it up.
+ */
+static int vc4_hdmi_connector_probe_modes(struct drm_connector *connector,
+					  uint32_t maxX, uint32_t maxY)
 {
-	struct vc4_hdmi_connector *hdmi_connector =
-		to_vc4_hdmi_connector(connector);
-	return hdmi_connector->encoder;
+	struct drm_display_mode *mode;
+	int count;
+
+	count = drm_helper_probe_single_connector_modes(connector, maxX, maxY);
+	if (count == 0)
+		return 0;
+
+	DRM_DEBUG_KMS("[CONNECTOR:%d:%s] probed adapted modes :\n",
+		      connector->base.id, connector->name);
+	list_for_each_entry(mode, &connector->modes, head) {
+		drm_mode_set_crtcinfo(mode, 0);
+		drm_mode_debug_printmodeline(mode);
+	}
+
+	return count;
 }
 
 static const struct drm_connector_funcs vc4_hdmi_connector_funcs = {
 	.dpms = drm_atomic_helper_connector_dpms,
 	.detect = vc4_hdmi_connector_detect,
-	.fill_modes = drm_helper_probe_single_connector_modes,
+	.fill_modes = vc4_hdmi_connector_probe_modes,
 	.destroy = vc4_hdmi_connector_destroy,
 	.reset = drm_atomic_helper_connector_reset,
 	.atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
@@ -228,7 +245,6 @@ static const struct drm_connector_funcs vc4_hdmi_connector_funcs = {
 
 static const struct drm_connector_helper_funcs vc4_hdmi_connector_helper_funcs = {
 	.get_modes = vc4_hdmi_connector_get_modes,
-	.best_encoder = vc4_hdmi_connector_best_encoder,
 };
 
 static struct drm_connector *vc4_hdmi_connector_init(struct drm_device *dev,
@@ -255,7 +271,7 @@ static struct drm_connector *vc4_hdmi_connector_init(struct drm_device *dev,
 	connector->polled = (DRM_CONNECTOR_POLL_CONNECT |
 			     DRM_CONNECTOR_POLL_DISCONNECT);
 
-	connector->interlace_allowed = 0;
+	connector->interlace_allowed = 1;
 	connector->doublescan_allowed = 0;
 
 	drm_mode_connector_attach_encoder(connector, encoder);
@@ -465,12 +481,6 @@ static int vc4_hdmi_bind(struct device *dev, struct device *master, void *data)
 	if (IS_ERR(hdmi->hd_regs))
 		return PTR_ERR(hdmi->hd_regs);
 
-	ddc_node = of_parse_phandle(dev->of_node, "ddc", 0);
-	if (!ddc_node) {
-		DRM_ERROR("Failed to find ddc node in device tree\n");
-		return -ENODEV;
-	}
-
 	hdmi->pixel_clock = devm_clk_get(dev, "pixel");
 	if (IS_ERR(hdmi->pixel_clock)) {
 		DRM_ERROR("Failed to get pixel clock\n");
@@ -482,7 +492,14 @@ static int vc4_hdmi_bind(struct device *dev, struct device *master, void *data)
 		return PTR_ERR(hdmi->hsm_clock);
 	}
 
+	ddc_node = of_parse_phandle(dev->of_node, "ddc", 0);
+	if (!ddc_node) {
+		DRM_ERROR("Failed to find ddc node in device tree\n");
+		return -ENODEV;
+	}
+
 	hdmi->ddc = of_find_i2c_adapter_by_node(ddc_node);
+	of_node_put(ddc_node);
 	if (!hdmi->ddc) {
 		DRM_DEBUG("Failed to get ddc i2c adapter by node\n");
 		return -EPROBE_DEFER;

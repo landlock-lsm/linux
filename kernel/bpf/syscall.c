@@ -17,6 +17,7 @@
 #include <linux/license.h>
 #include <linux/filter.h>
 #include <linux/version.h>
+#include <linux/fs.h>
 
 DEFINE_PER_CPU(int, bpf_prog_active);
 
@@ -124,7 +125,12 @@ void bpf_map_put_with_uref(struct bpf_map *map)
 
 static int bpf_map_release(struct inode *inode, struct file *filp)
 {
-	bpf_map_put_with_uref(filp->private_data);
+	struct bpf_map *map = filp->private_data;
+
+	if (map->ops->map_release)
+		map->ops->map_release(map, filp);
+
+	bpf_map_put_with_uref(map);
 	return 0;
 }
 
@@ -381,6 +387,13 @@ static int map_update_elem(union bpf_attr *attr)
 		err = bpf_percpu_hash_update(map, key, value, attr->flags);
 	} else if (map->map_type == BPF_MAP_TYPE_PERCPU_ARRAY) {
 		err = bpf_percpu_array_update(map, key, value, attr->flags);
+	} else if (map->map_type == BPF_MAP_TYPE_PERF_EVENT_ARRAY ||
+		   map->map_type == BPF_MAP_TYPE_PROG_ARRAY ||
+		   map->map_type == BPF_MAP_TYPE_CGROUP_ARRAY) {
+		rcu_read_lock();
+		err = bpf_fd_array_map_update_elem(map, f.file, key, value,
+						   attr->flags);
+		rcu_read_unlock();
 	} else {
 		rcu_read_lock();
 		err = map->ops->map_update_elem(map, key, value, attr->flags);
@@ -560,7 +573,7 @@ static void fixup_bpf_calls(struct bpf_prog *prog)
 				continue;
 			}
 
-			fn = prog->aux->ops->get_func_proto(insn->imm);
+			fn = prog->aux->ops->get_func_proto(insn->imm, &prog->subtype);
 			/* all functions that have prototype and verifier allowed
 			 * programs to call them, must be real in-kernel functions
 			 */
@@ -606,7 +619,7 @@ static void bpf_prog_uncharge_memlock(struct bpf_prog *prog)
 	free_uid(user);
 }
 
-static void __prog_put_common(struct rcu_head *rcu)
+static void __bpf_prog_put_rcu(struct rcu_head *rcu)
 {
 	struct bpf_prog_aux *aux = container_of(rcu, struct bpf_prog_aux, rcu);
 
@@ -615,17 +628,10 @@ static void __prog_put_common(struct rcu_head *rcu)
 	bpf_prog_free(aux->prog);
 }
 
-/* version of bpf_prog_put() that is called after a grace period */
-void bpf_prog_put_rcu(struct bpf_prog *prog)
-{
-	if (atomic_dec_and_test(&prog->aux->refcnt))
-		call_rcu(&prog->aux->rcu, __prog_put_common);
-}
-
 void bpf_prog_put(struct bpf_prog *prog)
 {
 	if (atomic_dec_and_test(&prog->aux->refcnt))
-		__prog_put_common(&prog->aux->rcu);
+		call_rcu(&prog->aux->rcu, __bpf_prog_put_rcu);
 }
 EXPORT_SYMBOL_GPL(bpf_prog_put);
 
@@ -633,7 +639,7 @@ static int bpf_prog_release(struct inode *inode, struct file *filp)
 {
 	struct bpf_prog *prog = filp->private_data;
 
-	bpf_prog_put_rcu(prog);
+	bpf_prog_put(prog);
 	return 0;
 }
 
@@ -647,7 +653,7 @@ int bpf_prog_new_fd(struct bpf_prog *prog)
 				O_RDWR | O_CLOEXEC);
 }
 
-static struct bpf_prog *__bpf_prog_get(struct fd f)
+static struct bpf_prog *____bpf_prog_get(struct fd f)
 {
 	if (!f.file)
 		return ERR_PTR(-EBADF);
@@ -659,36 +665,53 @@ static struct bpf_prog *__bpf_prog_get(struct fd f)
 	return f.file->private_data;
 }
 
-struct bpf_prog *bpf_prog_inc(struct bpf_prog *prog)
+struct bpf_prog *bpf_prog_add(struct bpf_prog *prog, int i)
 {
-	if (atomic_inc_return(&prog->aux->refcnt) > BPF_MAX_REFCNT) {
-		atomic_dec(&prog->aux->refcnt);
+	if (atomic_add_return(i, &prog->aux->refcnt) > BPF_MAX_REFCNT) {
+		atomic_sub(i, &prog->aux->refcnt);
 		return ERR_PTR(-EBUSY);
 	}
 	return prog;
 }
+EXPORT_SYMBOL_GPL(bpf_prog_add);
 
-/* called by sockets/tracing/seccomp before attaching program to an event
- * pairs with bpf_prog_put()
- */
-struct bpf_prog *bpf_prog_get(u32 ufd)
+struct bpf_prog *bpf_prog_inc(struct bpf_prog *prog)
+{
+	return bpf_prog_add(prog, 1);
+}
+
+static struct bpf_prog *__bpf_prog_get(u32 ufd, enum bpf_prog_type *type)
 {
 	struct fd f = fdget(ufd);
 	struct bpf_prog *prog;
 
-	prog = __bpf_prog_get(f);
+	prog = ____bpf_prog_get(f);
 	if (IS_ERR(prog))
 		return prog;
+	if (type && prog->type != *type) {
+		prog = ERR_PTR(-EINVAL);
+		goto out;
+	}
 
 	prog = bpf_prog_inc(prog);
+out:
 	fdput(f);
-
 	return prog;
 }
-EXPORT_SYMBOL_GPL(bpf_prog_get);
+
+struct bpf_prog *bpf_prog_get(u32 ufd)
+{
+	return __bpf_prog_get(ufd, NULL);
+}
+
+struct bpf_prog *bpf_prog_get_type(u32 ufd, enum bpf_prog_type type)
+{
+	return __bpf_prog_get(ufd, &type);
+}
+EXPORT_SYMBOL_GPL(bpf_prog_get_type);
 
 /* last field in 'union bpf_attr' used by this command */
-#define	BPF_PROG_LOAD_LAST_FIELD kern_version
+#define	BPF_PROG_LOAD_LAST_FIELD prog_subtype
 
 static int bpf_prog_load(union bpf_attr *attr)
 {
@@ -719,9 +742,7 @@ static int bpf_prog_load(union bpf_attr *attr)
 
 	switch (type) {
 	case BPF_PROG_TYPE_SOCKET_FILTER:
-	case BPF_PROG_TYPE_LANDLOCK_FILE_OPEN:
-	case BPF_PROG_TYPE_LANDLOCK_FILE_PERMISSION:
-	case BPF_PROG_TYPE_LANDLOCK_MMAP_FILE:
+	case BPF_PROG_TYPE_LANDLOCK:
 		break;
 	default:
 		if (!capable(CAP_SYS_ADMIN))
@@ -754,6 +775,7 @@ static int bpf_prog_load(union bpf_attr *attr)
 	err = find_prog_type(type, prog);
 	if (err < 0)
 		goto free_prog;
+	prog->subtype = attr->prog_subtype;
 
 	/* run eBPF verifier */
 	err = bpf_check(&prog, attr);
@@ -801,6 +823,91 @@ static int bpf_obj_get(const union bpf_attr *attr)
 
 	return bpf_obj_get_user(u64_to_ptr(attr->pathname));
 }
+
+#ifdef CONFIG_CGROUP_BPF
+
+#define BPF_PROG_ATTACH_LAST_FIELD attach_type
+
+static int bpf_prog_attach(const union bpf_attr *attr)
+{
+	struct bpf_prog *prog;
+	struct cgroup *cgrp;
+	int result;
+
+	if (CHECK_ATTR(BPF_PROG_ATTACH))
+		return -EINVAL;
+
+	switch (attr->attach_type) {
+	case BPF_CGROUP_INET_INGRESS:
+	case BPF_CGROUP_INET_EGRESS:
+		if (!capable(CAP_NET_ADMIN))
+			return -EPERM;
+
+		prog = bpf_prog_get_type(attr->attach_bpf_fd,
+					 BPF_PROG_TYPE_CGROUP_SOCKET);
+		break;
+
+	case BPF_CGROUP_LANDLOCK:
+#ifdef CONFIG_SECURITY_LANDLOCK
+		/*
+		 * security/capability check done in landlock_cgroup_set_hook()
+		 * called by cgroup_bpf_update()
+		 */
+		prog = bpf_prog_get_type(attr->attach_bpf_fd,
+				BPF_PROG_TYPE_LANDLOCK);
+		break;
+#endif /* CONFIG_SECURITY_LANDLOCK */
+
+	default:
+		return -EINVAL;
+	}
+
+	if (IS_ERR(prog))
+		return PTR_ERR(prog);
+
+	cgrp = cgroup_get_from_fd(attr->target_fd, MAY_WRITE);
+	if (IS_ERR(cgrp)) {
+		bpf_prog_put(prog);
+		return PTR_ERR(cgrp);
+	}
+
+	result = cgroup_bpf_update(cgrp, prog, attr->attach_type);
+	cgroup_put(cgrp);
+
+	return result;
+}
+
+#define BPF_PROG_DETACH_LAST_FIELD attach_type
+
+static int bpf_prog_detach(const union bpf_attr *attr)
+{
+	struct cgroup *cgrp;
+	int result = 0;
+
+	if (CHECK_ATTR(BPF_PROG_DETACH))
+		return -EINVAL;
+
+	switch (attr->attach_type) {
+	case BPF_CGROUP_INET_INGRESS:
+	case BPF_CGROUP_INET_EGRESS:
+		if (!capable(CAP_NET_ADMIN))
+			return -EPERM;
+
+		cgrp = cgroup_get_from_fd(attr->target_fd, MAY_WRITE);
+		if (IS_ERR(cgrp))
+			return PTR_ERR(cgrp);
+		result = cgroup_bpf_update(cgrp, NULL, attr->attach_type);
+		cgroup_put(cgrp);
+		break;
+
+	case BPF_CGROUP_LANDLOCK:
+	default:
+		return -EINVAL;
+	}
+
+	return result;
+}
+#endif /* CONFIG_CGROUP_BPF */
 
 SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, size)
 {
@@ -868,6 +975,16 @@ SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, siz
 	case BPF_OBJ_GET:
 		err = bpf_obj_get(&attr);
 		break;
+
+#ifdef CONFIG_CGROUP_BPF
+	case BPF_PROG_ATTACH:
+		err = bpf_prog_attach(&attr);
+		break;
+	case BPF_PROG_DETACH:
+		err = bpf_prog_detach(&attr);
+		break;
+#endif
+
 	default:
 		err = -EINVAL;
 		break;

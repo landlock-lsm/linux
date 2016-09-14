@@ -15,11 +15,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * version 2 along with this program; If not, see
- * http://www.sun.com/software/products/lustre/docs/GPLv2.pdf
- *
- * Please contact Sun Microsystems, Inc., 4150 Network Circle, Santa Clara,
- * CA 95054 USA or visit www.sun.com if you need additional information or
- * have any questions.
+ * http://www.gnu.org/licenses/gpl-2.0.html
  *
  * GPL HEADER END
  */
@@ -69,6 +65,7 @@
 #include "../../include/obd_support.h"
 #include "../../include/obd_class.h"
 #include "../../include/lprocfs_status.h"
+#include "../../include/lustre/lustre_ioctl.h"
 #include "../../include/lustre_ver.h"
 
 /* buffer MUST be at least the size of obd_ioctl_hdr */
@@ -195,7 +192,7 @@ static long obd_class_ioctl(struct file *filp, unsigned int cmd,
 }
 
 /* declare character device */
-static struct file_operations obd_psdev_fops = {
+static const struct file_operations obd_psdev_fops = {
 	.owner	  = THIS_MODULE,
 	.unlocked_ioctl = obd_class_ioctl, /* unlocked_ioctl */
 	.open	   = obd_class_open,      /* open */

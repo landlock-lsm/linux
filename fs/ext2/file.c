@@ -51,7 +51,7 @@ static int ext2_dax_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 	}
 	down_read(&ei->dax_sem);
 
-	ret = __dax_fault(vma, vmf, ext2_get_block);
+	ret = dax_fault(vma, vmf, ext2_get_block);
 
 	up_read(&ei->dax_sem);
 	if (vmf->flags & FAULT_FLAG_WRITE)
@@ -72,7 +72,7 @@ static int ext2_dax_pmd_fault(struct vm_area_struct *vma, unsigned long addr,
 	}
 	down_read(&ei->dax_sem);
 
-	ret = __dax_pmd_fault(vma, addr, pmd, flags, ext2_get_block);
+	ret = dax_pmd_fault(vma, addr, pmd, flags, ext2_get_block);
 
 	up_read(&ei->dax_sem);
 	if (flags & FAULT_FLAG_WRITE)
@@ -172,6 +172,7 @@ const struct file_operations ext2_file_operations = {
 	.open		= dquot_file_open,
 	.release	= ext2_release_file,
 	.fsync		= ext2_fsync,
+	.get_unmapped_area = thp_get_unmapped_area,
 	.splice_read	= generic_file_splice_read,
 	.splice_write	= iter_file_splice_write,
 };

@@ -90,6 +90,7 @@ static void __cleanup_single_sta(struct sta_info *sta)
 	struct tid_ampdu_tx *tid_tx;
 	struct ieee80211_sub_if_data *sdata = sta->sdata;
 	struct ieee80211_local *local = sdata->local;
+	struct fq *fq = &local->fq;
 	struct ps_data *ps;
 
 	if (test_sta_flag(sta, WLAN_STA_PS_STA) ||
@@ -113,11 +114,10 @@ static void __cleanup_single_sta(struct sta_info *sta)
 	if (sta->sta.txq[0]) {
 		for (i = 0; i < ARRAY_SIZE(sta->sta.txq); i++) {
 			struct txq_info *txqi = to_txq_info(sta->sta.txq[i]);
-			int n = skb_queue_len(&txqi->queue);
 
-			ieee80211_purge_tx_queue(&local->hw, &txqi->queue);
-			atomic_sub(n, &sdata->txqs_len[txqi->txq.ac]);
-			txqi->byte_cnt = 0;
+			spin_lock_bh(&fq->lock);
+			ieee80211_txq_purge(local, txqi);
+			spin_unlock_bh(&fq->lock);
 		}
 	}
 
@@ -340,6 +340,9 @@ struct sta_info *sta_info_alloc(struct ieee80211_sub_if_data *sdata,
 
 	memcpy(sta->addr, addr, ETH_ALEN);
 	memcpy(sta->sta.addr, addr, ETH_ALEN);
+	sta->sta.max_rx_aggregation_subframes =
+		local->hw.max_rx_aggregation_subframes;
+
 	sta->local = local;
 	sta->sdata = sdata;
 	sta->rx_stats.last_rx = jiffies;
@@ -368,7 +371,7 @@ struct sta_info *sta_info_alloc(struct ieee80211_sub_if_data *sdata,
 		for (i = 0; i < ARRAY_SIZE(sta->sta.txq); i++) {
 			struct txq_info *txq = txq_data + i * size;
 
-			ieee80211_init_tx_queue(sdata, sta, txq, i);
+			ieee80211_txq_init(sdata, sta, txq, i);
 		}
 	}
 
@@ -1211,7 +1214,7 @@ void ieee80211_sta_ps_deliver_wakeup(struct sta_info *sta)
 		for (i = 0; i < ARRAY_SIZE(sta->sta.txq); i++) {
 			struct txq_info *txqi = to_txq_info(sta->sta.txq[i]);
 
-			if (!skb_queue_len(&txqi->queue))
+			if (!txqi->tin.backlog_packets)
 				continue;
 
 			drv_wake_tx_queue(local, txqi);
@@ -1616,7 +1619,6 @@ ieee80211_sta_ps_deliver_response(struct sta_info *sta,
 
 		sta_info_recalc_tim(sta);
 	} else {
-		unsigned long tids = sta->txq_buffered_tids & driver_release_tids;
 		int tid;
 
 		/*
@@ -1648,7 +1650,8 @@ ieee80211_sta_ps_deliver_response(struct sta_info *sta,
 		for (tid = 0; tid < ARRAY_SIZE(sta->sta.txq); tid++) {
 			struct txq_info *txqi = to_txq_info(sta->sta.txq[tid]);
 
-			if (!(tids & BIT(tid)) || skb_queue_len(&txqi->queue))
+			if (!(driver_release_tids & BIT(tid)) ||
+			    txqi->tin.backlog_packets)
 				continue;
 
 			sta_info_recalc_tim(sta);
@@ -2279,16 +2282,31 @@ void sta_set_sinfo(struct sta_info *sta, struct station_info *sinfo)
 	if (test_sta_flag(sta, WLAN_STA_TDLS_PEER))
 		sinfo->sta_flags.set |= BIT(NL80211_STA_FLAG_TDLS_PEER);
 
-	/* check if the driver has a SW RC implementation */
-	if (ref && ref->ops->get_expected_throughput)
-		thr = ref->ops->get_expected_throughput(sta->rate_ctrl_priv);
-	else
-		thr = drv_get_expected_throughput(local, &sta->sta);
+	thr = sta_get_expected_throughput(sta);
 
 	if (thr != 0) {
 		sinfo->filled |= BIT(NL80211_STA_INFO_EXPECTED_THROUGHPUT);
 		sinfo->expected_throughput = thr;
 	}
+}
+
+u32 sta_get_expected_throughput(struct sta_info *sta)
+{
+	struct ieee80211_sub_if_data *sdata = sta->sdata;
+	struct ieee80211_local *local = sdata->local;
+	struct rate_control_ref *ref = NULL;
+	u32 thr = 0;
+
+	if (test_sta_flag(sta, WLAN_STA_RATE_CONTROL))
+		ref = local->rate_ctrl;
+
+	/* check if the driver has a SW RC implementation */
+	if (ref && ref->ops->get_expected_throughput)
+		thr = ref->ops->get_expected_throughput(sta->rate_ctrl_priv);
+	else
+		thr = drv_get_expected_throughput(local, sta);
+
+	return thr;
 }
 
 unsigned long ieee80211_sta_last_active(struct sta_info *sta)

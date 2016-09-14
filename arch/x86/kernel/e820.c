@@ -388,11 +388,11 @@ static int __init __append_e820_map(struct e820entry *biosmap, int nr_map)
 	while (nr_map) {
 		u64 start = biosmap->addr;
 		u64 size = biosmap->size;
-		u64 end = start + size;
+		u64 end = start + size - 1;
 		u32 type = biosmap->type;
 
 		/* Overflow in 64 bits? Ignore the memory map. */
-		if (start > end)
+		if (start > end && likely(size))
 			return -1;
 
 		e820_add_region(start, size, type);
@@ -1188,6 +1188,6 @@ void __init memblock_find_dma_reserve(void)
 			nr_free_pages += end_pfn - start_pfn;
 	}
 
-	set_dma_reserve(nr_pages - nr_free_pages);
+	set_memory_reserve(nr_pages - nr_free_pages, false);
 #endif
 }

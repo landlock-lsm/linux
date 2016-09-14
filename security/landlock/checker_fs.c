@@ -33,12 +33,8 @@ static inline u64 bpf_landlock_cmp_fs_prop_with_struct_file(u64 r1_property,
 	struct path *p1, *p2;
 	struct map_landlock_handle *handle;
 	int i;
-	bool result_dentry = !(property & LANDLOCK_FLAG_FS_DENTRY);
-	bool result_inode = !(property & LANDLOCK_FLAG_FS_INODE);
-	bool result_device = !(property & LANDLOCK_FLAG_FS_DEVICE);
-	bool result_mount = !(property & LANDLOCK_FLAG_FS_MOUNT);
 
-	/* ARG_CONST_PTR_TO_LANDLOCK_HANDLE_FS is a arraymap */
+	/* ARG_CONST_PTR_TO_LANDLOCK_HANDLE_FS is an arraymap */
 	if (unlikely(!map)) {
 		WARN_ON(1);
 		return -EFAULT;
@@ -58,10 +54,16 @@ static inline u64 bpf_landlock_cmp_fs_prop_with_struct_file(u64 r1_property,
 	default:
 		return -EINVAL;
 	}
+	p2 = &file->f_path;
 
 	synchronize_rcu();
 
 	for (i = 0; i < array->n_entries; i++) {
+		bool result_dentry = !(property & LANDLOCK_FLAG_FS_DENTRY);
+		bool result_inode = !(property & LANDLOCK_FLAG_FS_INODE);
+		bool result_device = !(property & LANDLOCK_FLAG_FS_DEVICE);
+		bool result_mount = !(property & LANDLOCK_FLAG_FS_MOUNT);
+
 		handle = (struct map_landlock_handle *)
 				(array->value + array->elem_size * i);
 
@@ -69,13 +71,7 @@ static inline u64 bpf_landlock_cmp_fs_prop_with_struct_file(u64 r1_property,
 			WARN_ON(1);
 			return -EFAULT;
 		}
-
-		p1 = &handle->file->f_path;
-		p2 = &file->f_path;
-		if (unlikely(!p1 || !p2)) {
-			WARN_ON(1);
-			return -EFAULT;
-		}
+		p1 = &handle->path;
 
 		if (!result_dentry && p1->dentry == p2->dentry)
 			result_dentry = true;
@@ -145,6 +141,9 @@ static inline u64 bpf_landlock_cmp_fs_beneath_with_struct_file(u64 r1_option,
 	default:
 		return -EINVAL;
 	}
+	/* p1 and p2 will be set correctly in the loop */
+	p1 = &file->f_path;
+	p2 = p1;
 
 	synchronize_rcu();
 
@@ -158,13 +157,10 @@ static inline u64 bpf_landlock_cmp_fs_beneath_with_struct_file(u64 r1_option,
 			return -EINVAL;
 		}
 
-		if (option & LANDLOCK_FLAG_OPT_REVERSE) {
-			p1 = &file->f_path;
-			p2 = &handle->file->f_path;
-		} else {
-			p1 = &handle->file->f_path;
-			p2 = &file->f_path;
-		}
+		if (option & LANDLOCK_FLAG_OPT_REVERSE)
+			p2 = &handle->path;
+		else
+			p1 = &handle->path;
 
 		if (path_is_under(p2, p1))
 			return 0;

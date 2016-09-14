@@ -7,7 +7,7 @@
 #include <linux/uaccess.h>
 #include <linux/hardirq.h>
 #include <linux/kdebug.h>
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/ptrace.h>
 #include <linux/kexec.h>
 #include <linux/sysfs.h>
@@ -46,19 +46,9 @@ void dump_trace(struct task_struct *task, struct pt_regs *regs,
 	int graph = 0;
 	u32 *prev_esp;
 
-	if (!task)
-		task = current;
-
-	if (!stack) {
-		unsigned long dummy;
-
-		stack = &dummy;
-		if (task != current)
-			stack = (unsigned long *)task->thread.sp;
-	}
-
-	if (!bp)
-		bp = stack_frame(task, regs);
+	task = task ? : current;
+	stack = stack ? : get_stack_pointer(task, regs);
+	bp = bp ? : (unsigned long)get_frame_pointer(task, regs);
 
 	for (;;) {
 		void *end_stack;
@@ -95,12 +85,7 @@ show_stack_log_lvl(struct task_struct *task, struct pt_regs *regs,
 	unsigned long *stack;
 	int i;
 
-	if (sp == NULL) {
-		if (task)
-			sp = (unsigned long *)task->thread.sp;
-		else
-			sp = (unsigned long *)&sp;
-	}
+	sp = sp ? : get_stack_pointer(task, regs);
 
 	stack = sp;
 	for (i = 0; i < kstack_depth_to_print; i++) {
@@ -137,7 +122,7 @@ void show_regs(struct pt_regs *regs)
 		u8 *ip;
 
 		pr_emerg("Stack:\n");
-		show_stack_log_lvl(NULL, regs, &regs->sp, 0, KERN_EMERG);
+		show_stack_log_lvl(NULL, regs, NULL, 0, KERN_EMERG);
 
 		pr_emerg("Code:");
 

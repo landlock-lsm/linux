@@ -1996,7 +1996,8 @@ static int rocker_port_change_proto_down(struct net_device *dev,
 	return 0;
 }
 
-static void rocker_port_neigh_destroy(struct neighbour *n)
+static void rocker_port_neigh_destroy(struct net_device *dev,
+				      struct neighbour *n)
 {
 	struct rocker_port *rocker_port = netdev_priv(n->dev);
 	int err;
@@ -2411,7 +2412,7 @@ static int rocker_port_rx_proc(const struct rocker *rocker,
 	skb->protocol = eth_type_trans(skb, rocker_port->dev);
 
 	if (rx_flags & ROCKER_RX_FLAGS_FWD_OFFLOAD)
-		skb->offload_fwd_mark = rocker_port->dev->offload_fwd_mark;
+		skb->offload_fwd_mark = 1;
 
 	rocker_port->dev->stats.rx_packets++;
 	rocker_port->dev->stats.rx_bytes += skb->len;

@@ -18,7 +18,7 @@
 #include <linux/irq.h>
 #include <linux/irqdomain.h>
 #include <linux/kernel.h>
-#include <linux/module.h>
+#include <linux/init.h>
 #include <linux/msi.h>
 #include <linux/of_address.h>
 #include <linux/of_pci.h>
@@ -506,35 +506,6 @@ static irqreturn_t xilinx_pcie_intr_handler(int irq, void *data)
 }
 
 /**
- * xilinx_pcie_free_irq_domain - Free IRQ domain
- * @port: PCIe port information
- */
-static void xilinx_pcie_free_irq_domain(struct xilinx_pcie_port *port)
-{
-	int i;
-	u32 irq, num_irqs;
-
-	/* Free IRQ Domain */
-	if (IS_ENABLED(CONFIG_PCI_MSI)) {
-
-		free_pages(port->msi_pages, 0);
-
-		num_irqs = XILINX_NUM_MSI_IRQS;
-	} else {
-		/* INTx */
-		num_irqs = 4;
-	}
-
-	for (i = 0; i < num_irqs; i++) {
-		irq = irq_find_mapping(port->irq_domain, i);
-		if (irq > 0)
-			irq_dispose_mapping(irq);
-	}
-
-	irq_domain_remove(port->irq_domain);
-}
-
-/**
  * xilinx_pcie_init_irq_domain - Initialize IRQ domain
  * @port: PCIe port information
  *
@@ -550,7 +521,7 @@ static int xilinx_pcie_init_irq_domain(struct xilinx_pcie_port *port)
 	pcie_intc_node = of_get_next_child(node, NULL);
 	if (!pcie_intc_node) {
 		dev_err(dev, "No PCIe Intc node found\n");
-		return PTR_ERR(pcie_intc_node);
+		return -ENODEV;
 	}
 
 	port->irq_domain = irq_domain_add_linear(pcie_intc_node, 4,
@@ -558,7 +529,7 @@ static int xilinx_pcie_init_irq_domain(struct xilinx_pcie_port *port)
 						 port);
 	if (!port->irq_domain) {
 		dev_err(dev, "Failed to get a INTx IRQ domain\n");
-		return PTR_ERR(port->irq_domain);
+		return -ENODEV;
 	}
 
 	/* Setup MSI */
@@ -569,7 +540,7 @@ static int xilinx_pcie_init_irq_domain(struct xilinx_pcie_port *port)
 							 &xilinx_pcie_msi_chip);
 		if (!port->irq_domain) {
 			dev_err(dev, "Failed to get a MSI IRQ domain\n");
-			return PTR_ERR(port->irq_domain);
+			return -ENODEV;
 		}
 
 		xilinx_pcie_enable_msi(port);
@@ -660,7 +631,6 @@ static int xilinx_pcie_probe(struct platform_device *pdev)
 	struct xilinx_pcie_port *port;
 	struct device *dev = &pdev->dev;
 	struct pci_bus *bus;
-
 	int err;
 	resource_size_t iobase = 0;
 	LIST_HEAD(res);
@@ -694,10 +664,17 @@ static int xilinx_pcie_probe(struct platform_device *pdev)
 		dev_err(dev, "Getting bridge resources failed\n");
 		return err;
 	}
+
+	err = devm_request_pci_bus_resources(dev, &res);
+	if (err)
+		goto error;
+
 	bus = pci_create_root_bus(&pdev->dev, 0,
 				  &xilinx_pcie_ops, port, &res);
-	if (!bus)
-		return -ENOMEM;
+	if (!bus) {
+		err = -ENOMEM;
+		goto error;
+	}
 
 #ifdef CONFIG_PCI_MSI
 	xilinx_pcie_msi_chip.dev = port->dev;
@@ -712,21 +689,10 @@ static int xilinx_pcie_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, port);
 
 	return 0;
-}
 
-/**
- * xilinx_pcie_remove - Remove function
- * @pdev: Platform device pointer
- *
- * Return: '0' always
- */
-static int xilinx_pcie_remove(struct platform_device *pdev)
-{
-	struct xilinx_pcie_port *port = platform_get_drvdata(pdev);
-
-	xilinx_pcie_free_irq_domain(port);
-
-	return 0;
+error:
+	pci_free_resource_list(&res);
+	return err;
 }
 
 static struct of_device_id xilinx_pcie_of_match[] = {
@@ -741,10 +707,5 @@ static struct platform_driver xilinx_pcie_driver = {
 		.suppress_bind_attrs = true,
 	},
 	.probe = xilinx_pcie_probe,
-	.remove = xilinx_pcie_remove,
 };
-module_platform_driver(xilinx_pcie_driver);
-
-MODULE_AUTHOR("Xilinx Inc");
-MODULE_DESCRIPTION("Xilinx AXI PCIe driver");
-MODULE_LICENSE("GPL v2");
+builtin_platform_driver(xilinx_pcie_driver);

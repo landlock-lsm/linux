@@ -137,17 +137,32 @@ enum iwl_tx_pm_timeouts {
 	PM_FRAME_ASSOC		= 3,
 };
 
-/*
- * TX command security control
- */
-#define TX_CMD_SEC_WEP			0x01
-#define TX_CMD_SEC_CCM			0x02
-#define TX_CMD_SEC_TKIP			0x03
-#define TX_CMD_SEC_EXT			0x04
 #define TX_CMD_SEC_MSK			0x07
 #define TX_CMD_SEC_WEP_KEY_IDX_POS	6
 #define TX_CMD_SEC_WEP_KEY_IDX_MSK	0xc0
-#define TX_CMD_SEC_KEY128		0x08
+
+/**
+ * enum iwl_tx_cmd_sec_ctrl - bitmasks for security control in TX command
+ * @TX_CMD_SEC_WEP: WEP encryption algorithm.
+ * @TX_CMD_SEC_CCM: CCM encryption algorithm.
+ * @TX_CMD_SEC_TKIP: TKIP encryption algorithm.
+ * @TX_CMD_SEC_EXT: extended cipher algorithm.
+ * @TX_CMD_SEC_GCMP: GCMP encryption algorithm.
+ * @TX_CMD_SEC_KEY128: set for 104 bits WEP key.
+ * @TC_CMD_SEC_KEY_FROM_TABLE: for a non-WEP key, set if the key should be taken
+ *	from the table instead of from the TX command.
+ *	If the key is taken from the key table its index should be given by the
+ *	first byte of the TX command key field.
+ */
+enum iwl_tx_cmd_sec_ctrl {
+	TX_CMD_SEC_WEP			= 0x01,
+	TX_CMD_SEC_CCM			= 0x02,
+	TX_CMD_SEC_TKIP			= 0x03,
+	TX_CMD_SEC_EXT			= 0x04,
+	TX_CMD_SEC_GCMP			= 0x05,
+	TX_CMD_SEC_KEY128		= 0x08,
+	TC_CMD_SEC_KEY_FROM_TABLE	= 0x08,
+};
 
 /* TODO: how does these values are OK with only 16 bit variable??? */
 /*
@@ -562,8 +577,8 @@ struct iwl_mvm_ba_notif {
 	u8 reserved1;
 } __packed;
 
-/*
- * struct iwl_mac_beacon_cmd - beacon template command
+/**
+ * struct iwl_mac_beacon_cmd_v6 - beacon template command
  * @tx: the tx commands associated with the beacon frame
  * @template_id: currently equal to the mac context id of the coresponding
  *  mac.
@@ -571,13 +586,34 @@ struct iwl_mvm_ba_notif {
  * @tim_size: the length of the tim IE
  * @frame: the template of the beacon frame
  */
-struct iwl_mac_beacon_cmd {
+struct iwl_mac_beacon_cmd_v6 {
 	struct iwl_tx_cmd tx;
 	__le32 template_id;
 	__le32 tim_idx;
 	__le32 tim_size;
 	struct ieee80211_hdr frame[0];
-} __packed;
+} __packed; /* BEACON_TEMPLATE_CMD_API_S_VER_6 */
+
+/**
+ * struct iwl_mac_beacon_cmd - beacon template command with offloaded CSA
+ * @tx: the tx commands associated with the beacon frame
+ * @template_id: currently equal to the mac context id of the coresponding
+ *  mac.
+ * @tim_idx: the offset of the tim IE in the beacon
+ * @tim_size: the length of the tim IE
+ * @ecsa_offset: offset to the ECSA IE if present
+ * @csa_offset: offset to the CSA IE if present
+ * @frame: the template of the beacon frame
+ */
+struct iwl_mac_beacon_cmd {
+	struct iwl_tx_cmd tx;
+	__le32 template_id;
+	__le32 tim_idx;
+	__le32 tim_size;
+	__le32 ecsa_offset;
+	__le32 csa_offset;
+	struct ieee80211_hdr frame[0];
+} __packed; /* BEACON_TEMPLATE_CMD_API_S_VER_7 */
 
 struct iwl_beacon_notif {
 	struct iwl_mvm_tx_resp beacon_notify_hdr;
@@ -639,13 +675,21 @@ static inline u32 iwl_mvm_get_scd_ssn(struct iwl_mvm_tx_resp *tx_resp)
 			    tx_resp->frame_count) & 0xfff;
 }
 
+/* Available options for the SCD_QUEUE_CFG HCMD */
+enum iwl_scd_cfg_actions {
+	SCD_CFG_DISABLE_QUEUE		= 0x0,
+	SCD_CFG_ENABLE_QUEUE		= 0x1,
+	SCD_CFG_UPDATE_QUEUE_TID	= 0x2,
+};
+
 /**
  * struct iwl_scd_txq_cfg_cmd - New txq hw scheduler config command
  * @token:
  * @sta_id: station id
  * @tid:
  * @scd_queue: scheduler queue to confiug
- * @enable: 1 queue enable, 0 queue disable
+ * @action: 1 queue enable, 0 queue disable, 2 change txq's tid owner
+ *	Value is one of %iwl_scd_cfg_actions options
  * @aggregate: 1 aggregated queue, 0 otherwise
  * @tx_fifo: %enum iwl_mvm_tx_fifo
  * @window: BA window size
@@ -656,7 +700,7 @@ struct iwl_scd_txq_cfg_cmd {
 	u8 sta_id;
 	u8 tid;
 	u8 scd_queue;
-	u8 enable;
+	u8 action;
 	u8 aggregate;
 	u8 tx_fifo;
 	u8 window;

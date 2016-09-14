@@ -29,9 +29,17 @@
 
 void common(void) {
 	BLANK();
+	OFFSET(TASK_threadsp, task_struct, thread.sp);
+#ifdef CONFIG_CC_STACKPROTECTOR
+	OFFSET(TASK_stack_canary, task_struct, stack_canary);
+#endif
+
+	BLANK();
 	OFFSET(TI_flags, thread_info, flags);
 	OFFSET(TI_status, thread_info, status);
-	OFFSET(TI_addr_limit, thread_info, addr_limit);
+
+	BLANK();
+	OFFSET(TASK_addr_limit, task_struct, thread.addr_limit);
 
 	BLANK();
 	OFFSET(crypto_tfm_ctx_offset, crypto_tfm, __crt_ctx);

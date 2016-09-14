@@ -21,7 +21,7 @@
 #include <usb_ops_linux.h>
 #include <rtl8188e_hal.h>
 
-s32	rtl8188eu_init_xmit_priv(struct adapter *adapt)
+s32 rtw_hal_init_xmit_priv(struct adapter *adapt)
 {
 	struct xmit_priv	*pxmitpriv = &adapt->xmitpriv;
 
@@ -424,11 +424,12 @@ static u32 xmitframe_need_length(struct xmit_frame *pxmitframe)
 	return len;
 }
 
-s32 rtl8188eu_xmitframe_complete(struct adapter *adapt, struct xmit_priv *pxmitpriv, struct xmit_buf *pxmitbuf)
+s32 rtl8188eu_xmitframe_complete(struct adapter *adapt, struct xmit_priv *pxmitpriv)
 {
 	struct hal_data_8188e	*haldata = GET_HAL_DATA(adapt);
 	struct xmit_frame *pxmitframe = NULL;
 	struct xmit_frame *pfirstframe = NULL;
+	struct xmit_buf *pxmitbuf;
 
 	/*  aggregate variable */
 	struct hw_xmit *phwxmit;
@@ -450,12 +451,9 @@ s32 rtl8188eu_xmitframe_complete(struct adapter *adapt, struct xmit_priv *pxmitp
 
 	RT_TRACE(_module_rtl8192c_xmit_c_, _drv_info_, ("+xmitframe_complete\n"));
 
-	/*  check xmitbuffer is ok */
-	if (pxmitbuf == NULL) {
-		pxmitbuf = rtw_alloc_xmitbuf(pxmitpriv);
-		if (pxmitbuf == NULL)
-			return false;
-	}
+	pxmitbuf = rtw_alloc_xmitbuf(pxmitpriv);
+	if (pxmitbuf == NULL)
+		return false;
 
 	/* 3 1. pick up first frame */
 	rtw_free_xmitframe(pxmitpriv, pxmitframe);
@@ -624,7 +622,7 @@ static s32 xmitframe_direct(struct adapter *adapt, struct xmit_frame *pxmitframe
  *	true	dump packet directly
  *	false	enqueue packet
  */
-static s32 pre_xmitframe(struct adapter *adapt, struct xmit_frame *pxmitframe)
+s32 rtw_hal_xmit(struct adapter *adapt, struct xmit_frame *pxmitframe)
 {
 	s32 res;
 	struct xmit_buf *pxmitbuf = NULL;
@@ -674,20 +672,10 @@ enqueue:
 	return false;
 }
 
-s32 rtl8188eu_mgnt_xmit(struct adapter *adapt, struct xmit_frame *pmgntframe)
+s32 rtw_hal_mgnt_xmit(struct adapter *adapt, struct xmit_frame *pmgntframe)
 {
 	struct xmit_priv *xmitpriv = &adapt->xmitpriv;
 
 	rtl88eu_mon_xmit_hook(adapt->pmondev, pmgntframe, xmitpriv->frag_len);
 	return rtw_dump_xframe(adapt, pmgntframe);
-}
-
-/*
- * Return
- *	true	dump packet directly ok
- *	false	temporary can't transmit packets to hardware
- */
-s32 rtl8188eu_hal_xmit(struct adapter *adapt, struct xmit_frame *pxmitframe)
-{
-	return pre_xmitframe(adapt, pxmitframe);
 }

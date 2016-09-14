@@ -162,10 +162,16 @@ static int push_mpls(struct sk_buff *skb, struct sw_flow_key *key,
 	if (skb_cow_head(skb, MPLS_HLEN) < 0)
 		return -ENOMEM;
 
+	if (!skb->inner_protocol) {
+		skb_set_inner_network_header(skb, skb->mac_len);
+		skb_set_inner_protocol(skb, skb->protocol);
+	}
+
 	skb_push(skb, MPLS_HLEN);
 	memmove(skb_mac_header(skb) - MPLS_HLEN, skb_mac_header(skb),
 		skb->mac_len);
 	skb_reset_mac_header(skb);
+	skb_set_network_header(skb, skb->mac_len);
 
 	new_mpls_lse = (__be32 *)skb_mpls_header(skb);
 	*new_mpls_lse = mpls->mpls_lse;
@@ -173,8 +179,6 @@ static int push_mpls(struct sk_buff *skb, struct sw_flow_key *key,
 	skb_postpush_rcsum(skb, new_mpls_lse, MPLS_HLEN);
 
 	update_ethertype(skb, eth_hdr(skb), mpls->mpls_ethertype);
-	if (!skb->inner_protocol)
-		skb_set_inner_protocol(skb, skb->protocol);
 	skb->protocol = mpls->mpls_ethertype;
 
 	invalidate_flow_key(key);
@@ -198,6 +202,7 @@ static int pop_mpls(struct sk_buff *skb, struct sw_flow_key *key,
 
 	__skb_pull(skb, MPLS_HLEN);
 	skb_reset_mac_header(skb);
+	skb_set_network_header(skb, skb->mac_len);
 
 	/* skb_mpls_header() is used to locate the ethertype
 	 * field correctly in the presence of VLAN tags.
@@ -241,20 +246,24 @@ static int pop_vlan(struct sk_buff *skb, struct sw_flow_key *key)
 	int err;
 
 	err = skb_vlan_pop(skb);
-	if (skb_vlan_tag_present(skb))
+	if (skb_vlan_tag_present(skb)) {
 		invalidate_flow_key(key);
-	else
-		key->eth.tci = 0;
+	} else {
+		key->eth.vlan.tci = 0;
+		key->eth.vlan.tpid = 0;
+	}
 	return err;
 }
 
 static int push_vlan(struct sk_buff *skb, struct sw_flow_key *key,
 		     const struct ovs_action_push_vlan *vlan)
 {
-	if (skb_vlan_tag_present(skb))
+	if (skb_vlan_tag_present(skb)) {
 		invalidate_flow_key(key);
-	else
-		key->eth.tci = vlan->vlan_tci;
+	} else {
+		key->eth.vlan.tci = vlan->vlan_tci;
+		key->eth.vlan.tpid = vlan->vlan_tpid;
+	}
 	return skb_vlan_push(skb, vlan->vlan_tpid,
 			     ntohs(vlan->vlan_tci) & ~VLAN_TAG_PRESENT);
 }
@@ -750,6 +759,14 @@ static void do_output(struct datapath *dp, struct sk_buff *skb, int out_port,
 
 	if (likely(vport)) {
 		u16 mru = OVS_CB(skb)->mru;
+		u32 cutlen = OVS_CB(skb)->cutlen;
+
+		if (unlikely(cutlen > 0)) {
+			if (skb->len - cutlen > ETH_HLEN)
+				pskb_trim(skb, skb->len - cutlen);
+			else
+				pskb_trim(skb, ETH_HLEN);
+		}
 
 		if (likely(!mru || (skb->len <= mru + ETH_HLEN))) {
 			ovs_vport_send(vport, skb);
@@ -775,7 +792,8 @@ static void do_output(struct datapath *dp, struct sk_buff *skb, int out_port,
 
 static int output_userspace(struct datapath *dp, struct sk_buff *skb,
 			    struct sw_flow_key *key, const struct nlattr *attr,
-			    const struct nlattr *actions, int actions_len)
+			    const struct nlattr *actions, int actions_len,
+			    uint32_t cutlen)
 {
 	struct dp_upcall_info upcall;
 	const struct nlattr *a;
@@ -822,7 +840,7 @@ static int output_userspace(struct datapath *dp, struct sk_buff *skb,
 		} /* End of switch. */
 	}
 
-	return ovs_dp_upcall(dp, skb, key, &upcall);
+	return ovs_dp_upcall(dp, skb, key, &upcall, cutlen);
 }
 
 static int sample(struct datapath *dp, struct sk_buff *skb,
@@ -832,6 +850,7 @@ static int sample(struct datapath *dp, struct sk_buff *skb,
 	const struct nlattr *acts_list = NULL;
 	const struct nlattr *a;
 	int rem;
+	u32 cutlen = 0;
 
 	for (a = nla_data(attr), rem = nla_len(attr); rem > 0;
 		 a = nla_next(a, &rem)) {
@@ -858,13 +877,24 @@ static int sample(struct datapath *dp, struct sk_buff *skb,
 		return 0;
 
 	/* The only known usage of sample action is having a single user-space
+	 * action, or having a truncate action followed by a single user-space
 	 * action. Treat this usage as a special case.
 	 * The output_userspace() should clone the skb to be sent to the
 	 * user space. This skb will be consumed by its caller.
 	 */
+	if (unlikely(nla_type(a) == OVS_ACTION_ATTR_TRUNC)) {
+		struct ovs_action_trunc *trunc = nla_data(a);
+
+		if (skb->len > trunc->max_len)
+			cutlen = skb->len - trunc->max_len;
+
+		a = nla_next(a, &rem);
+	}
+
 	if (likely(nla_type(a) == OVS_ACTION_ATTR_USERSPACE &&
 		   nla_is_last(a, rem)))
-		return output_userspace(dp, skb, key, a, actions, actions_len);
+		return output_userspace(dp, skb, key, a, actions,
+					actions_len, cutlen);
 
 	skb = skb_clone(skb, GFP_ATOMIC);
 	if (!skb)
@@ -1051,6 +1081,7 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
 			if (out_skb)
 				do_output(dp, out_skb, prev_port, key);
 
+			OVS_CB(skb)->cutlen = 0;
 			prev_port = -1;
 		}
 
@@ -1059,8 +1090,18 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
 			prev_port = nla_get_u32(a);
 			break;
 
+		case OVS_ACTION_ATTR_TRUNC: {
+			struct ovs_action_trunc *trunc = nla_data(a);
+
+			if (skb->len > trunc->max_len)
+				OVS_CB(skb)->cutlen = skb->len - trunc->max_len;
+			break;
+		}
+
 		case OVS_ACTION_ATTR_USERSPACE:
-			output_userspace(dp, skb, key, a, attr, len);
+			output_userspace(dp, skb, key, a, attr,
+						     len, OVS_CB(skb)->cutlen);
+			OVS_CB(skb)->cutlen = 0;
 			break;
 
 		case OVS_ACTION_ATTR_HASH:

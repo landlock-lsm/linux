@@ -206,14 +206,11 @@ mv_desc_run_tx_complete_actions(struct mv_xor_desc_slot *desc,
 	if (desc->async_tx.cookie > 0) {
 		cookie = desc->async_tx.cookie;
 
+		dma_descriptor_unmap(&desc->async_tx);
 		/* call the callback (must not sleep or submit new
 		 * operations to this channel)
 		 */
-		if (desc->async_tx.callback)
-			desc->async_tx.callback(
-				desc->async_tx.callback_param);
-
-		dma_descriptor_unmap(&desc->async_tx);
+		dmaengine_desc_get_callback_invoke(&desc->async_tx, NULL);
 	}
 
 	/* run dependent operations */
@@ -1057,7 +1054,7 @@ mv_xor_channel_add(struct mv_xor_device *xordev,
 
 err_free_irq:
 	free_irq(mv_chan->irq, mv_chan);
- err_free_dma:
+err_free_dma:
 	dma_free_coherent(&pdev->dev, MV_XOR_POOL_SIZE,
 			  mv_chan->dma_desc_pool_virt, mv_chan->dma_desc_pool);
 	return ERR_PTR(ret);

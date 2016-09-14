@@ -29,26 +29,26 @@ struct nand_flash_dev;
 struct device_node;
 
 /* Scan and identify a NAND device */
-extern int nand_scan(struct mtd_info *mtd, int max_chips);
+int nand_scan(struct mtd_info *mtd, int max_chips);
 /*
  * Separate phases of nand_scan(), allowing board driver to intervene
  * and override command or ECC setup according to flash type.
  */
-extern int nand_scan_ident(struct mtd_info *mtd, int max_chips,
+int nand_scan_ident(struct mtd_info *mtd, int max_chips,
 			   struct nand_flash_dev *table);
-extern int nand_scan_tail(struct mtd_info *mtd);
+int nand_scan_tail(struct mtd_info *mtd);
 
 /* Free resources held by the NAND device */
-extern void nand_release(struct mtd_info *mtd);
+void nand_release(struct mtd_info *mtd);
 
 /* Internal helper for board drivers which need to override command function */
-extern void nand_wait_ready(struct mtd_info *mtd);
+void nand_wait_ready(struct mtd_info *mtd);
 
 /* locks all blocks present in the device */
-extern int nand_lock(struct mtd_info *mtd, loff_t ofs, uint64_t len);
+int nand_lock(struct mtd_info *mtd, loff_t ofs, uint64_t len);
 
 /* unlocks specified locked blocks */
-extern int nand_unlock(struct mtd_info *mtd, loff_t ofs, uint64_t len);
+int nand_unlock(struct mtd_info *mtd, loff_t ofs, uint64_t len);
 
 /* The maximum number of NAND chips in an array */
 #define NAND_MAX_CHIPS		8
@@ -460,6 +460,13 @@ struct nand_hw_control {
 	wait_queue_head_t wq;
 };
 
+static inline void nand_hw_control_init(struct nand_hw_control *nfc)
+{
+	nfc->active = NULL;
+	spin_lock_init(&nfc->lock);
+	init_waitqueue_head(&nfc->wq);
+}
+
 /**
  * struct nand_ecc_ctrl - Control structure for ECC
  * @mode:	ECC mode
@@ -783,6 +790,7 @@ static inline void nand_set_controller_data(struct nand_chip *chip, void *priv)
  * NAND Flash Manufacturer ID Codes
  */
 #define NAND_MFR_TOSHIBA	0x98
+#define NAND_MFR_ESMT		0xc8
 #define NAND_MFR_SAMSUNG	0xec
 #define NAND_MFR_FUJITSU	0x04
 #define NAND_MFR_NATIONAL	0x8f
@@ -892,14 +900,14 @@ struct nand_manufacturers {
 extern struct nand_flash_dev nand_flash_ids[];
 extern struct nand_manufacturers nand_manuf_ids[];
 
-extern int nand_default_bbt(struct mtd_info *mtd);
-extern int nand_markbad_bbt(struct mtd_info *mtd, loff_t offs);
-extern int nand_isreserved_bbt(struct mtd_info *mtd, loff_t offs);
-extern int nand_isbad_bbt(struct mtd_info *mtd, loff_t offs, int allowbbt);
-extern int nand_erase_nand(struct mtd_info *mtd, struct erase_info *instr,
-			   int allowbbt);
-extern int nand_do_read(struct mtd_info *mtd, loff_t from, size_t len,
-			size_t *retlen, uint8_t *buf);
+int nand_default_bbt(struct mtd_info *mtd);
+int nand_markbad_bbt(struct mtd_info *mtd, loff_t offs);
+int nand_isreserved_bbt(struct mtd_info *mtd, loff_t offs);
+int nand_isbad_bbt(struct mtd_info *mtd, loff_t offs, int allowbbt);
+int nand_erase_nand(struct mtd_info *mtd, struct erase_info *instr,
+		    int allowbbt);
+int nand_do_read(struct mtd_info *mtd, loff_t from, size_t len,
+		 size_t *retlen, uint8_t *buf);
 
 /**
  * struct platform_nand_chip - chip level device structure

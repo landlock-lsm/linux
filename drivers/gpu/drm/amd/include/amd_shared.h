@@ -26,15 +26,6 @@
 #define AMD_MAX_USEC_TIMEOUT		100000  /* 100 ms */
 
 /*
-* Supported GPU families (aligned with amdgpu_drm.h)
-*/
-#define AMD_FAMILY_UNKNOWN              0
-#define AMD_FAMILY_CI                   120 /* Bonaire, Hawaii */
-#define AMD_FAMILY_KV                   125 /* Kaveri, Kabini, Mullins */
-#define AMD_FAMILY_VI                   130 /* Iceland, Tonga */
-#define AMD_FAMILY_CZ                   135 /* Carrizo */
-
-/*
  * Supported ASIC types
  */
 enum amd_asic_type {
@@ -120,6 +111,8 @@ enum amd_powergating_state {
 #define AMD_PG_SUPPORT_SDMA			(1 << 8)
 #define AMD_PG_SUPPORT_ACP			(1 << 9)
 #define AMD_PG_SUPPORT_SAMU			(1 << 10)
+#define AMD_PG_SUPPORT_GFX_QUICK_MG		(1 << 11)
+#define AMD_PG_SUPPORT_GFX_PIPELINE		(1 << 12)
 
 enum amd_pm_state_type {
 	/* not used for dpm */
@@ -166,8 +159,14 @@ struct amd_ip_funcs {
 	bool (*is_idle)(void *handle);
 	/* poll for idle */
 	int (*wait_for_idle)(void *handle);
+	/* check soft reset the IP block */
+	int (*check_soft_reset)(void *handle);
+	/* pre soft reset the IP block */
+	int (*pre_soft_reset)(void *handle);
 	/* soft reset the IP block */
 	int (*soft_reset)(void *handle);
+	/* post soft reset the IP block */
+	int (*post_soft_reset)(void *handle);
 	/* enable/disable cg for the IP block */
 	int (*set_clockgating_state)(void *handle,
 				     enum amd_clockgating_state state);

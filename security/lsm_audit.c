@@ -99,7 +99,7 @@ int ipv4_skb_to_auditdata(struct sk_buff *skb,
 	}
 	return ret;
 }
-#if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
+#if IS_ENABLED(CONFIG_IPV6)
 /**
  * ipv6_skb_to_auditdata : fill auditdata from skb
  * @skb : the skb
@@ -220,7 +220,7 @@ static void dump_common_audit_data(struct audit_buffer *ab,
 	 */
 	BUILD_BUG_ON(sizeof(a->u) > sizeof(void *)*2);
 
-	audit_log_format(ab, " pid=%d comm=", task_pid_nr(current));
+	audit_log_format(ab, " pid=%d comm=", task_tgid_nr(current));
 	audit_log_untrustedstring(ab, memcpy(comm, current->comm, sizeof(comm)));
 
 	switch (a->type) {
@@ -257,7 +257,7 @@ static void dump_common_audit_data(struct audit_buffer *ab,
 			audit_log_format(ab, " ino=%lu", inode->i_ino);
 		}
 
-		audit_log_format(ab, " ioctlcmd=%hx", a->u.op->cmd);
+		audit_log_format(ab, " ioctlcmd=0x%hx", a->u.op->cmd);
 		break;
 	}
 	case LSM_AUDIT_DATA_DENTRY: {
@@ -294,7 +294,7 @@ static void dump_common_audit_data(struct audit_buffer *ab,
 	case LSM_AUDIT_DATA_TASK: {
 		struct task_struct *tsk = a->u.tsk;
 		if (tsk) {
-			pid_t pid = task_pid_nr(tsk);
+			pid_t pid = task_tgid_nr(tsk);
 			if (pid) {
 				char comm[sizeof(tsk->comm)];
 				audit_log_format(ab, " opid=%d ocomm=", pid);

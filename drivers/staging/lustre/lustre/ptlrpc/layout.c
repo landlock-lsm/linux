@@ -15,11 +15,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * version 2 along with this program; If not, see
- * http://www.sun.com/software/products/lustre/docs/GPLv2.pdf
- *
- * Please contact Sun Microsystems, Inc., 4150 Network Circle, Santa Clara,
- * CA 95054 USA or visit www.sun.com if you need additional information or
- * have any questions.
+ * http://www.gnu.org/licenses/gpl-2.0.html
  *
  * GPL HEADER END
  */
@@ -198,7 +194,7 @@ static const struct req_msg_field *mds_reint_create_slave_client[] = {
 	&RMF_DLM_REQ
 };
 
-static const struct req_msg_field *mds_reint_create_rmt_acl_client[] = {
+static const struct req_msg_field *mds_reint_create_acl_client[] = {
 	&RMF_PTLRPC_BODY,
 	&RMF_REC_REINT,
 	&RMF_CAPA1,
@@ -671,15 +667,12 @@ static struct req_format *req_formats[] = {
 	&RQF_MDS_SYNC,
 	&RQF_MDS_CLOSE,
 	&RQF_MDS_RELEASE_CLOSE,
-	&RQF_MDS_PIN,
-	&RQF_MDS_UNPIN,
 	&RQF_MDS_READPAGE,
 	&RQF_MDS_WRITEPAGE,
-	&RQF_MDS_IS_SUBDIR,
 	&RQF_MDS_DONE_WRITING,
 	&RQF_MDS_REINT,
 	&RQF_MDS_REINT_CREATE,
-	&RQF_MDS_REINT_CREATE_RMT_ACL,
+	&RQF_MDS_REINT_CREATE_ACL,
 	&RQF_MDS_REINT_CREATE_SLAVE,
 	&RQF_MDS_REINT_CREATE_SYM,
 	&RQF_MDS_REINT_OPEN,
@@ -1242,10 +1235,10 @@ struct req_format RQF_MDS_REINT_CREATE =
 			mds_reint_create_client, mdt_body_capa);
 EXPORT_SYMBOL(RQF_MDS_REINT_CREATE);
 
-struct req_format RQF_MDS_REINT_CREATE_RMT_ACL =
-	DEFINE_REQ_FMT0("MDS_REINT_CREATE_RMT_ACL",
-			mds_reint_create_rmt_acl_client, mdt_body_capa);
-EXPORT_SYMBOL(RQF_MDS_REINT_CREATE_RMT_ACL);
+struct req_format RQF_MDS_REINT_CREATE_ACL =
+	DEFINE_REQ_FMT0("MDS_REINT_CREATE_ACL",
+			mds_reint_create_acl_client, mdt_body_capa);
+EXPORT_SYMBOL(RQF_MDS_REINT_CREATE_ACL);
 
 struct req_format RQF_MDS_REINT_CREATE_SLAVE =
 	DEFINE_REQ_FMT0("MDS_REINT_CREATE_EA",
@@ -1393,15 +1386,6 @@ struct req_format RQF_MDS_RELEASE_CLOSE =
 			mdt_release_close_client, mds_last_unlink_server);
 EXPORT_SYMBOL(RQF_MDS_RELEASE_CLOSE);
 
-struct req_format RQF_MDS_PIN =
-	DEFINE_REQ_FMT0("MDS_PIN",
-			mdt_body_capa, mdt_body_only);
-EXPORT_SYMBOL(RQF_MDS_PIN);
-
-struct req_format RQF_MDS_UNPIN =
-	DEFINE_REQ_FMT0("MDS_UNPIN", mdt_body_only, empty);
-EXPORT_SYMBOL(RQF_MDS_UNPIN);
-
 struct req_format RQF_MDS_DONE_WRITING =
 	DEFINE_REQ_FMT0("MDS_DONE_WRITING",
 			mdt_close_client, mdt_body_only);
@@ -1451,11 +1435,6 @@ struct req_format RQF_MDS_WRITEPAGE =
 	DEFINE_REQ_FMT0("MDS_WRITEPAGE",
 			mdt_body_capa, mdt_body_only);
 EXPORT_SYMBOL(RQF_MDS_WRITEPAGE);
-
-struct req_format RQF_MDS_IS_SUBDIR =
-	DEFINE_REQ_FMT0("MDS_IS_SUBDIR",
-			mdt_body_only, mdt_body_only);
-EXPORT_SYMBOL(RQF_MDS_IS_SUBDIR);
 
 struct req_format RQF_LLOG_ORIGIN_HANDLE_CREATE =
 	DEFINE_REQ_FMT0("LLOG_ORIGIN_HANDLE_CREATE",

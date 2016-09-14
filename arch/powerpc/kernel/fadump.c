@@ -333,6 +333,11 @@ int __init fadump_reserve_mem(void)
 	return 1;
 }
 
+unsigned long __init arch_reserved_kernel_pages(void)
+{
+	return memblock_reserved_size() / PAGE_SIZE;
+}
+
 /* Look for fadump= cmdline option. */
 static int __init early_fadump_param(char *p)
 {
@@ -1009,8 +1014,7 @@ static int fadump_invalidate_dump(struct fadump_mem_struct *fdm)
 	} while (wait_time);
 
 	if (rc) {
-		printk(KERN_ERR "Failed to invalidate firmware-assisted dump "
-			"rgistration. unexpected error(%d).\n", rc);
+		pr_err("Failed to invalidate firmware-assisted dump registration. Unexpected error (%d).\n", rc);
 		return rc;
 	}
 	fw_dump.dump_active = 0;

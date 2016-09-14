@@ -262,6 +262,8 @@ int __hci_req_sync(struct hci_dev *hdev, int (*func)(struct hci_request *req,
 		break;
 	}
 
+	kfree_skb(hdev->req_skb);
+	hdev->req_skb = NULL;
 	hdev->req_status = hdev->req_result = 0;
 
 	BT_DBG("%s end: err %d", hdev->name, err);
@@ -1192,7 +1194,7 @@ static void adv_timeout_expire(struct work_struct *work)
 
 	hci_req_init(&req, hdev);
 
-	hci_req_clear_adv_instance(hdev, &req, instance, false);
+	hci_req_clear_adv_instance(hdev, NULL, &req, instance, false);
 
 	if (list_empty(&hdev->adv_instances))
 		__hci_req_disable_advertising(&req);
@@ -1282,8 +1284,9 @@ static void cancel_adv_timeout(struct hci_dev *hdev)
  *   setting.
  * - force == false: Only instances that have a timeout will be removed.
  */
-void hci_req_clear_adv_instance(struct hci_dev *hdev, struct hci_request *req,
-				u8 instance, bool force)
+void hci_req_clear_adv_instance(struct hci_dev *hdev, struct sock *sk,
+				struct hci_request *req, u8 instance,
+				bool force)
 {
 	struct adv_info *adv_instance, *n, *next_instance = NULL;
 	int err;
@@ -1309,7 +1312,7 @@ void hci_req_clear_adv_instance(struct hci_dev *hdev, struct hci_request *req,
 			rem_inst = adv_instance->instance;
 			err = hci_remove_adv_instance(hdev, rem_inst);
 			if (!err)
-				mgmt_advertising_removed(NULL, hdev, rem_inst);
+				mgmt_advertising_removed(sk, hdev, rem_inst);
 		}
 	} else {
 		adv_instance = hci_find_adv_instance(hdev, instance);
@@ -1323,7 +1326,7 @@ void hci_req_clear_adv_instance(struct hci_dev *hdev, struct hci_request *req,
 
 			err = hci_remove_adv_instance(hdev, instance);
 			if (!err)
-				mgmt_advertising_removed(NULL, hdev, instance);
+				mgmt_advertising_removed(sk, hdev, instance);
 		}
 	}
 
@@ -1714,7 +1717,7 @@ void __hci_abort_conn(struct hci_request *req, struct hci_conn *conn,
 			 * function. To be safe hard-code one of the
 			 * values that's suitable for SCO.
 			 */
-			rej.reason = HCI_ERROR_REMOTE_LOW_RESOURCES;
+			rej.reason = HCI_ERROR_REJ_LIMITED_RESOURCES;
 
 			hci_req_add(req, HCI_OP_REJECT_SYNC_CONN_REQ,
 				    sizeof(rej), &rej);

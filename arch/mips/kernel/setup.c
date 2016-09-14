@@ -87,6 +87,13 @@ void __init add_memory_region(phys_addr_t start, phys_addr_t size, long type)
 	int x = boot_mem_map.nr_map;
 	int i;
 
+	/*
+	 * If the region reaches the top of the physical address space, adjust
+	 * the size slightly so that (start + size) doesn't overflow
+	 */
+	if (start + size - 1 == (phys_addr_t)ULLONG_MAX)
+		--size;
+
 	/* Sanity check */
 	if (start + size < start) {
 		pr_warn("Trying to add an invalid memory region, skipped\n");
@@ -874,6 +881,10 @@ void __init setup_arch(char **cmdline_p)
 
 unsigned long kernelsp[NR_CPUS];
 unsigned long fw_arg0, fw_arg1, fw_arg2, fw_arg3;
+
+#ifdef CONFIG_USE_OF
+unsigned long fw_passed_dtb;
+#endif
 
 #ifdef CONFIG_DEBUG_FS
 struct dentry *mips_debugfs_dir;

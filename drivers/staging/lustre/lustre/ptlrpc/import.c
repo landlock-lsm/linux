@@ -15,11 +15,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * version 2 along with this program; If not, see
- * http://www.sun.com/software/products/lustre/docs/GPLv2.pdf
- *
- * Please contact Sun Microsystems, Inc., 4150 Network Circle, Santa Clara,
- * CA 95054 USA or visit www.sun.com if you need additional information or
- * have any questions.
+ * http://www.gnu.org/licenses/gpl-2.0.html
  *
  * GPL HEADER END
  */
@@ -311,7 +307,8 @@ void ptlrpc_invalidate_import(struct obd_import *imp)
 		 */
 		lwi = LWI_TIMEOUT_INTERVAL(
 			cfs_timeout_cap(cfs_time_seconds(timeout)),
-			(timeout > 1)?cfs_time_seconds(1):cfs_time_seconds(1)/2,
+			(timeout > 1) ? cfs_time_seconds(1) :
+			cfs_time_seconds(1) / 2,
 			NULL, NULL);
 		rc = l_wait_event(imp->imp_recovery_waitq,
 				  (atomic_read(&imp->imp_inflight) == 0),
@@ -360,9 +357,8 @@ void ptlrpc_invalidate_import(struct obd_import *imp)
 						  "still on delayed list");
 				}
 
-				CERROR("%s: RPCs in \"%s\" phase found (%d). Network is sluggish? Waiting them to error out.\n",
+				CERROR("%s: Unregistering RPCs found (%d). Network is sluggish? Waiting them to error out.\n",
 				       cli_tgt,
-				       ptlrpc_phase2str(RQ_PHASE_UNREGISTERING),
 				       atomic_read(&imp->
 						   imp_unregistering));
 			}
@@ -698,11 +694,13 @@ int ptlrpc_connect_import(struct obd_import *imp)
 
 	lustre_msg_add_op_flags(request->rq_reqmsg, MSG_CONNECT_NEXT_VER);
 
-	request->rq_no_resend = request->rq_no_delay = 1;
+	request->rq_no_resend = 1;
+	request->rq_no_delay = 1;
 	request->rq_send_state = LUSTRE_IMP_CONNECTING;
 	/* Allow a slightly larger reply for future growth compatibility */
 	req_capsule_set_size(&request->rq_pill, &RMF_CONNECT_DATA, RCL_SERVER,
-			     sizeof(struct obd_connect_data)+16*sizeof(__u64));
+			     sizeof(struct obd_connect_data) +
+			     16 * sizeof(__u64));
 	ptlrpc_request_set_replen(request);
 	request->rq_interpret_reply = ptlrpc_connect_interpret;
 
@@ -1136,6 +1134,7 @@ finish:
 
 		LASSERT((cli->cl_max_pages_per_rpc <= PTLRPC_MAX_BRW_PAGES) &&
 			(cli->cl_max_pages_per_rpc > 0));
+		client_adjust_max_dirty(cli);
 	}
 
 out:
@@ -1501,10 +1500,13 @@ EXPORT_SYMBOL(ptlrpc_disconnect_import);
 /* Adaptive Timeout utils */
 extern unsigned int at_min, at_max, at_history;
 
-/* Bin into timeslices using AT_BINS bins.
- * This gives us a max of the last binlimit*AT_BINS secs without the storage,
- * but still smoothing out a return to normalcy from a slow response.
- * (E.g. remember the maximum latency in each minute of the last 4 minutes.)
+/*
+ *Update at_current with the specified value (bounded by at_min and at_max),
+ * as well as the AT history "bins".
+ *  - Bin into timeslices using AT_BINS bins.
+ *  - This gives us a max of the last at_history seconds without the storage,
+ *    but still smoothing out a return to normalcy from a slow response.
+ *  - (E.g. remember the maximum latency in each minute of the last 4 minutes.)
  */
 int at_measured(struct adaptive_timeout *at, unsigned int val)
 {

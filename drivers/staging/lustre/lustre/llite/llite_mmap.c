@@ -15,11 +15,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * version 2 along with this program; If not, see
- * http://www.sun.com/software/products/lustre/docs/GPLv2.pdf
- *
- * Please contact Sun Microsystems, Inc., 4150 Network Circle, Santa Clara,
- * CA 95054 USA or visit www.sun.com if you need additional information or
- * have any questions.
+ * http://www.gnu.org/licenses/gpl-2.0.html
  *
  * GPL HEADER END
  */
@@ -130,7 +126,7 @@ restart:
 
 	fio = &io->u.ci_fault;
 	fio->ft_index      = index;
-	fio->ft_executable = vma->vm_flags&VM_EXEC;
+	fio->ft_executable = vma->vm_flags & VM_EXEC;
 
 	/*
 	 * disable VM_SEQ_READ and use VM_RAND_READ to make sure that
@@ -138,7 +134,7 @@ restart:
 	 * filemap_nopage. we do our readahead in ll_readpage.
 	 */
 	if (ra_flags)
-		*ra_flags = vma->vm_flags & (VM_RAND_READ|VM_SEQ_READ);
+		*ra_flags = vma->vm_flags & (VM_RAND_READ | VM_SEQ_READ);
 	vma->vm_flags &= ~VM_SEQ_READ;
 	vma->vm_flags |= VM_RAND_READ;
 
@@ -200,17 +196,10 @@ static int ll_page_mkwrite0(struct vm_area_struct *vma, struct page *vmpage,
 
 	set = cfs_block_sigsinv(sigmask(SIGKILL) | sigmask(SIGTERM));
 
-	/* we grab lli_trunc_sem to exclude truncate case.
-	 * Otherwise, we could add dirty pages into osc cache
-	 * while truncate is on-going.
-	 */
 	inode = vvp_object_inode(io->ci_obj);
 	lli = ll_i2info(inode);
-	down_read(&lli->lli_trunc_sem);
 
 	result = cl_io_loop(env, io);
-
-	up_read(&lli->lli_trunc_sem);
 
 	cfs_restore_sigs(set);
 
@@ -315,7 +304,12 @@ static int ll_fault0(struct vm_area_struct *vma, struct vm_fault *vmf)
 		vio->u.fault.ft_flags = 0;
 		vio->u.fault.ft_flags_valid = false;
 
+		/* May call ll_readpage() */
+		ll_cl_add(vma->vm_file, env, io);
+
 		result = cl_io_loop(env, io);
+
+		ll_cl_remove(vma->vm_file, env);
 
 		/* ft_flags are only valid if we reached
 		 * the call to filemap_fault
@@ -435,7 +429,6 @@ static void ll_vm_open(struct vm_area_struct *vma)
 	struct inode *inode    = file_inode(vma->vm_file);
 	struct vvp_object *vob = cl_inode2vvp(inode);
 
-	LASSERT(vma->vm_file);
 	LASSERT(atomic_read(&vob->vob_mmap_cnt) >= 0);
 	atomic_inc(&vob->vob_mmap_cnt);
 }
@@ -448,7 +441,6 @@ static void ll_vm_close(struct vm_area_struct *vma)
 	struct inode      *inode = file_inode(vma->vm_file);
 	struct vvp_object *vob   = cl_inode2vvp(inode);
 
-	LASSERT(vma->vm_file);
 	atomic_dec(&vob->vob_mmap_cnt);
 	LASSERT(atomic_read(&vob->vob_mmap_cnt) >= 0);
 }

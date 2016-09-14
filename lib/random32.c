@@ -47,7 +47,7 @@ static inline void prandom_state_selftest(void)
 }
 #endif
 
-static DEFINE_PER_CPU(struct rnd_state, net_rand_state);
+static DEFINE_PER_CPU(struct rnd_state, net_rand_state) __latent_entropy;
 
 /**
  *	prandom_u32_state - seeded pseudo-random number generator.
@@ -233,7 +233,6 @@ static void __prandom_timer(unsigned long dontcare)
 
 static void __init __prandom_start_seed_timer(void)
 {
-	set_timer_slack(&seed_timer, HZ);
 	seed_timer.expires = jiffies + msecs_to_jiffies(40 * MSEC_PER_SEC);
 	add_timer(&seed_timer);
 }

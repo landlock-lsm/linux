@@ -24,7 +24,7 @@ enum nft_registers {
 	__NFT_REG_MAX,
 
 	NFT_REG32_00	= 8,
-	MFT_REG32_01,
+	NFT_REG32_01,
 	NFT_REG32_02,
 	NFT_REG32_03,
 	NFT_REG32_04,
@@ -546,6 +546,10 @@ enum nft_cmp_attributes {
 };
 #define NFTA_CMP_MAX		(__NFTA_CMP_MAX - 1)
 
+enum nft_lookup_flags {
+	NFT_LOOKUP_F_INV = (1 << 0),
+};
+
 /**
  * enum nft_lookup_attributes - nf_tables set lookup expression netlink attributes
  *
@@ -553,6 +557,7 @@ enum nft_cmp_attributes {
  * @NFTA_LOOKUP_SREG: source register of the data to look for (NLA_U32: nft_registers)
  * @NFTA_LOOKUP_DREG: destination register (NLA_U32: nft_registers)
  * @NFTA_LOOKUP_SET_ID: uniquely identifies a set in a transaction (NLA_U32)
+ * @NFTA_LOOKUP_FLAGS: flags (NLA_U32: enum nft_lookup_flags)
  */
 enum nft_lookup_attributes {
 	NFTA_LOOKUP_UNSPEC,
@@ -560,6 +565,7 @@ enum nft_lookup_attributes {
 	NFTA_LOOKUP_SREG,
 	NFTA_LOOKUP_DREG,
 	NFTA_LOOKUP_SET_ID,
+	NFTA_LOOKUP_FLAGS,
 	__NFTA_LOOKUP_MAX
 };
 #define NFTA_LOOKUP_MAX		(__NFTA_LOOKUP_MAX - 1)
@@ -567,6 +573,10 @@ enum nft_lookup_attributes {
 enum nft_dynset_ops {
 	NFT_DYNSET_OP_ADD,
 	NFT_DYNSET_OP_UPDATE,
+};
+
+enum nft_dynset_flags {
+	NFT_DYNSET_F_INV	= (1 << 0),
 };
 
 /**
@@ -579,6 +589,7 @@ enum nft_dynset_ops {
  * @NFTA_DYNSET_SREG_DATA: source register of the data (NLA_U32)
  * @NFTA_DYNSET_TIMEOUT: timeout value for the new element (NLA_U64)
  * @NFTA_DYNSET_EXPR: expression (NLA_NESTED: nft_expr_attributes)
+ * @NFTA_DYNSET_FLAGS: flags (NLA_U32)
  */
 enum nft_dynset_attributes {
 	NFTA_DYNSET_UNSPEC,
@@ -590,6 +601,7 @@ enum nft_dynset_attributes {
 	NFTA_DYNSET_TIMEOUT,
 	NFTA_DYNSET_EXPR,
 	NFTA_DYNSET_PAD,
+	NFTA_DYNSET_FLAGS,
 	__NFTA_DYNSET_MAX,
 };
 #define NFTA_DYNSET_MAX		(__NFTA_DYNSET_MAX - 1)
@@ -716,6 +728,28 @@ enum nft_meta_keys {
 	NFT_META_CGROUP,
 	NFT_META_PRANDOM,
 };
+
+/**
+ * enum nft_hash_attributes - nf_tables hash expression netlink attributes
+ *
+ * @NFTA_HASH_SREG: source register (NLA_U32)
+ * @NFTA_HASH_DREG: destination register (NLA_U32)
+ * @NFTA_HASH_LEN: source data length (NLA_U32)
+ * @NFTA_HASH_MODULUS: modulus value (NLA_U32)
+ * @NFTA_HASH_SEED: seed value (NLA_U32)
+ * @NFTA_HASH_OFFSET: add this offset value to hash result (NLA_U32)
+ */
+enum nft_hash_attributes {
+	NFTA_HASH_UNSPEC,
+	NFTA_HASH_SREG,
+	NFTA_HASH_DREG,
+	NFTA_HASH_LEN,
+	NFTA_HASH_MODULUS,
+	NFTA_HASH_SEED,
+	NFTA_HASH_OFFSET,
+	__NFTA_HASH_MAX,
+};
+#define NFTA_HASH_MAX	(__NFTA_HASH_MAX - 1)
 
 /**
  * enum nft_meta_attributes - nf_tables meta expression netlink attributes
@@ -873,6 +907,25 @@ enum nft_queue_attributes {
 #define NFT_QUEUE_FLAG_BYPASS		0x01 /* for compatibility with v2 */
 #define NFT_QUEUE_FLAG_CPU_FANOUT	0x02 /* use current CPU (no hashing) */
 #define NFT_QUEUE_FLAG_MASK		0x03
+
+enum nft_quota_flags {
+	NFT_QUOTA_F_INV		= (1 << 0),
+};
+
+/**
+ * enum nft_quota_attributes - nf_tables quota expression netlink attributes
+ *
+ * @NFTA_QUOTA_BYTES: quota in bytes (NLA_U16)
+ * @NFTA_QUOTA_FLAGS: flags (NLA_U32)
+ */
+enum nft_quota_attributes {
+	NFTA_QUOTA_UNSPEC,
+	NFTA_QUOTA_BYTES,
+	NFTA_QUOTA_FLAGS,
+	NFTA_QUOTA_PAD,
+	__NFTA_QUOTA_MAX
+};
+#define NFTA_QUOTA_MAX		(__NFTA_QUOTA_MAX - 1)
 
 /**
  * enum nft_reject_types - nf_tables reject expression reject types
@@ -1045,7 +1098,7 @@ enum nft_gen_attributes {
  * @NFTA_TRACE_NFPROTO: nf protocol processed (NLA_U32)
  * @NFTA_TRACE_POLICY: policy that decided fate of packet (NLA_U32)
  */
-enum nft_trace_attibutes {
+enum nft_trace_attributes {
 	NFTA_TRACE_UNSPEC,
 	NFTA_TRACE_TABLE,
 	NFTA_TRACE_CHAIN,
@@ -1076,4 +1129,28 @@ enum nft_trace_types {
 	__NFT_TRACETYPE_MAX
 };
 #define NFT_TRACETYPE_MAX (__NFT_TRACETYPE_MAX - 1)
+
+/**
+ * enum nft_ng_attributes - nf_tables number generator expression netlink attributes
+ *
+ * @NFTA_NG_DREG: destination register (NLA_U32)
+ * @NFTA_NG_MODULUS: maximum counter value (NLA_U32)
+ * @NFTA_NG_TYPE: operation type (NLA_U32)
+ */
+enum nft_ng_attributes {
+	NFTA_NG_UNSPEC,
+	NFTA_NG_DREG,
+	NFTA_NG_MODULUS,
+	NFTA_NG_TYPE,
+	__NFTA_NG_MAX
+};
+#define NFTA_NG_MAX	(__NFTA_NG_MAX - 1)
+
+enum nft_ng_types {
+	NFT_NG_INCREMENTAL,
+	NFT_NG_RANDOM,
+	__NFT_NG_MAX
+};
+#define NFT_NG_MAX	(__NFT_NG_MAX - 1)
+
 #endif /* _LINUX_NF_TABLES_H */

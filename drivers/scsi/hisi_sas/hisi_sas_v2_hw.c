@@ -174,6 +174,10 @@
 /* HW dma structures */
 /* Delivery queue header */
 /* dw0 */
+#define CMD_HDR_ABORT_FLAG_OFF		0
+#define CMD_HDR_ABORT_FLAG_MSK		(0x3 << CMD_HDR_ABORT_FLAG_OFF)
+#define CMD_HDR_ABORT_DEVICE_TYPE_OFF	2
+#define CMD_HDR_ABORT_DEVICE_TYPE_MSK	(0x1 << CMD_HDR_ABORT_DEVICE_TYPE_OFF)
 #define CMD_HDR_RESP_REPORT_OFF		5
 #define CMD_HDR_RESP_REPORT_MSK		(0x1 << CMD_HDR_RESP_REPORT_OFF)
 #define CMD_HDR_TLR_CTRL_OFF		6
@@ -214,6 +218,8 @@
 #define CMD_HDR_DIF_SGL_LEN_MSK		(0xffff << CMD_HDR_DIF_SGL_LEN_OFF)
 #define CMD_HDR_DATA_SGL_LEN_OFF	16
 #define CMD_HDR_DATA_SGL_LEN_MSK	(0xffff << CMD_HDR_DATA_SGL_LEN_OFF)
+#define CMD_HDR_ABORT_IPTT_OFF		16
+#define CMD_HDR_ABORT_IPTT_MSK		(0xffff << CMD_HDR_ABORT_IPTT_OFF)
 
 /* Completion header */
 /* dw0 */
@@ -221,6 +227,13 @@
 #define CMPLT_HDR_RSPNS_XFRD_MSK	(0x1 << CMPLT_HDR_RSPNS_XFRD_OFF)
 #define CMPLT_HDR_ERX_OFF		12
 #define CMPLT_HDR_ERX_MSK		(0x1 << CMPLT_HDR_ERX_OFF)
+#define CMPLT_HDR_ABORT_STAT_OFF	13
+#define CMPLT_HDR_ABORT_STAT_MSK	(0x7 << CMPLT_HDR_ABORT_STAT_OFF)
+/* abort_stat */
+#define STAT_IO_NOT_VALID		0x1
+#define STAT_IO_NO_DEVICE		0x2
+#define STAT_IO_COMPLETE		0x3
+#define STAT_IO_ABORTED			0x4
 /* dw1 */
 #define CMPLT_HDR_IPTT_OFF		0
 #define CMPLT_HDR_IPTT_MSK		(0xffff << CMPLT_HDR_IPTT_OFF)
@@ -721,30 +734,41 @@ static int reset_hw_v2_hw(struct hisi_hba *hisi_hba)
 			return -EIO;
 	}
 
-	/* reset and disable clock*/
-	regmap_write(hisi_hba->ctrl, hisi_hba->ctrl_reset_reg,
-			reset_val);
-	regmap_write(hisi_hba->ctrl, hisi_hba->ctrl_clock_ena_reg + 4,
-			reset_val);
-	msleep(1);
-	regmap_read(hisi_hba->ctrl, hisi_hba->ctrl_reset_sts_reg, &val);
-	if (reset_val != (val & reset_val)) {
-		dev_err(dev, "SAS reset fail.\n");
-		return -EIO;
-	}
+	if (ACPI_HANDLE(dev)) {
+		acpi_status s;
 
-	/* De-reset and enable clock*/
-	regmap_write(hisi_hba->ctrl, hisi_hba->ctrl_reset_reg + 4,
-			reset_val);
-	regmap_write(hisi_hba->ctrl, hisi_hba->ctrl_clock_ena_reg,
-			reset_val);
-	msleep(1);
-	regmap_read(hisi_hba->ctrl, hisi_hba->ctrl_reset_sts_reg,
-			&val);
-	if (val & reset_val) {
-		dev_err(dev, "SAS de-reset fail.\n");
-		return -EIO;
-	}
+		s = acpi_evaluate_object(ACPI_HANDLE(dev), "_RST", NULL, NULL);
+		if (ACPI_FAILURE(s)) {
+			dev_err(dev, "Reset failed\n");
+			return -EIO;
+		}
+	} else if (hisi_hba->ctrl) {
+		/* reset and disable clock*/
+		regmap_write(hisi_hba->ctrl, hisi_hba->ctrl_reset_reg,
+				reset_val);
+		regmap_write(hisi_hba->ctrl, hisi_hba->ctrl_clock_ena_reg + 4,
+				reset_val);
+		msleep(1);
+		regmap_read(hisi_hba->ctrl, hisi_hba->ctrl_reset_sts_reg, &val);
+		if (reset_val != (val & reset_val)) {
+			dev_err(dev, "SAS reset fail.\n");
+			return -EIO;
+		}
+
+		/* De-reset and enable clock*/
+		regmap_write(hisi_hba->ctrl, hisi_hba->ctrl_reset_reg + 4,
+				reset_val);
+		regmap_write(hisi_hba->ctrl, hisi_hba->ctrl_clock_ena_reg,
+				reset_val);
+		msleep(1);
+		regmap_read(hisi_hba->ctrl, hisi_hba->ctrl_reset_sts_reg,
+				&val);
+		if (val & reset_val) {
+			dev_err(dev, "SAS de-reset fail.\n");
+			return -EIO;
+		}
+	} else
+		dev_warn(dev, "no reset method\n");
 
 	return 0;
 }
@@ -752,13 +776,12 @@ static int reset_hw_v2_hw(struct hisi_hba *hisi_hba)
 static void init_reg_v2_hw(struct hisi_hba *hisi_hba)
 {
 	struct device *dev = &hisi_hba->pdev->dev;
-	struct device_node *np = dev->of_node;
 	int i;
 
 	/* Global registers init */
 
 	/* Deal with am-max-transmissions quirk */
-	if (of_get_property(np, "hip06-sas-v2-quirk-amt", NULL)) {
+	if (device_property_present(dev, "hip06-sas-v2-quirk-amt")) {
 		hisi_sas_write32(hisi_hba, AM_CFG_MAX_TRANS, 0x2020);
 		hisi_sas_write32(hisi_hba, AM_CFG_SINGLE_PORT_MAX_TRANS,
 				 0x2020);
@@ -1553,6 +1576,30 @@ slot_complete_v2_hw(struct hisi_hba *hisi_hba, struct hisi_sas_slot *slot,
 		goto out;
 	}
 
+	/* Use SAS+TMF status codes */
+	switch ((complete_hdr->dw0 & CMPLT_HDR_ABORT_STAT_MSK)
+			>> CMPLT_HDR_ABORT_STAT_OFF) {
+	case STAT_IO_ABORTED:
+		/* this io has been aborted by abort command */
+		ts->stat = SAS_ABORTED_TASK;
+		goto out;
+	case STAT_IO_COMPLETE:
+		/* internal abort command complete */
+		ts->stat = TMF_RESP_FUNC_COMPLETE;
+		goto out;
+	case STAT_IO_NO_DEVICE:
+		ts->stat = TMF_RESP_FUNC_COMPLETE;
+		goto out;
+	case STAT_IO_NOT_VALID:
+		/* abort single io, controller don't find
+		 * the io need to abort
+		 */
+		ts->stat = TMF_RESP_FUNC_FAILED;
+		goto out;
+	default:
+		break;
+	}
+
 	if ((complete_hdr->dw0 & CMPLT_HDR_ERX_MSK) &&
 		(!(complete_hdr->dw0 & CMPLT_HDR_RSPNS_XFRD_MSK))) {
 
@@ -1765,6 +1812,32 @@ static int prep_ata_v2_hw(struct hisi_hba *hisi_hba,
 	return 0;
 }
 
+static int prep_abort_v2_hw(struct hisi_hba *hisi_hba,
+		struct hisi_sas_slot *slot,
+		int device_id, int abort_flag, int tag_to_abort)
+{
+	struct sas_task *task = slot->task;
+	struct domain_device *dev = task->dev;
+	struct hisi_sas_cmd_hdr *hdr = slot->cmd_hdr;
+	struct hisi_sas_port *port = slot->port;
+
+	/* dw0 */
+	hdr->dw0 = cpu_to_le32((5 << CMD_HDR_CMD_OFF) | /*abort*/
+			       (port->id << CMD_HDR_PORT_OFF) |
+			       ((dev_is_sata(dev) ? 1:0) <<
+				CMD_HDR_ABORT_DEVICE_TYPE_OFF) |
+			       (abort_flag << CMD_HDR_ABORT_FLAG_OFF));
+
+	/* dw1 */
+	hdr->dw1 = cpu_to_le32(device_id << CMD_HDR_DEV_ID_OFF);
+
+	/* dw7 */
+	hdr->dw7 = cpu_to_le32(tag_to_abort << CMD_HDR_ABORT_IPTT_OFF);
+	hdr->transfer_tags = cpu_to_le32(slot->idx);
+
+	return 0;
+}
+
 static int phy_up_v2_hw(int phy_no, struct hisi_hba *hisi_hba)
 {
 	int i, res = 0;
@@ -1902,14 +1975,9 @@ static void phy_bcast_v2_hw(int phy_no, struct hisi_hba *hisi_hba)
 	struct hisi_sas_phy *phy = &hisi_hba->phy[phy_no];
 	struct asd_sas_phy *sas_phy = &phy->sas_phy;
 	struct sas_ha_struct *sas_ha = &hisi_hba->sha;
-	unsigned long flags;
 
 	hisi_sas_phy_write32(hisi_hba, phy_no, SL_RX_BCAST_CHK_MSK, 1);
-
-	spin_lock_irqsave(&hisi_hba->lock, flags);
 	sas_ha->notify_port_event(sas_phy, PORTE_BROADCAST_RCVD);
-	spin_unlock_irqrestore(&hisi_hba->lock, flags);
-
 	hisi_sas_phy_write32(hisi_hba, phy_no, CHL_INT0,
 			     CHL_INT0_SL_RX_BCST_ACK_MSK);
 	hisi_sas_phy_write32(hisi_hba, phy_no, SL_RX_BCAST_CHK_MSK, 0);
@@ -2234,6 +2302,7 @@ static const struct hisi_sas_hw hisi_sas_v2_hw = {
 	.prep_smp = prep_smp_v2_hw,
 	.prep_ssp = prep_ssp_v2_hw,
 	.prep_stp = prep_ata_v2_hw,
+	.prep_abort = prep_abort_v2_hw,
 	.get_free_slot = get_free_slot_v2_hw,
 	.start_delivery = start_delivery_v2_hw,
 	.slot_complete = slot_complete_v2_hw,
@@ -2260,12 +2329,20 @@ static const struct of_device_id sas_v2_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, sas_v2_of_match);
 
+static const struct acpi_device_id sas_v2_acpi_match[] = {
+	{ "HISI0162", 0 },
+	{ }
+};
+
+MODULE_DEVICE_TABLE(acpi, sas_v2_acpi_match);
+
 static struct platform_driver hisi_sas_v2_driver = {
 	.probe = hisi_sas_v2_probe,
 	.remove = hisi_sas_v2_remove,
 	.driver = {
 		.name = DRV_NAME,
 		.of_match_table = sas_v2_of_match,
+		.acpi_match_table = ACPI_PTR(sas_v2_acpi_match),
 	},
 };
 

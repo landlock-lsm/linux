@@ -43,6 +43,8 @@
  * by either the RTNL, the iflist_mtx or RCU.
  */
 
+static void ieee80211_iface_work(struct work_struct *work);
+
 bool __ieee80211_recalc_txpower(struct ieee80211_sub_if_data *sdata)
 {
 	struct ieee80211_chanctx_conf *chanctx_conf;
@@ -188,7 +190,7 @@ static int ieee80211_verify_mac(struct ieee80211_sub_if_data *sdata, u8 *addr,
 			continue;
 
 		if (iter->vif.type == NL80211_IFTYPE_MONITOR &&
-		    !(iter->u.mntr_flags & MONITOR_FLAG_ACTIVE))
+		    !(iter->u.mntr.flags & MONITOR_FLAG_ACTIVE))
 			continue;
 
 		m = iter->vif.addr;
@@ -217,7 +219,7 @@ static int ieee80211_change_mac(struct net_device *dev, void *addr)
 		return -EBUSY;
 
 	if (sdata->vif.type == NL80211_IFTYPE_MONITOR &&
-	    !(sdata->u.mntr_flags & MONITOR_FLAG_ACTIVE))
+	    !(sdata->u.mntr.flags & MONITOR_FLAG_ACTIVE))
 		check_dup = false;
 
 	ret = ieee80211_verify_mac(sdata, sa->sa_data, check_dup);
@@ -357,7 +359,7 @@ void ieee80211_adjust_monitor_flags(struct ieee80211_sub_if_data *sdata,
 				    const int offset)
 {
 	struct ieee80211_local *local = sdata->local;
-	u32 flags = sdata->u.mntr_flags;
+	u32 flags = sdata->u.mntr.flags;
 
 #define ADJUST(_f, _s)	do {					\
 	if (flags & MONITOR_FLAG_##_f)				\
@@ -447,6 +449,9 @@ int ieee80211_add_virtual_monitor(struct ieee80211_local *local)
 		kfree(sdata);
 		return ret;
 	}
+
+	skb_queue_head_init(&sdata->skb_queue);
+	INIT_WORK(&sdata->work, ieee80211_iface_work);
 
 	return 0;
 }
@@ -589,12 +594,12 @@ int ieee80211_do_open(struct wireless_dev *wdev, bool coming_up)
 		}
 		break;
 	case NL80211_IFTYPE_MONITOR:
-		if (sdata->u.mntr_flags & MONITOR_FLAG_COOK_FRAMES) {
+		if (sdata->u.mntr.flags & MONITOR_FLAG_COOK_FRAMES) {
 			local->cooked_mntrs++;
 			break;
 		}
 
-		if (sdata->u.mntr_flags & MONITOR_FLAG_ACTIVE) {
+		if (sdata->u.mntr.flags & MONITOR_FLAG_ACTIVE) {
 			res = drv_add_interface(local, sdata);
 			if (res)
 				goto err_stop;
@@ -779,6 +784,7 @@ static void ieee80211_do_stop(struct ieee80211_sub_if_data *sdata,
 			      bool going_down)
 {
 	struct ieee80211_local *local = sdata->local;
+	struct fq *fq = &local->fq;
 	unsigned long flags;
 	struct sk_buff *skb, *tmp;
 	u32 hw_reconf_flags = 0;
@@ -925,7 +931,7 @@ static void ieee80211_do_stop(struct ieee80211_sub_if_data *sdata,
 		/* no need to tell driver */
 		break;
 	case NL80211_IFTYPE_MONITOR:
-		if (sdata->u.mntr_flags & MONITOR_FLAG_COOK_FRAMES) {
+		if (sdata->u.mntr.flags & MONITOR_FLAG_COOK_FRAMES) {
 			local->cooked_mntrs--;
 			break;
 		}
@@ -977,12 +983,9 @@ static void ieee80211_do_stop(struct ieee80211_sub_if_data *sdata,
 	if (sdata->vif.txq) {
 		struct txq_info *txqi = to_txq_info(sdata->vif.txq);
 
-		spin_lock_bh(&txqi->queue.lock);
-		ieee80211_purge_tx_queue(&local->hw, &txqi->queue);
-		txqi->byte_cnt = 0;
-		spin_unlock_bh(&txqi->queue.lock);
-
-		atomic_set(&sdata->txqs_len[txqi->txq.ac], 0);
+		spin_lock_bh(&fq->lock);
+		ieee80211_txq_purge(local, txqi);
+		spin_unlock_bh(&fq->lock);
 	}
 
 	if (local->open_count == 0)
@@ -1014,7 +1017,7 @@ static void ieee80211_do_stop(struct ieee80211_sub_if_data *sdata,
 		ieee80211_recalc_idle(local);
 		mutex_unlock(&local->mtx);
 
-		if (!(sdata->u.mntr_flags & MONITOR_FLAG_ACTIVE))
+		if (!(sdata->u.mntr.flags & MONITOR_FLAG_ACTIVE))
 			break;
 
 		/* fall through */
@@ -1196,6 +1199,12 @@ static void ieee80211_if_setup(struct net_device *dev)
 	dev->priv_flags &= ~IFF_TX_SKB_SHARING;
 	dev->netdev_ops = &ieee80211_dataif_ops;
 	dev->destructor = ieee80211_if_free;
+}
+
+static void ieee80211_if_setup_no_queue(struct net_device *dev)
+{
+	ieee80211_if_setup(dev);
+	dev->priv_flags |= IFF_NO_QUEUE;
 }
 
 static void ieee80211_iface_work(struct work_struct *work)
@@ -1440,7 +1449,7 @@ static void ieee80211_setup_sdata(struct ieee80211_sub_if_data *sdata,
 	case NL80211_IFTYPE_MONITOR:
 		sdata->dev->type = ARPHRD_IEEE80211_RADIOTAP;
 		sdata->dev->netdev_ops = &ieee80211_monitorif_ops;
-		sdata->u.mntr_flags = MONITOR_FLAG_CONTROL |
+		sdata->u.mntr.flags = MONITOR_FLAG_CONTROL |
 				      MONITOR_FLAG_OTHER_BSS;
 		break;
 	case NL80211_IFTYPE_WDS:
@@ -1707,6 +1716,7 @@ int ieee80211_if_add(struct ieee80211_local *local, const char *name,
 	struct net_device *ndev = NULL;
 	struct ieee80211_sub_if_data *sdata = NULL;
 	struct txq_info *txqi;
+	void (*if_setup)(struct net_device *dev);
 	int ret, i;
 	int txqs = 1;
 
@@ -1734,12 +1744,17 @@ int ieee80211_if_add(struct ieee80211_local *local, const char *name,
 			txq_size += sizeof(struct txq_info) +
 				    local->hw.txq_data_size;
 
+		if (local->ops->wake_tx_queue)
+			if_setup = ieee80211_if_setup_no_queue;
+		else
+			if_setup = ieee80211_if_setup;
+
 		if (local->hw.queues >= IEEE80211_NUM_ACS)
 			txqs = IEEE80211_NUM_ACS;
 
 		ndev = alloc_netdev_mqs(size + txq_size,
 					name, name_assign_type,
-					ieee80211_if_setup, txqs, 1);
+					if_setup, txqs, 1);
 		if (!ndev)
 			return -ENOMEM;
 		dev_net_set(ndev, wiphy_net(local->hw.wiphy));
@@ -1780,7 +1795,7 @@ int ieee80211_if_add(struct ieee80211_local *local, const char *name,
 
 		if (txq_size) {
 			txqi = netdev_priv(ndev) + size;
-			ieee80211_init_tx_queue(sdata, NULL, txqi, 0);
+			ieee80211_txq_init(sdata, NULL, txqi, 0);
 		}
 
 		sdata->dev = ndev;

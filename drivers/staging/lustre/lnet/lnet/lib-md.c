@@ -15,11 +15,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * version 2 along with this program; If not, see
- * http://www.sun.com/software/products/lustre/docs/GPLv2.pdf
- *
- * Please contact Sun Microsystems, Inc., 4150 Network Circle, Santa Clara,
- * CA 95054 USA or visit www.sun.com if you need additional information or
- * have any questions.
+ * http://www.gnu.org/licenses/gpl-2.0.html
  *
  * GPL HEADER END
  */
@@ -138,11 +134,11 @@ lnet_md_build(lnet_libmd_t *lmd, lnet_md_t *umd, int unlink)
 
 		for (i = 0; i < (int)niov; i++) {
 			/* We take the page pointer on trust */
-			if (lmd->md_iov.kiov[i].kiov_offset +
-			    lmd->md_iov.kiov[i].kiov_len > PAGE_SIZE)
+			if (lmd->md_iov.kiov[i].bv_offset +
+			    lmd->md_iov.kiov[i].bv_len > PAGE_SIZE)
 				return -EINVAL; /* invalid length */
 
-			total_length += lmd->md_iov.kiov[i].kiov_len;
+			total_length += lmd->md_iov.kiov[i].bv_len;
 		}
 
 		lmd->md_length = total_length;

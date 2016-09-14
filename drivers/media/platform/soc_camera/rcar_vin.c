@@ -484,7 +484,6 @@ struct rcar_vin_priv {
 	struct list_head		capture;
 #define MAX_BUFFER_NUM			3
 	struct vb2_v4l2_buffer		*queue_buf[MAX_BUFFER_NUM];
-	struct vb2_alloc_ctx		*alloc_ctx;
 	enum v4l2_field			field;
 	unsigned int			pdata_flags;
 	unsigned int			vb_count;
@@ -516,7 +515,7 @@ struct rcar_vin_cam {
 	unsigned int out_width;
 	unsigned int out_height;
 	/*
-	 * User window from S_CROP / G_CROP, produced by client cropping and
+	 * User window from S_SELECTION / G_SELECTION, produced by client cropping and
 	 * scaling, VIN scaling and VIN cropping, mapped back onto the client
 	 * input window
 	 */
@@ -534,13 +533,11 @@ struct rcar_vin_cam {
 static int rcar_vin_videobuf_setup(struct vb2_queue *vq,
 				   unsigned int *count,
 				   unsigned int *num_planes,
-				   unsigned int sizes[], void *alloc_ctxs[])
+				   unsigned int sizes[], struct device *alloc_devs[])
 {
 	struct soc_camera_device *icd = soc_camera_from_vb2q(vq);
 	struct soc_camera_host *ici = to_soc_camera_host(icd->parent);
 	struct rcar_vin_priv *priv = ici->priv;
-
-	alloc_ctxs[0] = priv->alloc_ctx;
 
 	if (!vq->num_buffers)
 		priv->sequence = 0;
@@ -1474,16 +1471,15 @@ static void rcar_vin_put_formats(struct soc_camera_device *icd)
 	icd->host_priv = NULL;
 }
 
-static int rcar_vin_set_crop(struct soc_camera_device *icd,
-			     const struct v4l2_crop *a)
+static int rcar_vin_set_selection(struct soc_camera_device *icd,
+				  struct v4l2_selection *sel)
 {
-	struct v4l2_crop a_writable = *a;
-	const struct v4l2_rect *rect = &a_writable.c;
+	const struct v4l2_rect *rect = &sel->r;
 	struct soc_camera_host *ici = to_soc_camera_host(icd->parent);
 	struct rcar_vin_priv *priv = ici->priv;
-	struct v4l2_crop cam_crop;
+	struct v4l2_selection cam_sel;
 	struct rcar_vin_cam *cam = icd->host_priv;
-	struct v4l2_rect *cam_rect = &cam_crop.c;
+	struct v4l2_rect *cam_rect = &cam_sel.r;
 	struct v4l2_subdev *sd = soc_camera_to_subdev(icd);
 	struct device *dev = icd->parent;
 	struct v4l2_subdev_format fmt = {
@@ -1493,15 +1489,15 @@ static int rcar_vin_set_crop(struct soc_camera_device *icd,
 	u32 vnmc;
 	int ret, i;
 
-	dev_dbg(dev, "S_CROP(%ux%u@%u:%u)\n", rect->width, rect->height,
+	dev_dbg(dev, "S_SELECTION(%ux%u@%u:%u)\n", rect->width, rect->height,
 		rect->left, rect->top);
 
 	/* During camera cropping its output window can change too, stop VIN */
 	capture_stop_preserve(priv, &vnmc);
 	dev_dbg(dev, "VNMC_REG 0x%x\n", vnmc);
 
-	/* Apply iterative camera S_CROP for new input window. */
-	ret = soc_camera_client_s_crop(sd, &a_writable, &cam_crop,
+	/* Apply iterative camera S_SELECTION for new input window. */
+	ret = soc_camera_client_s_selection(sd, sel, &cam_sel,
 				       &cam->rect, &cam->subrect);
 	if (ret < 0)
 		return ret;
@@ -1554,13 +1550,12 @@ static int rcar_vin_set_crop(struct soc_camera_device *icd,
 	return ret;
 }
 
-static int rcar_vin_get_crop(struct soc_camera_device *icd,
-			     struct v4l2_crop *a)
+static int rcar_vin_get_selection(struct soc_camera_device *icd,
+				  struct v4l2_selection *sel)
 {
 	struct rcar_vin_cam *cam = icd->host_priv;
 
-	a->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-	a->c = cam->subrect;
+	sel->r = cam->subrect;
 
 	return 0;
 }
@@ -1816,6 +1811,7 @@ static int rcar_vin_init_videobuf2(struct vb2_queue *vq,
 	vq->buf_struct_size = sizeof(struct rcar_vin_buffer);
 	vq->timestamp_flags  = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
 	vq->lock = &ici->host_lock;
+	vq->dev = ici->v4l2_dev.dev;
 
 	return vb2_queue_init(vq);
 }
@@ -1826,8 +1822,8 @@ static struct soc_camera_host_ops rcar_vin_host_ops = {
 	.remove		= rcar_vin_remove_device,
 	.get_formats	= rcar_vin_get_formats,
 	.put_formats	= rcar_vin_put_formats,
-	.get_crop	= rcar_vin_get_crop,
-	.set_crop	= rcar_vin_set_crop,
+	.get_selection	= rcar_vin_get_selection,
+	.set_selection	= rcar_vin_set_selection,
 	.try_fmt	= rcar_vin_try_fmt,
 	.set_fmt	= rcar_vin_set_fmt,
 	.poll		= rcar_vin_poll,
@@ -1912,10 +1908,6 @@ static int rcar_vin_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	priv->alloc_ctx = vb2_dma_contig_init_ctx(&pdev->dev);
-	if (IS_ERR(priv->alloc_ctx))
-		return PTR_ERR(priv->alloc_ctx);
-
 	priv->ici.priv = priv;
 	priv->ici.v4l2_dev.dev = &pdev->dev;
 	priv->ici.drv_name = dev_name(&pdev->dev);
@@ -1946,7 +1938,6 @@ static int rcar_vin_probe(struct platform_device *pdev)
 
 cleanup:
 	pm_runtime_disable(&pdev->dev);
-	vb2_dma_contig_cleanup_ctx(priv->alloc_ctx);
 
 	return ret;
 }
@@ -1954,12 +1945,9 @@ cleanup:
 static int rcar_vin_remove(struct platform_device *pdev)
 {
 	struct soc_camera_host *soc_host = to_soc_camera_host(&pdev->dev);
-	struct rcar_vin_priv *priv = container_of(soc_host,
-						  struct rcar_vin_priv, ici);
 
 	soc_camera_host_unregister(soc_host);
 	pm_runtime_disable(&pdev->dev);
-	vb2_dma_contig_cleanup_ctx(priv->alloc_ctx);
 
 	return 0;
 }

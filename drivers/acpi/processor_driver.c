@@ -90,7 +90,7 @@ static void acpi_processor_notify(acpi_handle handle, u32 event, void *data)
 						  pr->performance_platform_limit);
 		break;
 	case ACPI_PROCESSOR_NOTIFY_POWER:
-		acpi_processor_cst_has_changed(pr);
+		acpi_processor_power_state_has_changed(pr);
 		acpi_bus_generate_netlink_event(device->pnp.device_class,
 						  dev_name(&device->dev), event, 0);
 		break;
@@ -118,12 +118,13 @@ static int acpi_cpu_soft_notify(struct notifier_block *nfb,
 	struct acpi_device *device;
 	action &= ~CPU_TASKS_FROZEN;
 
-	/*
-	 * CPU_STARTING and CPU_DYING must not sleep. Return here since
-	 * acpi_bus_get_device() may sleep.
-	 */
-	if (action == CPU_STARTING || action == CPU_DYING)
+	switch (action) {
+	case CPU_ONLINE:
+	case CPU_DEAD:
+		break;
+	default:
 		return NOTIFY_DONE;
+	}
 
 	if (!pr || acpi_bus_get_device(pr->handle, &device))
 		return NOTIFY_DONE;
@@ -244,8 +245,8 @@ static int __acpi_processor_start(struct acpi_device *device)
 		return 0;
 
 	result = acpi_cppc_processor_probe(pr);
-	if (result)
-		return -ENODEV;
+	if (result && !IS_ENABLED(CONFIG_ACPI_CPU_FREQ_PSS))
+		dev_warn(&device->dev, "CPPC data invalid or not present\n");
 
 	if (!cpuidle_get_driver() || cpuidle_get_driver() == &acpi_idle_driver)
 		acpi_processor_power_init(pr);

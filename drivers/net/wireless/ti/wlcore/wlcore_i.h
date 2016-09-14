@@ -171,6 +171,12 @@ struct wl_fw_status {
 
 		/* Tx rate of the last transmitted packet */
 		u8 tx_last_rate;
+
+		/* Tx rate or Tx rate estimate pre calculated by fw in mbps */
+		u8 tx_last_rate_mbps;
+
+		/* hlid for which the rates were reported */
+		u8 hlid;
 	} counters;
 
 	u32 log_start_addr;
@@ -272,6 +278,12 @@ struct wl1271_link {
 
 	/* bitmap of TIDs where RX BA sessions are active for this link */
 	u8 ba_bitmap;
+
+	/* the last fw rate index we used for this link */
+	u8 fw_rate_idx;
+
+	/* the last fw rate [Mbps] we used for this link */
+	u8 fw_rate_mbps;
 
 	/* The wlvif this link belongs to. Might be null for global links */
 	struct wl12xx_vif *wlvif;
@@ -472,6 +484,7 @@ struct wl12xx_vif {
 
 	/* update rate conrol */
 	enum ieee80211_sta_rx_bandwidth rc_update_bw;
+	struct ieee80211_sta_ht_cap rc_ht_cap;
 	struct work_struct rc_update_work;
 
 	/*

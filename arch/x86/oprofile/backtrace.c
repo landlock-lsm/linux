@@ -113,10 +113,14 @@ x86_backtrace(struct pt_regs * const regs, unsigned int depth)
 	struct stack_frame *head = (struct stack_frame *)frame_pointer(regs);
 
 	if (!user_mode(regs)) {
-		unsigned long stack = kernel_stack_pointer(regs);
-		if (depth)
-			dump_trace(NULL, regs, (unsigned long *)stack, 0,
-				   &backtrace_ops, &depth);
+		if (!depth)
+			return;
+
+		oprofile_add_trace(regs->ip);
+		if (!--depth)
+			return;
+
+		dump_trace(NULL, regs, NULL, 0, &backtrace_ops, &depth);
 		return;
 	}
 

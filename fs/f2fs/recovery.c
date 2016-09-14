@@ -96,11 +96,12 @@ static int recover_dentry(struct inode *inode, struct page *ipage,
 	struct f2fs_inode *raw_inode = F2FS_INODE(ipage);
 	nid_t pino = le32_to_cpu(raw_inode->i_pino);
 	struct f2fs_dir_entry *de;
-	struct qstr name;
+	struct fscrypt_name fname;
 	struct page *page;
 	struct inode *dir, *einode;
 	struct fsync_inode_entry *entry;
 	int err = 0;
+	char *name;
 
 	entry = get_fsync_inode(dir_list, pino);
 	if (!entry) {
@@ -120,19 +121,17 @@ static int recover_dentry(struct inode *inode, struct page *ipage,
 
 	dir = entry->inode;
 
-	if (file_enc_name(inode))
-		return 0;
+	memset(&fname, 0, sizeof(struct fscrypt_name));
+	fname.disk_name.len = le32_to_cpu(raw_inode->i_namelen);
+	fname.disk_name.name = raw_inode->i_name;
 
-	name.len = le32_to_cpu(raw_inode->i_namelen);
-	name.name = raw_inode->i_name;
-
-	if (unlikely(name.len > F2FS_NAME_LEN)) {
+	if (unlikely(fname.disk_name.len > F2FS_NAME_LEN)) {
 		WARN_ON(1);
 		err = -ENAMETOOLONG;
 		goto out;
 	}
 retry:
-	de = f2fs_find_entry(dir, &name, &page);
+	de = __f2fs_find_entry(dir, &fname, &page);
 	if (de && inode->i_ino == le32_to_cpu(de->ino))
 		goto out_unmap_put;
 
@@ -153,18 +152,25 @@ retry:
 		f2fs_delete_entry(de, page, dir, einode);
 		iput(einode);
 		goto retry;
+	} else if (IS_ERR(page)) {
+		err = PTR_ERR(page);
+	} else {
+		err = __f2fs_do_add_link(dir, &fname, inode,
+					inode->i_ino, inode->i_mode);
 	}
-	err = __f2fs_add_link(dir, &name, inode, inode->i_ino, inode->i_mode);
-
 	goto out;
 
 out_unmap_put:
 	f2fs_dentry_kunmap(dir, page);
 	f2fs_put_page(page, 0);
 out:
+	if (file_enc_name(inode))
+		name = "<encrypted>";
+	else
+		name = raw_inode->i_name;
 	f2fs_msg(inode->i_sb, KERN_NOTICE,
 			"%s: ino = %x, name = %s, dir = %lx, err = %d",
-			__func__, ino_of_node(ipage), raw_inode->i_name,
+			__func__, ino_of_node(ipage), name,
 			IS_ERR(dir) ? 0 : dir->i_ino, err);
 	return err;
 }
@@ -175,7 +181,7 @@ static void recover_inode(struct inode *inode, struct page *page)
 	char *name;
 
 	inode->i_mode = le16_to_cpu(raw->i_mode);
-	i_size_write(inode, le64_to_cpu(raw->i_size));
+	f2fs_i_size_write(inode, le64_to_cpu(raw->i_size));
 	inode->i_atime.tv_sec = le64_to_cpu(raw->i_mtime);
 	inode->i_ctime.tv_sec = le64_to_cpu(raw->i_ctime);
 	inode->i_mtime.tv_sec = le64_to_cpu(raw->i_mtime);
@@ -455,6 +461,9 @@ static int do_recover_data(struct f2fs_sb_info *sbi, struct inode *inode,
 			continue;
 		}
 
+		if ((start + 1) << PAGE_SHIFT > i_size_read(inode))
+			f2fs_i_size_write(inode, (start + 1) << PAGE_SHIFT);
+
 		/*
 		 * dest is reserved block, invalidate src block
 		 * and then reserve one new block in dnode page.
@@ -476,6 +485,8 @@ static int do_recover_data(struct f2fs_sb_info *sbi, struct inode *inode,
 #endif
 				/* We should not get -ENOSPC */
 				f2fs_bug_on(sbi, err);
+				if (err)
+					goto err;
 			}
 
 			/* Check the previous node page having this index */
@@ -489,9 +500,6 @@ static int do_recover_data(struct f2fs_sb_info *sbi, struct inode *inode,
 			recovered++;
 		}
 	}
-
-	if (IS_INODE(dn.node_page))
-		sync_inode_page(&dn);
 
 	copy_node_footer(dn.node_page, page);
 	fill_node_footer(dn.node_page, dn.nid, ni.ino,
@@ -624,8 +632,14 @@ out:
 	if (err) {
 		bool invalidate = false;
 
-		if (discard_next_dnode(sbi, blkaddr))
+		if (test_opt(sbi, LFS)) {
+			update_meta_page(sbi, NULL, blkaddr);
 			invalidate = true;
+		} else if (discard_next_dnode(sbi, blkaddr)) {
+			invalidate = true;
+		}
+
+		f2fs_wait_all_discard_bio(sbi);
 
 		/* Flush all the NAT/SIT pages */
 		while (get_pages(sbi, F2FS_DIRTY_META))

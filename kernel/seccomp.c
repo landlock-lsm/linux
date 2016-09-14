@@ -34,42 +34,7 @@
 #include <linux/security.h>
 #include <linux/tracehook.h>
 #include <linux/uaccess.h>
-
-#ifdef CONFIG_SECURITY_LANDLOCK
-#include <linux/bpf.h>	/* bpf_prog_put(), BPF_PROG_TYPE_LANDLOCK_*  */
-#endif /* CONFIG_SECURITY_LANDLOCK */
-
-/**
- * struct seccomp_filter - container for seccomp BPF programs
- *
- * @usage: reference count to manage the object lifetime.
- *         get/put helpers should be used when accessing an instance
- *         outside of a lifetime-guarded section.  In general, this
- *         is only needed for handling filters shared across tasks.
- * @prev: points to a previously installed, or inherited, filter
- * @len: the number of instructions in the program
- * @insnsi: the BPF program instructions to evaluate
- *
- * seccomp_filter objects are organized in a tree linked via the @prev
- * pointer.  For any task, it appears to be a singly-linked list starting
- * with current->seccomp.filter, the most recently attached or inherited filter.
- * However, multiple filters may share a @prev node, by way of fork(), which
- * results in a unidirectional tree existing in memory.  This is similar to
- * how namespaces work.
- *
- * seccomp_filter objects should never be modified after being attached
- * to a task_struct (other than @usage).
- */
-struct seccomp_filter {
-	atomic_t usage;
-	struct seccomp_filter *prev;
-	struct bpf_prog *prog;
-#ifdef CONFIG_SECURITY_LANDLOCK
-	struct seccomp_filter *landlock_prev;
-#endif /* CONFIG_SECURITY_LANDLOCK */
-};
-
-static void put_seccomp_filter(struct seccomp_filter *filter);
+#include <linux/landlock.h>
 
 /* Limit any path through the tree to 256KB worth of instructions. */
 #define MAX_INSNS_PER_PATH ((1 << 18) / sizeof(struct sock_filter))
@@ -184,12 +149,12 @@ static int seccomp_check_filter(struct sock_filter *filter, unsigned int flen)
  *
  * Returns valid seccomp BPF response codes.
  */
-static u32 seccomp_run_filters(struct seccomp_data *sd)
+static u32 seccomp_run_filters(const struct seccomp_data *sd)
 {
 	struct seccomp_data sd_local;
 	u32 ret = SECCOMP_RET_ALLOW;
 #ifdef CONFIG_SECURITY_LANDLOCK
-	struct seccomp_landlock_ret *landlock_ret, *init_landlock_ret =
+	struct landlock_seccomp_ret *landlock_ret, *init_landlock_ret =
 		current->seccomp.landlock_ret;
 #endif /* CONFIG_SECURITY_LANDLOCK */
 	/* Make sure cross-thread synced filter points somewhere sane. */
@@ -204,14 +169,6 @@ static u32 seccomp_run_filters(struct seccomp_data *sd)
 		populate_seccomp_data(&sd_local);
 		sd = &sd_local;
 	}
-#ifdef CONFIG_SECURITY_LANDLOCK
-	for (landlock_ret = init_landlock_ret;
-			landlock_ret;
-			landlock_ret = landlock_ret->prev) {
-		/* No need to clean the cookie. */
-		landlock_ret->triggered = false;
-	}
-#endif /* CONFIG_SECURITY_LANDLOCK */
 
 	/*
 	 * All filters in the list are evaluated and the lowest BPF return
@@ -222,7 +179,11 @@ static u32 seccomp_run_filters(struct seccomp_data *sd)
 		u32 action = cur_ret & SECCOMP_RET_ACTION;
 #ifdef CONFIG_SECURITY_LANDLOCK
 		u32 data = cur_ret & SECCOMP_RET_DATA;
-		if (action == SECCOMP_RET_LANDLOCK) {
+
+		if (action == SECCOMP_RET_LANDLOCK &&
+				current->seccomp.landlock_hooks) {
+			bool found_ret = false;
+
 			/*
 			 * Keep track of filters from the current task that
 			 * trigger a RET_LANDLOCK.
@@ -233,8 +194,23 @@ static u32 seccomp_run_filters(struct seccomp_data *sd)
 				if (landlock_ret->filter == f) {
 					landlock_ret->triggered = true;
 					landlock_ret->cookie = data;
+					found_ret = true;
 					break;
 				}
+			}
+			if (!found_ret) {
+				/*
+				 * Lazy allocation of landlock_ret; it will be
+				 * freed when the thread will exit.
+				 */
+				landlock_ret = kzalloc(sizeof(*landlock_ret),
+						GFP_KERNEL);
+				if (!landlock_ret)
+					return SECCOMP_RET_KILL;
+				atomic_inc(&f->usage);
+				landlock_ret->filter = f;
+				landlock_ret->prev = current->seccomp.landlock_ret;
+				current->seccomp.landlock_ret = landlock_ret;
 			}
 		}
 #endif /* CONFIG_SECURITY_LANDLOCK */
@@ -389,7 +365,7 @@ static struct seccomp_filter *seccomp_prepare_filter(struct sock_fprog *fprog)
 {
 	struct seccomp_filter *sfilter;
 	int ret;
-	const bool save_orig = config_enabled(CONFIG_CHECKPOINT_RESTORE);
+	const bool save_orig = IS_ENABLED(CONFIG_CHECKPOINT_RESTORE);
 
 	if (fprog->len == 0 || fprog->len > BPF_MAXINSNS)
 		return ERR_PTR(-EINVAL);
@@ -466,9 +442,6 @@ static long seccomp_attach_filter(unsigned int flags,
 {
 	unsigned long total_insns;
 	struct seccomp_filter *walker;
-#ifdef CONFIG_SECURITY_LANDLOCK
-	struct seccomp_landlock_ret *landlock_ret;
-#endif /* CONFIG_SECURITY_LANDLOCK */
 
 	assert_spin_locked(&current->sighand->siglock);
 
@@ -493,22 +466,12 @@ static long seccomp_attach_filter(unsigned int flags,
 	 * task reference.
 	 */
 	filter->prev = current->seccomp.filter;
-#ifdef CONFIG_SECURITY_LANDLOCK
-	filter->landlock_prev = current->seccomp.landlock_filter;
-	current->seccomp.landlock_filter = filter;
-
-	/* Dedicated Landlock result */
-	landlock_ret = kmalloc(sizeof(*landlock_ret), GFP_KERNEL);
-	if (!landlock_ret)
-		return -ENOMEM;
-	landlock_ret->prev = current->seccomp.landlock_ret;
-	atomic_inc(&filter->usage);
-	landlock_ret->filter = filter;
-	landlock_ret->cookie = 0;
-	landlock_ret->triggered = false;
-	current->seccomp.landlock_ret = landlock_ret;
-#endif /* CONFIG_SECURITY_LANDLOCK */
 	current->seccomp.filter = filter;
+#ifdef CONFIG_SECURITY_LANDLOCK
+	/* Chain the filters from the same thread, if any. */
+	filter->thread_prev = current->seccomp.thread_filter;
+	current->seccomp.thread_filter = filter;
+#endif /* CONFIG_SECURITY_LANDLOCK */
 
 	/* Now that the new filter is in place, synchronize to all threads. */
 	if (flags & SECCOMP_FILTER_FLAG_TSYNC)
@@ -516,55 +479,6 @@ static long seccomp_attach_filter(unsigned int flags,
 
 	return 0;
 }
-
-#ifdef CONFIG_SECURITY_LANDLOCK
-struct seccomp_landlock_ret *dup_landlock_ret(
-		struct seccomp_landlock_ret *ret_orig)
-{
-	struct seccomp_landlock_ret *ret_new;
-
-	if (!ret_orig)
-		return NULL;
-	ret_new = kmalloc(sizeof(*ret_new), GFP_KERNEL);
-	if (!ret_new)
-		return ERR_PTR(-ENOMEM);
-	ret_new->filter = ret_orig->filter;
-	if (ret_new->filter)
-		atomic_inc(&ret_new->filter->usage);
-	ret_new->cookie = 0;
-	ret_new->triggered = false;
-	ret_new->prev = NULL;
-	return ret_new;
-}
-
-static void put_landlock_prog(struct seccomp_landlock_prog *landlock_prog)
-{
-	struct seccomp_landlock_prog *orig = landlock_prog;
-
-	/* Clean up single-reference branches iteratively. */
-	while (orig && atomic_dec_and_test(&orig->usage)) {
-		struct seccomp_landlock_prog *freeme = orig;
-
-		put_seccomp_filter(orig->filter);
-		bpf_prog_put(orig->prog);
-		orig = orig->prev;
-		kfree(freeme);
-	}
-}
-
-void put_landlock_ret(struct seccomp_landlock_ret *landlock_ret)
-{
-	struct seccomp_landlock_ret *orig = landlock_ret;
-
-	while (orig) {
-		struct seccomp_landlock_ret *freeme = orig;
-
-		put_seccomp_filter(orig->filter);
-		orig = orig->prev;
-		kfree(freeme);
-	}
-}
-#endif /* CONFIG_SECURITY_LANDLOCK */
 
 /* get_seccomp_filter - increments the reference count of the filter on @tsk */
 void get_seccomp_filter(struct task_struct *tsk)
@@ -585,7 +499,7 @@ static inline void seccomp_filter_free(struct seccomp_filter *filter)
 }
 
 /* put_seccomp_filter - decrements the ref count of a filter */
-static void put_seccomp_filter(struct seccomp_filter *filter)
+void put_seccomp_filter(struct seccomp_filter *filter)
 {
 	struct seccomp_filter *orig = filter;
 
@@ -594,7 +508,7 @@ static void put_seccomp_filter(struct seccomp_filter *filter)
 		struct seccomp_filter *freeme = orig;
 
 		orig = orig->prev;
-		/* must not put orig->landlock_prev */
+		/* must not put orig->thread_prev */
 		seccomp_filter_free(freeme);
 	}
 }
@@ -603,7 +517,7 @@ void put_seccomp(struct task_struct *tsk)
 {
 	put_seccomp_filter(tsk->seccomp.filter);
 #ifdef CONFIG_SECURITY_LANDLOCK
-	put_landlock_prog(tsk->seccomp.landlock_prog);
+	put_landlock_hooks(tsk->seccomp.landlock_hooks);
 	put_landlock_ret(tsk->seccomp.landlock_ret);
 #endif /* CONFIG_SECURITY_LANDLOCK */
 }
@@ -663,7 +577,7 @@ void secure_computing_strict(int this_syscall)
 {
 	int mode = current->seccomp.mode;
 
-	if (config_enabled(CONFIG_CHECKPOINT_RESTORE) &&
+	if (IS_ENABLED(CONFIG_CHECKPOINT_RESTORE) &&
 	    unlikely(current->ptrace & PT_SUSPEND_SECCOMP))
 		return;
 
@@ -675,20 +589,10 @@ void secure_computing_strict(int this_syscall)
 		BUG();
 }
 #else
-int __secure_computing(void)
-{
-	u32 phase1_result = seccomp_phase1(NULL);
-
-	if (likely(phase1_result == SECCOMP_PHASE1_OK))
-		return 0;
-	else if (likely(phase1_result == SECCOMP_PHASE1_SKIP))
-		return -1;
-	else
-		return seccomp_phase2(phase1_result);
-}
 
 #ifdef CONFIG_SECCOMP_FILTER
-static u32 __seccomp_phase1_filter(int this_syscall, struct seccomp_data *sd)
+static int __seccomp_filter(int this_syscall, const struct seccomp_data *sd,
+			    const bool recheck_after_trace)
 {
 	u32 filter_ret, action;
 	int data;
@@ -720,12 +624,52 @@ static u32 __seccomp_phase1_filter(int this_syscall, struct seccomp_data *sd)
 		goto skip;
 
 	case SECCOMP_RET_TRACE:
-		return filter_ret;  /* Save the rest for phase 2. */
+		/* We've been put in this state by the ptracer already. */
+		if (recheck_after_trace)
+			return 0;
+
+		/* ENOSYS these calls if there is no tracer attached. */
+		if (!ptrace_event_enabled(current, PTRACE_EVENT_SECCOMP)) {
+			syscall_set_return_value(current,
+						 task_pt_regs(current),
+						 -ENOSYS, 0);
+			goto skip;
+		}
+
+		/* Allow the BPF to provide the event message */
+		ptrace_event(PTRACE_EVENT_SECCOMP, data);
+		/*
+		 * The delivery of a fatal signal during event
+		 * notification may silently skip tracer notification,
+		 * which could leave us with a potentially unmodified
+		 * syscall that the tracer would have liked to have
+		 * changed. Since the process is about to die, we just
+		 * force the syscall to be skipped and let the signal
+		 * kill the process and correctly handle any tracer exit
+		 * notifications.
+		 */
+		if (fatal_signal_pending(current))
+			goto skip;
+		/* Check if the tracer forced the syscall to be skipped. */
+		this_syscall = syscall_get_nr(current, task_pt_regs(current));
+		if (this_syscall < 0)
+			goto skip;
+
+		/*
+		 * Recheck the syscall, since it may have changed. This
+		 * intentionally uses a NULL struct seccomp_data to force
+		 * a reload of all registers. This does not goto skip since
+		 * a skip would have already been reported.
+		 */
+		if (__seccomp_filter(this_syscall, NULL, true))
+			return -1;
+
+		return 0;
 
 	case SECCOMP_RET_LANDLOCK:
 		/* fall through */
 	case SECCOMP_RET_ALLOW:
-		return SECCOMP_PHASE1_OK;
+		return 0;
 
 	case SECCOMP_RET_KILL:
 	default:
@@ -737,95 +681,37 @@ static u32 __seccomp_phase1_filter(int this_syscall, struct seccomp_data *sd)
 
 skip:
 	audit_seccomp(this_syscall, 0, action);
-	return SECCOMP_PHASE1_SKIP;
+	return -1;
+}
+#else
+static int __seccomp_filter(int this_syscall, const struct seccomp_data *sd,
+			    const bool recheck_after_trace)
+{
+	BUG();
 }
 #endif
 
-/**
- * seccomp_phase1() - run fast path seccomp checks on the current syscall
- * @arg sd: The seccomp_data or NULL
- *
- * This only reads pt_regs via the syscall_xyz helpers.  The only change
- * it will make to pt_regs is via syscall_set_return_value, and it will
- * only do that if it returns SECCOMP_PHASE1_SKIP.
- *
- * If sd is provided, it will not read pt_regs at all.
- *
- * It may also call do_exit or force a signal; these actions must be
- * safe.
- *
- * If it returns SECCOMP_PHASE1_OK, the syscall passes checks and should
- * be processed normally.
- *
- * If it returns SECCOMP_PHASE1_SKIP, then the syscall should not be
- * invoked.  In this case, seccomp_phase1 will have set the return value
- * using syscall_set_return_value.
- *
- * If it returns anything else, then the return value should be passed
- * to seccomp_phase2 from a context in which ptrace hooks are safe.
- */
-u32 seccomp_phase1(struct seccomp_data *sd)
+int __secure_computing(const struct seccomp_data *sd)
 {
 	int mode = current->seccomp.mode;
-	int this_syscall = sd ? sd->nr :
-		syscall_get_nr(current, task_pt_regs(current));
+	int this_syscall;
 
-	if (config_enabled(CONFIG_CHECKPOINT_RESTORE) &&
+	if (IS_ENABLED(CONFIG_CHECKPOINT_RESTORE) &&
 	    unlikely(current->ptrace & PT_SUSPEND_SECCOMP))
-		return SECCOMP_PHASE1_OK;
+		return 0;
+
+	this_syscall = sd ? sd->nr :
+		syscall_get_nr(current, task_pt_regs(current));
 
 	switch (mode) {
 	case SECCOMP_MODE_STRICT:
 		__secure_computing_strict(this_syscall);  /* may call do_exit */
-		return SECCOMP_PHASE1_OK;
-#ifdef CONFIG_SECCOMP_FILTER
+		return 0;
 	case SECCOMP_MODE_FILTER:
-		return __seccomp_phase1_filter(this_syscall, sd);
-#endif
+		return __seccomp_filter(this_syscall, sd, false);
 	default:
 		BUG();
 	}
-}
-
-/**
- * seccomp_phase2() - finish slow path seccomp work for the current syscall
- * @phase1_result: The return value from seccomp_phase1()
- *
- * This must be called from a context in which ptrace hooks can be used.
- *
- * Returns 0 if the syscall should be processed or -1 to skip the syscall.
- */
-int seccomp_phase2(u32 phase1_result)
-{
-	struct pt_regs *regs = task_pt_regs(current);
-	u32 action = phase1_result & SECCOMP_RET_ACTION;
-	int data = phase1_result & SECCOMP_RET_DATA;
-
-	BUG_ON(action != SECCOMP_RET_TRACE);
-
-	audit_seccomp(syscall_get_nr(current, regs), 0, action);
-
-	/* Skip these calls if there is no tracer. */
-	if (!ptrace_event_enabled(current, PTRACE_EVENT_SECCOMP)) {
-		syscall_set_return_value(current, regs,
-					 -ENOSYS, 0);
-		return -1;
-	}
-
-	/* Allow the BPF to provide the event message */
-	ptrace_event(PTRACE_EVENT_SECCOMP, data);
-	/*
-	 * The delivery of a fatal signal during event
-	 * notification may silently skip tracer notification.
-	 * Terminating the task now avoids executing a system
-	 * call that may not be intended.
-	 */
-	if (fatal_signal_pending(current))
-		do_exit(SIGSYS);
-	if (syscall_get_nr(current, regs) < 0)
-		return -1;  /* Explicit request to skip. */
-
-	return 0;
 }
 #endif /* CONFIG_HAVE_ARCH_SECCOMP_FILTER */
 
@@ -929,78 +815,6 @@ static inline long seccomp_set_mode_filter(unsigned int flags,
 }
 #endif
 
-
-#ifdef CONFIG_SECURITY_LANDLOCK
-
-/* Limit Landlock programs to 256KB. */
-#define LANDLOCK_PROG_LIST_MAX_PAGES (1 << 6)
-
-static long landlock_set_hook(unsigned int flags, const char __user *user_bpf_fd)
-{
-	long result;
-	unsigned long prog_list_pages;
-	struct seccomp_landlock_prog *landlock_prog, *cp_walker;
-	int bpf_fd;
-	struct bpf_prog *prog;
-
-	if (!task_no_new_privs(current) &&
-	    security_capable_noaudit(current_cred(),
-				     current_user_ns(), CAP_SYS_ADMIN) != 0)
-		return -EACCES;
-	if (!user_bpf_fd)
-		return -EINVAL;
-
-	/* could be used for TSYNC */
-	if (flags)
-		return -EINVAL;
-
-	if (copy_from_user(&bpf_fd, user_bpf_fd, sizeof(user_bpf_fd)))
-		return -EFAULT;
-	prog = bpf_prog_get(bpf_fd);
-	if (IS_ERR(prog))
-		return PTR_ERR(prog);
-	switch (prog->type) {
-	case BPF_PROG_TYPE_LANDLOCK_FILE_OPEN:
-	case BPF_PROG_TYPE_LANDLOCK_FILE_PERMISSION:
-	case BPF_PROG_TYPE_LANDLOCK_MMAP_FILE:
-		break;
-	default:
-		result = -EINVAL;
-		goto put_prog;
-	}
-
-	/* validate allocated memory */
-	prog_list_pages = prog->pages;
-	for (cp_walker = current->seccomp.landlock_prog; cp_walker;
-			cp_walker = cp_walker->prev) {
-		/* TODO: add penalty for each prog? */
-		prog_list_pages += cp_walker->prog->pages;
-	}
-	if (prog_list_pages > LANDLOCK_PROG_LIST_MAX_PAGES) {
-		result = -ENOMEM;
-		goto put_prog;
-	}
-
-	landlock_prog = kmalloc(sizeof(*landlock_prog), GFP_KERNEL);
-	if (!landlock_prog) {
-		result = -ENOMEM;
-		goto put_prog;
-	}
-	landlock_prog->prog = prog;
-	landlock_prog->filter = current->seccomp.filter;
-	if (landlock_prog->filter)
-		atomic_inc(&landlock_prog->filter->usage);
-	atomic_set(&landlock_prog->usage, 1);
-	landlock_prog->prev = current->seccomp.landlock_prog;
-	current->seccomp.landlock_prog = landlock_prog;
-	return 0;
-
-put_prog:
-	bpf_prog_put(prog);
-	return result;
-}
-#endif /* CONFIG_SECURITY_LANDLOCK */
-
 /* Common entry point for both prctl and syscall. */
 static long do_seccomp(unsigned int op, unsigned int flags,
 		       const char __user *uargs)
@@ -1012,10 +826,10 @@ static long do_seccomp(unsigned int op, unsigned int flags,
 		return seccomp_set_mode_strict();
 	case SECCOMP_SET_MODE_FILTER:
 		return seccomp_set_mode_filter(flags, uargs);
-#ifdef CONFIG_SECURITY_LANDLOCK
+#if defined(CONFIG_SECCOMP_FILTER) && defined(CONFIG_SECURITY_LANDLOCK)
 	case SECCOMP_SET_LANDLOCK_HOOK:
-		return landlock_set_hook(flags, uargs);
-#endif /* CONFIG_SECURITY_LANDLOCK */
+		return landlock_seccomp_set_hook(flags, uargs);
+#endif /* CONFIG_SECCOMP_FILTER && CONFIG_SECURITY_LANDLOCK */
 	default:
 		return -EINVAL;
 	}

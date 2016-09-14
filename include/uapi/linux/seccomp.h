@@ -29,7 +29,7 @@
 #define SECCOMP_RET_KILL	0x00000000U /* kill the task immediately */
 #define SECCOMP_RET_TRAP	0x00030000U /* disallow and force a SIGSYS */
 #define SECCOMP_RET_ERRNO	0x00050000U /* returns an errno */
-#define SECCOMP_RET_LANDLOCK	0x00070000U /* trigger LSM evaluation */
+#define SECCOMP_RET_LANDLOCK	0x00070000U /* trigger Landlock LSM */
 #define SECCOMP_RET_TRACE	0x7ff00000U /* pass to a tracer or disallow */
 #define SECCOMP_RET_ALLOW	0x7fff0000U /* allow */
 

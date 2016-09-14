@@ -132,6 +132,15 @@ config SUNXI_RSB
 	  with various RSB based devices, such as AXP223, AXP8XX PMICs,
 	  and AC100/AC200 ICs.
 
+config TEGRA_ACONNECT
+	tristate "Tegra ACONNECT Bus Driver"
+	depends on ARCH_TEGRA_210_SOC
+	depends on OF && PM
+	select PM_CLK
+	help
+	  Driver for the Tegra ACONNECT bus which is used to interface with
+	  the devices inside the Audio Processing Engine (APE) for Tegra210.
+
 config UNIPHIER_SYSTEM_BUS
 	tristate "UniPhier System Bus driver"
 	depends on ARCH_UNIPHIER && OF

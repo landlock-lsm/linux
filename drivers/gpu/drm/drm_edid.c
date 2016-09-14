@@ -74,6 +74,8 @@
 #define EDID_QUIRK_FORCE_8BPC			(1 << 8)
 /* Force 12bpc */
 #define EDID_QUIRK_FORCE_12BPC			(1 << 9)
+/* Force 6bpc */
+#define EDID_QUIRK_FORCE_6BPC			(1 << 10)
 
 struct detailed_mode_closure {
 	struct drm_connector *connector;
@@ -99,6 +101,9 @@ static struct edid_quirk {
 	{ "API", 0x7602, EDID_QUIRK_PREFER_LARGE_60 },
 	/* Unknown Acer */
 	{ "ACR", 2423, EDID_QUIRK_FIRST_DETAILED_PREFERRED },
+
+	/* AEO model 0 reports 8 bpc, but is a 6 bpc panel */
+	{ "AEO", 0, EDID_QUIRK_FORCE_6BPC },
 
 	/* Belinea 10 15 55 */
 	{ "MAX", 1516, EDID_QUIRK_PREFER_LARGE_60 },
@@ -986,7 +991,7 @@ static const struct drm_display_mode edid_cea_modes[] = {
 	 .vrefresh = 120, .picture_aspect_ratio = HDMI_PICTURE_ASPECT_16_9, },
 	/* 64 - 1920x1080@100Hz */
 	{ DRM_MODE("1920x1080", DRM_MODE_TYPE_DRIVER, 297000, 1920, 2448,
-		   2492, 2640, 0, 1080, 1084, 1094, 1125, 0,
+		   2492, 2640, 0, 1080, 1084, 1089, 1125, 0,
 		   DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC),
 	 .vrefresh = 100, .picture_aspect_ratio = HDMI_PICTURE_ASPECT_16_9, },
 };
@@ -3716,14 +3721,7 @@ bool drm_rgb_quant_range_selectable(struct edid *edid)
 }
 EXPORT_SYMBOL(drm_rgb_quant_range_selectable);
 
-/**
- * drm_assign_hdmi_deep_color_info - detect whether monitor supports
- * hdmi deep color modes and update drm_display_info if so.
- * @edid: monitor EDID information
- * @info: Updated with maximum supported deep color bpc and color format
- *        if deep color supported.
- * @connector: DRM connector, used only for debug output
- *
+/*
  * Parse the CEA extension according to CEA-861-B.
  * Return true if HDMI deep color supported, false if not or unknown.
  */
@@ -3817,16 +3815,6 @@ static bool drm_assign_hdmi_deep_color_info(struct edid *edid,
 	return false;
 }
 
-/**
- * drm_add_display_info - pull display info out if present
- * @edid: EDID data
- * @info: display info (attached to connector)
- * @connector: connector whose edid is used to build display info
- *
- * Grab any available display info and stuff it into the drm_display_info
- * structure that's part of the connector.  Useful for tracking bpp and
- * color spaces.
- */
 static void drm_add_display_info(struct edid *edid,
                                  struct drm_display_info *info,
                                  struct drm_connector *connector)
@@ -3861,6 +3849,20 @@ static void drm_add_display_info(struct edid *edid,
 
 	/* HDMI deep color modes supported? Assign to info, if so */
 	drm_assign_hdmi_deep_color_info(edid, info, connector);
+
+	/*
+	 * Digital sink with "DFP 1.x compliant TMDS" according to EDID 1.3?
+	 *
+	 * For such displays, the DFP spec 1.0, section 3.10 "EDID support"
+	 * tells us to assume 8 bpc color depth if the EDID doesn't have
+	 * extensions which tell otherwise.
+	 */
+	if ((info->bpc == 0) && (edid->revision < 4) &&
+	    (edid->input & DRM_EDID_DIGITAL_TYPE_DVI)) {
+		info->bpc = 8;
+		DRM_DEBUG("%s: Assigning DFP sink color depth as %d bpc.\n",
+			  connector->name, info->bpc);
+	}
 
 	/* Only defined for 1.4 with digital displays */
 	if (edid->revision < 4)
@@ -4033,7 +4035,9 @@ static int add_displayid_detailed_modes(struct drm_connector *connector,
  * @connector: connector we're probing
  * @edid: EDID data
  *
- * Add the specified modes to the connector's mode list.
+ * Add the specified modes to the connector's mode list. Also fills out the
+ * &drm_display_info structure in @connector with any information which can be
+ * derived from the edid.
  *
  * Return: The number of modes added or 0 if we couldn't find any.
  */
@@ -4081,6 +4085,9 @@ int drm_add_edid_modes(struct drm_connector *connector, struct edid *edid)
 		edid_fixup_preferred(connector, quirks);
 
 	drm_add_display_info(edid, &connector->display_info, connector);
+
+	if (quirks & EDID_QUIRK_FORCE_6BPC)
+		connector->display_info.bpc = 6;
 
 	if (quirks & EDID_QUIRK_FORCE_8BPC)
 		connector->display_info.bpc = 8;

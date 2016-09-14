@@ -2162,7 +2162,7 @@ static int nand_do_read_oob(struct mtd_info *mtd, loff_t from,
 static int nand_read_oob(struct mtd_info *mtd, loff_t from,
 			 struct mtd_oob_ops *ops)
 {
-	int ret = -ENOTSUPP;
+	int ret;
 
 	ops->retlen = 0;
 
@@ -2173,24 +2173,18 @@ static int nand_read_oob(struct mtd_info *mtd, loff_t from,
 		return -EINVAL;
 	}
 
+	if (ops->mode != MTD_OPS_PLACE_OOB &&
+	    ops->mode != MTD_OPS_AUTO_OOB &&
+	    ops->mode != MTD_OPS_RAW)
+		return -ENOTSUPP;
+
 	nand_get_device(mtd, FL_READING);
-
-	switch (ops->mode) {
-	case MTD_OPS_PLACE_OOB:
-	case MTD_OPS_AUTO_OOB:
-	case MTD_OPS_RAW:
-		break;
-
-	default:
-		goto out;
-	}
 
 	if (!ops->datbuf)
 		ret = nand_do_read_oob(mtd, from, ops);
 	else
 		ret = nand_do_read_ops(mtd, from, ops);
 
-out:
 	nand_release_device(mtd);
 	return ret;
 }
@@ -2610,7 +2604,7 @@ static int nand_do_write_ops(struct mtd_info *mtd, loff_t to,
 		int cached = writelen > bytes && page != blockmask;
 		uint8_t *wbuf = buf;
 		int use_bufpoi;
-		int part_pagewr = (column || writelen < (mtd->writesize - 1));
+		int part_pagewr = (column || writelen < mtd->writesize);
 
 		if (part_pagewr)
 			use_bufpoi = 1;
@@ -3191,8 +3185,7 @@ static void nand_set_defaults(struct nand_chip *chip, int busw)
 
 	if (!chip->controller) {
 		chip->controller = &chip->hwcontrol;
-		spin_lock_init(&chip->controller->lock);
-		init_waitqueue_head(&chip->controller->wq);
+		nand_hw_control_init(chip->controller);
 	}
 
 }
@@ -4141,6 +4134,15 @@ int nand_scan_ident(struct mtd_info *mtd, int maxchips,
 	if (!mtd->name && mtd->dev.parent)
 		mtd->name = dev_name(mtd->dev.parent);
 
+	if ((!chip->cmdfunc || !chip->select_chip) && !chip->cmd_ctrl) {
+		/*
+		 * Default functions assigned for chip_select() and
+		 * cmdfunc() both expect cmd_ctrl() to be populated,
+		 * so we need to check that that's the case
+		 */
+		pr_err("chip.cmd_ctrl() callback is not provided");
+		return -EINVAL;
+	}
 	/* Set the default functions */
 	nand_set_defaults(chip, chip->options & NAND_BUSWIDTH_16);
 

@@ -4079,6 +4079,12 @@ megasas_get_pd_list(struct megasas_instance *instance)
 	struct MR_PD_ADDRESS *pd_addr;
 	dma_addr_t ci_h = 0;
 
+	if (instance->pd_list_not_supported) {
+		dev_info(&instance->pdev->dev, "MR_DCMD_PD_LIST_QUERY "
+		"not supported by firmware\n");
+		return ret;
+	}
+
 	cmd = megasas_get_cmd(instance);
 
 	if (!cmd) {
@@ -5030,8 +5036,8 @@ static int megasas_init_fw(struct megasas_instance *instance)
 
 	/* Find first memory bar */
 	bar_list = pci_select_bars(instance->pdev, IORESOURCE_MEM);
-	instance->bar = find_first_bit(&bar_list, sizeof(unsigned long));
-	if (pci_request_selected_regions(instance->pdev, instance->bar,
+	instance->bar = find_first_bit(&bar_list, BITS_PER_LONG);
+	if (pci_request_selected_regions(instance->pdev, 1<<instance->bar,
 					 "megasas: LSI")) {
 		dev_printk(KERN_DEBUG, &instance->pdev->dev, "IO memory region busy!\n");
 		return -EBUSY;
@@ -5333,7 +5339,7 @@ fail_ready_state:
 	iounmap(instance->reg_set);
 
       fail_ioremap:
-	pci_release_selected_regions(instance->pdev, instance->bar);
+	pci_release_selected_regions(instance->pdev, 1<<instance->bar);
 
 	return -EINVAL;
 }
@@ -5354,7 +5360,7 @@ static void megasas_release_mfi(struct megasas_instance *instance)
 
 	iounmap(instance->reg_set);
 
-	pci_release_selected_regions(instance->pdev, instance->bar);
+	pci_release_selected_regions(instance->pdev, 1<<instance->bar);
 }
 
 /**
@@ -6705,14 +6711,9 @@ static int megasas_mgmt_ioctl_fw(struct file *file, unsigned long arg)
 	unsigned long flags;
 	u32 wait_time = MEGASAS_RESET_WAIT_TIME;
 
-	ioc = kmalloc(sizeof(*ioc), GFP_KERNEL);
-	if (!ioc)
-		return -ENOMEM;
-
-	if (copy_from_user(ioc, user_ioc, sizeof(*ioc))) {
-		error = -EFAULT;
-		goto out_kfree_ioc;
-	}
+	ioc = memdup_user(user_ioc, sizeof(*ioc));
+	if (IS_ERR(ioc))
+		return PTR_ERR(ioc);
 
 	instance = megasas_lookup_instance(ioc->host_no);
 	if (!instance) {

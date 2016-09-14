@@ -1078,7 +1078,8 @@ static int jfs_symlink(struct inode *dip, struct dentry *dentry,
  * FUNCTION:	rename a file or directory
  */
 static int jfs_rename(struct inode *old_dir, struct dentry *old_dentry,
-	       struct inode *new_dir, struct dentry *new_dentry)
+		      struct inode *new_dir, struct dentry *new_dentry,
+		      unsigned int flags)
 {
 	struct btstack btstack;
 	ino_t ino;
@@ -1097,6 +1098,8 @@ static int jfs_rename(struct inode *old_dir, struct dentry *old_dentry,
 	s64 new_size = 0;
 	int commit_flag;
 
+	if (flags & ~RENAME_NOREPLACE)
+		return -EINVAL;
 
 	jfs_info("jfs_rename: %pd %pd", old_dentry, new_dentry);
 
@@ -1564,7 +1567,7 @@ static int jfs_ci_hash(const struct dentry *dir, struct qstr *this)
 	unsigned long hash;
 	int i;
 
-	hash = init_name_hash();
+	hash = init_name_hash(dir);
 	for (i=0; i < this->len; i++)
 		hash = partial_name_hash(tolower(this->name[i]), hash);
 	this->hash = end_name_hash(hash);
@@ -1572,7 +1575,7 @@ static int jfs_ci_hash(const struct dentry *dir, struct qstr *this)
 	return 0;
 }
 
-static int jfs_ci_compare(const struct dentry *parent, const struct dentry *dentry,
+static int jfs_ci_compare(const struct dentry *dentry,
 		unsigned int len, const char *str, const struct qstr *name)
 {
 	int i, result = 1;

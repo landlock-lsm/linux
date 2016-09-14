@@ -15,6 +15,12 @@
 #include "ar-internal.h"
 
 /*
+ * The maximum listening backlog queue size that may be set on a socket by
+ * listen().
+ */
+unsigned int rxrpc_max_backlog __read_mostly = 10;
+
+/*
  * How long to wait before scheduling ACK generation after seeing a
  * packet with RXRPC_REQUEST_ACK set (in jiffies).
  */
@@ -44,7 +50,7 @@ unsigned int rxrpc_idle_ack_delay = 0.5 * HZ;
  * limit is hit, we should generate an EXCEEDS_WINDOW ACK and discard further
  * packets.
  */
-unsigned int rxrpc_rx_window_size = 32;
+unsigned int rxrpc_rx_window_size = RXRPC_RXTX_BUFF_SIZE - 46;
 
 /*
  * Maximum Rx MTU size.  This indicates to the sender the size of jumbo packet
@@ -57,6 +63,11 @@ unsigned int rxrpc_rx_mtu = 5692;
  * sender that we're willing to handle.
  */
 unsigned int rxrpc_rx_jumbo_max = 4;
+
+/*
+ * Time till packet resend (in jiffies).
+ */
+unsigned int rxrpc_resend_timeout = 4 * HZ;
 
 const char *const rxrpc_pkts[] = {
 	"?00",

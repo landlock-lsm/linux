@@ -239,7 +239,7 @@ asmlinkage void secondary_start_kernel(void)
 	 * this CPU ticks all of those. If it doesn't, the CPU will
 	 * fail to come online.
 	 */
-	verify_local_cpu_capabilities();
+	check_local_cpu_capabilities();
 
 	if (cpu_ops[cpu]->cpu_postboot)
 		cpu_ops[cpu]->cpu_postboot();
@@ -267,7 +267,6 @@ asmlinkage void secondary_start_kernel(void)
 	set_cpu_online(cpu, true);
 	complete(&cpu_running);
 
-	local_dbg_enable();
 	local_irq_enable();
 	local_async_enable();
 
@@ -437,9 +436,20 @@ void __init smp_cpus_done(unsigned int max_cpus)
 
 void __init smp_prepare_boot_cpu(void)
 {
+	set_my_cpu_offset(per_cpu_offset(smp_processor_id()));
+	/*
+	 * Initialise the static keys early as they may be enabled by the
+	 * cpufeature code.
+	 */
+	jump_label_init();
 	cpuinfo_store_boot_cpu();
 	save_boot_cpu_run_el();
-	set_my_cpu_offset(per_cpu_offset(smp_processor_id()));
+	/*
+	 * Run the errata work around checks on the boot CPU, once we have
+	 * initialised the cpu feature infrastructure from
+	 * cpuinfo_store_boot_cpu() above.
+	 */
+	update_cpu_errata_workarounds();
 }
 
 static u64 __init of_get_cpu_mpidr(struct device_node *dn)
@@ -560,6 +570,8 @@ acpi_map_gic_cpu_interface(struct acpi_madt_generic_interrupt *processor)
 	 */
 	acpi_set_mailbox_entry(cpu_count, processor);
 
+	early_map_cpu_to_node(cpu_count, acpi_numa_get_nid(cpu_count, hwid));
+
 	cpu_count++;
 }
 
@@ -618,6 +630,7 @@ static void __init of_parse_and_init_cpus(void)
 			}
 
 			bootcpu_valid = true;
+			early_map_cpu_to_node(0, of_node_to_nid(dn));
 
 			/*
 			 * cpu_logical_map has already been
@@ -660,9 +673,9 @@ void __init smp_init_cpus(void)
 		acpi_table_parse_madt(ACPI_MADT_TYPE_GENERIC_INTERRUPT,
 				      acpi_parse_gic_cpu_interface, 0);
 
-	if (cpu_count > NR_CPUS)
-		pr_warn("no. of cores (%d) greater than configured maximum of %d - clipping\n",
-			cpu_count, NR_CPUS);
+	if (cpu_count > nr_cpu_ids)
+		pr_warn("Number of cores (%d) exceeds configured maximum of %d - clipping\n",
+			cpu_count, nr_cpu_ids);
 
 	if (!bootcpu_valid) {
 		pr_err("missing boot CPU MPIDR, not enabling secondaries\n");
@@ -676,7 +689,7 @@ void __init smp_init_cpus(void)
 	 * with entries in cpu_logical_map while initializing the cpus.
 	 * If the cpu set-up fails, invalidate the cpu_logical_map entry.
 	 */
-	for (i = 1; i < NR_CPUS; i++) {
+	for (i = 1; i < nr_cpu_ids; i++) {
 		if (cpu_logical_map(i) != INVALID_HWID) {
 			if (smp_cpu_setup(i))
 				cpu_logical_map(i) = INVALID_HWID;
@@ -692,6 +705,13 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 	init_cpu_topology();
 
 	smp_store_cpu_info(smp_processor_id());
+
+	/*
+	 * If UP is mandated by "nosmp" (which implies "maxcpus=0"), don't set
+	 * secondary CPUs present.
+	 */
+	if (max_cpus == 0)
+		return;
 
 	/*
 	 * Initialise the present map (which describes the set of CPUs

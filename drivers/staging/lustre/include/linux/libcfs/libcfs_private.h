@@ -15,11 +15,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * version 2 along with this program; If not, see
- * http://www.sun.com/software/products/lustre/docs/GPLv2.pdf
- *
- * Please contact Sun Microsystems, Inc., 4150 Network Circle, Santa Clara,
- * CA 95054 USA or visit www.sun.com if you need additional information or
- * have any questions.
+ * http://www.gnu.org/licenses/gpl-2.0.html
  *
  * GPL HEADER END
  */
@@ -362,15 +358,6 @@ do {							    \
 	if (var)						\
 		memcpy((char *)var, (const char *)ptr, len);    \
 	ptr += cfs_size_round(len);			     \
-} while (0)
-
-#define LOGL0(var, len, ptr)			      \
-do {						    \
-	if (!len)				       \
-		break;				  \
-	memcpy((char *)ptr, (const char *)var, len);    \
-	*((char *)(ptr) + len) = 0;		     \
-	ptr += cfs_size_round(len + 1);		 \
 } while (0)
 
 #endif

@@ -59,6 +59,7 @@
 #include <linux/pid_namespace.h>
 #include <linux/device.h>
 #include <linux/kthread.h>
+#include <linux/pagemap.h>
 #include <linux/sched.h>
 #include <linux/signal.h>
 #include <linux/idr.h>
@@ -380,7 +381,7 @@ static void __init setup_command_line(char *command_line)
 
 static __initdata DECLARE_COMPLETION(kthreadd_done);
 
-static noinline void __init_refok rest_init(void)
+static noinline void __ref rest_init(void)
 {
 	int pid;
 
@@ -463,6 +464,9 @@ void __init __weak thread_stack_cache_init(void)
  */
 static void __init mm_init(void)
 {
+	/* Does address_space.flags still fit into a 32-bit ulong? */
+	BUILD_BUG_ON(AS_LAST_FLAG > 32);
+
 	/*
 	 * page_ext requires contiguous pages,
 	 * bigger than MAX_ORDER unless SPARSEMEM.
@@ -716,6 +720,12 @@ static bool __init_or_module initcall_blacklisted(initcall_t fn)
 	addr = (unsigned long) dereference_function_descriptor(fn);
 	sprint_symbol_no_offset(fn_name, addr);
 
+	/*
+	 * fn will be "function_name [module_name]" where [module_name] is not
+	 * displayed for built-in init functions.  Strip off the [module_name].
+	 */
+	strreplace(fn_name, ' ', '\0');
+
 	list_for_each_entry(entry, &blacklisted_initcalls, next) {
 		if (!strcmp(fn_name, entry->buf)) {
 			pr_debug("initcall %s blacklisted\n", fn_name);
@@ -783,6 +793,7 @@ int __init_or_module do_one_initcall(initcall_t fn)
 	}
 	WARN(msgbuf[0], "initcall %pF returned with %s\n", fn, msgbuf);
 
+	add_latent_entropy();
 	return ret;
 }
 

@@ -87,6 +87,7 @@ struct mlxsw_rx_listener {
 	void (*func)(struct sk_buff *skb, u8 local_port, void *priv);
 	u8 local_port;
 	u16 trap_id;
+	enum mlxsw_reg_hpkt_action action;
 };
 
 struct mlxsw_event_listener {
@@ -190,7 +191,8 @@ struct mlxsw_config_profile {
 		used_max_ib_mc:1,
 		used_max_pkey:1,
 		used_ar_sec:1,
-		used_adaptive_routing_group_cap:1;
+		used_adaptive_routing_group_cap:1,
+		used_kvd_sizes:1;
 	u8	max_vepa_channels;
 	u16	max_lag;
 	u16	max_port_per_lag;
@@ -211,6 +213,10 @@ struct mlxsw_config_profile {
 	u8	ar_sec;
 	u16	adaptive_routing_group_cap;
 	u8	arn;
+	u32	kvd_linear_size;
+	u32	kvd_hash_single_size;
+	u32	kvd_hash_double_size;
+	u8	resource_query_enable;
 	struct mlxsw_swid_config swid_config[MLXSW_CONFIG_PROFILE_SWID_COUNT];
 };
 
@@ -262,10 +268,18 @@ struct mlxsw_driver {
 	const struct mlxsw_config_profile *profile;
 };
 
+struct mlxsw_resources {
+	u8	max_span_valid:1;
+	u8      max_span;
+};
+
+struct mlxsw_resources *mlxsw_core_resources_get(struct mlxsw_core *mlxsw_core);
+
 struct mlxsw_bus {
 	const char *kind;
 	int (*init)(void *bus_priv, struct mlxsw_core *mlxsw_core,
-		    const struct mlxsw_config_profile *profile);
+		    const struct mlxsw_config_profile *profile,
+		    struct mlxsw_resources *resources);
 	void (*fini)(void *bus_priv);
 	bool (*skb_transmit_busy)(void *bus_priv,
 				  const struct mlxsw_tx_info *tx_info);

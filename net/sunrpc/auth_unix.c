@@ -79,7 +79,7 @@ unx_create_cred(struct rpc_auth *auth, struct auth_cred *acred, int flags, gfp_t
 
 	cred->uc_gid = acred->gid;
 	for (i = 0; i < groups; i++)
-		cred->uc_gids[i] = GROUP_AT(acred->group_info, i);
+		cred->uc_gids[i] = acred->group_info->gid[i];
 	if (i < NFS_NGROUPS)
 		cred->uc_gids[i] = INVALID_GID;
 
@@ -127,7 +127,7 @@ unx_match(struct auth_cred *acred, struct rpc_cred *rcred, int flags)
 	if (groups > NFS_NGROUPS)
 		groups = NFS_NGROUPS;
 	for (i = 0; i < groups ; i++)
-		if (!gid_eq(cred->uc_gids[i], GROUP_AT(acred->group_info, i)))
+		if (!gid_eq(cred->uc_gids[i], acred->group_info->gid[i]))
 			return 0;
 	if (groups < NFS_NGROUPS && gid_valid(cred->uc_gids[groups]))
 		return 0;
@@ -228,6 +228,7 @@ static
 struct rpc_auth		unix_auth = {
 	.au_cslack	= UNX_CALLSLACK,
 	.au_rslack	= NUL_REPLYSLACK,
+	.au_flags	= RPCAUTH_AUTH_NO_CRKEY_TIMEOUT,
 	.au_ops		= &authunix_ops,
 	.au_flavor	= RPC_AUTH_UNIX,
 	.au_count	= ATOMIC_INIT(0),

@@ -28,28 +28,30 @@ static DEFINE_IDA(dimm_ida);
  * Retrieve bus and dimm handle and return if this bus supports
  * get_config_data commands
  */
-static int __validate_dimm(struct nvdimm_drvdata *ndd)
+int nvdimm_check_config_data(struct device *dev)
 {
-	struct nvdimm *nvdimm;
+	struct nvdimm *nvdimm = to_nvdimm(dev);
 
-	if (!ndd)
-		return -EINVAL;
-
-	nvdimm = to_nvdimm(ndd->dev);
-
-	if (!nvdimm->cmd_mask)
-		return -ENXIO;
-	if (!test_bit(ND_CMD_GET_CONFIG_DATA, &nvdimm->cmd_mask))
-		return -ENXIO;
+	if (!nvdimm->cmd_mask ||
+	    !test_bit(ND_CMD_GET_CONFIG_DATA, &nvdimm->cmd_mask)) {
+		if (nvdimm->flags & NDD_ALIASING)
+			return -ENXIO;
+		else
+			return -ENOTTY;
+	}
 
 	return 0;
 }
 
 static int validate_dimm(struct nvdimm_drvdata *ndd)
 {
-	int rc = __validate_dimm(ndd);
+	int rc;
 
-	if (rc && ndd)
+	if (!ndd)
+		return -EINVAL;
+
+	rc = nvdimm_check_config_data(ndd->dev);
+	if (rc)
 		dev_dbg(ndd->dev, "%pf: %s error: %d\n",
 				__builtin_return_address(0), __func__, rc);
 	return rc;
@@ -263,6 +265,12 @@ const char *nvdimm_name(struct nvdimm *nvdimm)
 }
 EXPORT_SYMBOL_GPL(nvdimm_name);
 
+struct kobject *nvdimm_kobj(struct nvdimm *nvdimm)
+{
+	return &nvdimm->dev.kobj;
+}
+EXPORT_SYMBOL_GPL(nvdimm_kobj);
+
 unsigned long nvdimm_cmd_mask(struct nvdimm *nvdimm)
 {
 	return nvdimm->cmd_mask;
@@ -346,7 +354,8 @@ EXPORT_SYMBOL_GPL(nvdimm_attribute_group);
 
 struct nvdimm *nvdimm_create(struct nvdimm_bus *nvdimm_bus, void *provider_data,
 		const struct attribute_group **groups, unsigned long flags,
-		unsigned long cmd_mask)
+		unsigned long cmd_mask, int num_flush,
+		struct resource *flush_wpq)
 {
 	struct nvdimm *nvdimm = kzalloc(sizeof(*nvdimm), GFP_KERNEL);
 	struct device *dev;
@@ -362,6 +371,8 @@ struct nvdimm *nvdimm_create(struct nvdimm_bus *nvdimm_bus, void *provider_data,
 	nvdimm->provider_data = provider_data;
 	nvdimm->flags = flags;
 	nvdimm->cmd_mask = cmd_mask;
+	nvdimm->num_flush = num_flush;
+	nvdimm->flush_wpq = flush_wpq;
 	atomic_set(&nvdimm->busy, 0);
 	dev = &nvdimm->dev;
 	dev_set_name(dev, "nmem%d", nvdimm->id);

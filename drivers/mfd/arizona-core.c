@@ -735,7 +735,7 @@ static int arizona_suspend(struct device *dev)
 	return 0;
 }
 
-static int arizona_suspend_late(struct device *dev)
+static int arizona_suspend_noirq(struct device *dev)
 {
 	struct arizona *arizona = dev_get_drvdata(dev);
 
@@ -759,7 +759,7 @@ static int arizona_resume(struct device *dev)
 {
 	struct arizona *arizona = dev_get_drvdata(dev);
 
-	dev_dbg(arizona->dev, "Late resume, reenabling IRQ\n");
+	dev_dbg(arizona->dev, "Resume, reenabling IRQ\n");
 	enable_irq(arizona->irq);
 
 	return 0;
@@ -771,10 +771,8 @@ const struct dev_pm_ops arizona_pm_ops = {
 			   arizona_runtime_resume,
 			   NULL)
 	SET_SYSTEM_SLEEP_PM_OPS(arizona_suspend, arizona_resume)
-#ifdef CONFIG_PM_SLEEP
-	.suspend_late = arizona_suspend_late,
-	.resume_noirq = arizona_resume_noirq,
-#endif
+	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(arizona_suspend_noirq,
+				      arizona_resume_noirq)
 };
 EXPORT_SYMBOL_GPL(arizona_pm_ops);
 
@@ -1035,7 +1033,7 @@ int arizona_dev_init(struct arizona *arizona)
 	default:
 		dev_err(arizona->dev, "Unknown device type %d\n",
 			arizona->type);
-		return -EINVAL;
+		return -ENODEV;
 	}
 
 	/* Mark DCVDD as external, LDO1 driver will clear if internal */
@@ -1121,6 +1119,7 @@ int arizona_dev_init(struct arizona *arizona)
 		break;
 	default:
 		dev_err(arizona->dev, "Unknown device ID: %x\n", reg);
+		ret = -ENODEV;
 		goto err_reset;
 	}
 
@@ -1280,12 +1279,14 @@ int arizona_dev_init(struct arizona *arizona)
 		break;
 	default:
 		dev_err(arizona->dev, "Unknown device ID %x\n", reg);
+		ret = -ENODEV;
 		goto err_reset;
 	}
 
 	if (!subdevs) {
 		dev_err(arizona->dev,
 			"No kernel support for device ID %x\n", reg);
+		ret = -ENODEV;
 		goto err_reset;
 	}
 
@@ -1462,7 +1463,7 @@ int arizona_dev_init(struct arizona *arizona)
 	/* Set up for interrupts */
 	ret = arizona_irq_init(arizona);
 	if (ret != 0)
-		goto err_reset;
+		goto err_pm;
 
 	pm_runtime_set_autosuspend_delay(arizona->dev, 100);
 	pm_runtime_use_autosuspend(arizona->dev);
@@ -1486,6 +1487,8 @@ int arizona_dev_init(struct arizona *arizona)
 
 err_irq:
 	arizona_irq_exit(arizona);
+err_pm:
+	pm_runtime_disable(arizona->dev);
 err_reset:
 	arizona_enable_reset(arizona);
 	regulator_disable(arizona->dcvdd);

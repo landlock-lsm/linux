@@ -740,14 +740,12 @@ static bool i40e_clean_tx_irq(struct i40e_vsi *vsi,
 	tx_ring->q_vector->tx.total_packets += total_packets;
 
 	if (tx_ring->flags & I40E_TXR_FLAGS_WB_ON_ITR) {
-		unsigned int j = 0;
-
 		/* check to see if there are < 4 descriptors
 		 * waiting to be written back, then kick the hardware to force
 		 * them to be written back in case we stay in NAPI.
 		 * In this mode on X722 we do not enable Interrupt.
 		 */
-		j = i40e_get_tx_pending(tx_ring, false);
+		unsigned int j = i40e_get_tx_pending(tx_ring, false);
 
 		if (budget &&
 		    ((j / (WB_STRIDE + 1)) == 0) && (j != 0) &&
@@ -2842,10 +2840,9 @@ static inline void i40e_tx_map(struct i40e_ring *tx_ring, struct sk_buff *skb,
 						  I40E_TXD_QW1_CMD_SHIFT);
 
 	/* notify HW of packet */
-	if (!tail_bump)
+	if (!tail_bump) {
 		prefetchw(tx_desc + 1);
-
-	if (tail_bump) {
+	} else {
 		/* Force memory writes to complete before letting h/w
 		 * know there are new descriptors to fetch.  (Only
 		 * applicable for weak-ordered memory model archs,
@@ -2854,7 +2851,6 @@ static inline void i40e_tx_map(struct i40e_ring *tx_ring, struct sk_buff *skb,
 		wmb();
 		writel(i, tx_ring->tail);
 	}
-
 	return;
 
 dma_error:

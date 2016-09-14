@@ -17,7 +17,7 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/irqdomain.h>
-#include <linux/module.h>
+#include <linux/init.h>
 #include <linux/msi.h>
 #include <linux/of_irq.h>
 #include <linux/of.h>
@@ -334,8 +334,9 @@ static int __init ks_add_pcie_port(struct keystone_pcie *ks_pcie,
 	if (ks_pcie->error_irq <= 0)
 		dev_info(&pdev->dev, "no error IRQ defined\n");
 	else {
-		if (request_irq(ks_pcie->error_irq, pcie_err_irq_handler,
-				IRQF_SHARED, "pcie-error-irq", ks_pcie) < 0) {
+		ret = request_irq(ks_pcie->error_irq, pcie_err_irq_handler,
+				  IRQF_SHARED, "pcie-error-irq", ks_pcie);
+		if (ret < 0) {
 			dev_err(&pdev->dev, "failed to request error IRQ %d\n",
 				ks_pcie->error_irq);
 			return ret;
@@ -360,7 +361,6 @@ static const struct of_device_id ks_pcie_of_match[] = {
 	},
 	{ },
 };
-MODULE_DEVICE_TABLE(of, ks_pcie_of_match);
 
 static int __exit ks_pcie_remove(struct platform_device *pdev)
 {
@@ -439,9 +439,4 @@ static struct platform_driver ks_pcie_driver __refdata = {
 		.of_match_table = of_match_ptr(ks_pcie_of_match),
 	},
 };
-
-module_platform_driver(ks_pcie_driver);
-
-MODULE_AUTHOR("Murali Karicheri <m-karicheri2@ti.com>");
-MODULE_DESCRIPTION("Keystone PCIe host controller driver");
-MODULE_LICENSE("GPL v2");
+builtin_platform_driver(ks_pcie_driver);

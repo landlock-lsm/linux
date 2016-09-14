@@ -426,7 +426,6 @@ static int airspy_alloc_urbs(struct airspy *s)
 		dev_dbg(s->dev, "alloc urb=%d\n", i);
 		s->urb_list[i] = usb_alloc_urb(0, GFP_ATOMIC);
 		if (!s->urb_list[i]) {
-			dev_dbg(s->dev, "failed\n");
 			for (j = 0; j < i; j++)
 				usb_free_urb(s->urb_list[j]);
 			return -ENOMEM;
@@ -488,7 +487,7 @@ static void airspy_disconnect(struct usb_interface *intf)
 /* Videobuf2 operations */
 static int airspy_queue_setup(struct vb2_queue *vq,
 		unsigned int *nbuffers,
-		unsigned int *nplanes, unsigned int sizes[], void *alloc_ctxs[])
+		unsigned int *nplanes, unsigned int sizes[], struct device *alloc_devs[])
 {
 	struct airspy *s = vb2_get_drv_priv(vq);
 

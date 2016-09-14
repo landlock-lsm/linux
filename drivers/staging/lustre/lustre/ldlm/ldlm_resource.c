@@ -15,11 +15,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * version 2 along with this program; If not, see
- * http://www.sun.com/software/products/lustre/docs/GPLv2.pdf
- *
- * Please contact Sun Microsystems, Inc., 4150 Network Circle, Santa Clara,
- * CA 95054 USA or visit www.sun.com if you need additional information or
- * have any questions.
+ * http://www.gnu.org/licenses/gpl-2.0.html
  *
  * GPL HEADER END
  */
@@ -762,8 +758,7 @@ static void cleanup_resource(struct ldlm_resource *res, struct list_head *q,
 		 */
 		lock_res(res);
 		list_for_each(tmp, q) {
-			lock = list_entry(tmp, struct ldlm_lock,
-					      l_res_link);
+			lock = list_entry(tmp, struct ldlm_lock, l_res_link);
 			if (ldlm_is_cleaned(lock)) {
 				lock = NULL;
 				continue;
@@ -797,8 +792,14 @@ static void cleanup_resource(struct ldlm_resource *res, struct list_head *q,
 			 */
 			unlock_res(res);
 			LDLM_DEBUG(lock, "setting FL_LOCAL_ONLY");
+			if (lock->l_flags & LDLM_FL_FAIL_LOC) {
+				set_current_state(TASK_UNINTERRUPTIBLE);
+				schedule_timeout(cfs_time_seconds(4));
+				set_current_state(TASK_RUNNING);
+			}
 			if (lock->l_completion_ast)
-				lock->l_completion_ast(lock, 0, NULL);
+				lock->l_completion_ast(lock, LDLM_FL_FAILED,
+						       NULL);
 			LDLM_LOCK_RELEASE(lock);
 			continue;
 		}
@@ -1086,7 +1087,7 @@ ldlm_resource_get(struct ldlm_namespace *ns, struct ldlm_resource *parent,
 		  int create)
 {
 	struct hlist_node     *hnode;
-	struct ldlm_resource *res;
+	struct ldlm_resource *res = NULL;
 	struct cfs_hash_bd	 bd;
 	__u64		 version;
 	int		      ns_refcount = 0;
@@ -1099,31 +1100,20 @@ ldlm_resource_get(struct ldlm_namespace *ns, struct ldlm_resource *parent,
 	hnode = cfs_hash_bd_lookup_locked(ns->ns_rs_hash, &bd, (void *)name);
 	if (hnode) {
 		cfs_hash_bd_unlock(ns->ns_rs_hash, &bd, 0);
-		res = hlist_entry(hnode, struct ldlm_resource, lr_hash);
-		/* Synchronize with regard to resource creation. */
-		if (ns->ns_lvbo && ns->ns_lvbo->lvbo_init) {
-			mutex_lock(&res->lr_lvb_mutex);
-			mutex_unlock(&res->lr_lvb_mutex);
-		}
-
-		if (unlikely(res->lr_lvb_len < 0)) {
-			ldlm_resource_putref(res);
-			res = NULL;
-		}
-		return res;
+		goto lvbo_init;
 	}
 
 	version = cfs_hash_bd_version_get(&bd);
 	cfs_hash_bd_unlock(ns->ns_rs_hash, &bd, 0);
 
 	if (create == 0)
-		return NULL;
+		return ERR_PTR(-ENOENT);
 
 	LASSERTF(type >= LDLM_MIN_TYPE && type < LDLM_MAX_TYPE,
 		 "type: %d\n", type);
 	res = ldlm_resource_new();
 	if (!res)
-		return NULL;
+		return ERR_PTR(-ENOMEM);
 
 	res->lr_ns_bucket  = cfs_hash_bd_extra_get(ns->ns_rs_hash, &bd);
 	res->lr_name       = *name;
@@ -1141,7 +1131,7 @@ ldlm_resource_get(struct ldlm_namespace *ns, struct ldlm_resource *parent,
 		/* We have taken lr_lvb_mutex. Drop it. */
 		mutex_unlock(&res->lr_lvb_mutex);
 		kmem_cache_free(ldlm_resource_slab, res);
-
+lvbo_init:
 		res = hlist_entry(hnode, struct ldlm_resource, lr_hash);
 		/* Synchronize with regard to resource creation. */
 		if (ns->ns_lvbo && ns->ns_lvbo->lvbo_init) {
@@ -1151,7 +1141,7 @@ ldlm_resource_get(struct ldlm_namespace *ns, struct ldlm_resource *parent,
 
 		if (unlikely(res->lr_lvb_len < 0)) {
 			ldlm_resource_putref(res);
-			res = NULL;
+			res = ERR_PTR(res->lr_lvb_len);
 		}
 		return res;
 	}
@@ -1173,7 +1163,7 @@ ldlm_resource_get(struct ldlm_namespace *ns, struct ldlm_resource *parent,
 			res->lr_lvb_len = rc;
 			mutex_unlock(&res->lr_lvb_mutex);
 			ldlm_resource_putref(res);
-			return NULL;
+			return ERR_PTR(rc);
 		}
 	}
 
@@ -1279,7 +1269,7 @@ void ldlm_resource_add_lock(struct ldlm_resource *res, struct list_head *head,
 {
 	check_res_locked(res);
 
-	LDLM_DEBUG(lock, "About to add this lock:\n");
+	LDLM_DEBUG(lock, "About to add this lock:");
 
 	if (ldlm_is_destroyed(lock)) {
 		CDEBUG(D_OTHER, "Lock destroyed, not adding to resource\n");
@@ -1390,7 +1380,7 @@ void ldlm_resource_dump(int level, struct ldlm_resource *res)
 	if (!list_empty(&res->lr_granted)) {
 		CDEBUG(level, "Granted locks (in reverse order):\n");
 		list_for_each_entry_reverse(lock, &res->lr_granted,
-						l_res_link) {
+					    l_res_link) {
 			LDLM_DEBUG_LIMIT(level, lock, "###");
 			if (!(level & D_CANTMASK) &&
 			    ++granted > ldlm_dump_granted_max) {

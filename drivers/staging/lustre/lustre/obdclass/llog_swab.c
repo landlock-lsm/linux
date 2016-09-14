@@ -15,11 +15,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * version 2 along with this program; If not, see
- * http://www.sun.com/software/products/lustre/docs/GPLv2.pdf
- *
- * Please contact Sun Microsystems, Inc., 4150 Network Circle, Santa Clara,
- * CA 95054 USA or visit www.sun.com if you need additional information or
- * have any questions.
+ * http://www.gnu.org/licenses/gpl-2.0.html
  *
  * GPL HEADER END
  */
@@ -228,6 +224,7 @@ void lustre_swab_llog_rec(struct llog_rec_hdr *rec)
 		__swab32s(&lsr->lsr_uid_h);
 		__swab32s(&lsr->lsr_gid);
 		__swab32s(&lsr->lsr_gid_h);
+		__swab64s(&lsr->lsr_valid);
 		tail = &lsr->lsr_tail;
 		break;
 	}

@@ -61,10 +61,39 @@
  *			Slots are requested and waited for,
  *			the wait times out after slot_timeout_secs.
  *
+ * What:		/sys/fs/orangefs/dcache_timeout_msecs
+ * Date:		Jul 2016
+ * Contact:		Martin Brandenburg <martin@omnibond.com>
+ * Description:
+ *			Time lookup is valid in milliseconds.
+ *
+ * What:		/sys/fs/orangefs/getattr_timeout_msecs
+ * Date:		Jul 2016
+ * Contact:		Martin Brandenburg <martin@omnibond.com>
+ * Description:
+ *			Time getattr is valid in milliseconds.
+ *
+ * What:		/sys/fs/orangefs/readahead_count
+ * Date:		Aug 2016
+ * Contact:		Martin Brandenburg <martin@omnibond.com>
+ * Description:
+ *			Readahead cache buffer count.
+ *
+ * What:		/sys/fs/orangefs/readahead_size
+ * Date:		Aug 2016
+ * Contact:		Martin Brandenburg <martin@omnibond.com>
+ * Description:
+ *			Readahead cache buffer size.
+ *
+ * What:		/sys/fs/orangefs/readahead_count_size
+ * Date:		Aug 2016
+ * Contact:		Martin Brandenburg <martin@omnibond.com>
+ * Description:
+ *			Readahead cache buffer count and size.
  *
  * What:		/sys/fs/orangefs/acache/...
  * Date:		Jun 2015
- * Contact:		Mike Marshall <hubcap@omnibond.com>
+ * Contact:		Martin Brandenburg <martin@omnibond.com>
  * Description:
  * 			Attribute cache configurable settings.
  *
@@ -117,6 +146,8 @@ struct orangefs_obj {
 	int perf_history_size;
 	int perf_time_interval_secs;
 	int slot_timeout_secs;
+	int dcache_timeout_msecs;
+	int getattr_timeout_msecs;
 };
 
 struct acache_orangefs_obj {
@@ -658,6 +689,20 @@ static ssize_t sysfs_int_show(char *kobj_id, char *buf, void *attr)
 				       "%d\n",
 				       slot_timeout_secs);
 			goto out;
+		} else if (!strcmp(orangefs_attr->attr.name,
+				   "dcache_timeout_msecs")) {
+			rc = scnprintf(buf,
+				       PAGE_SIZE,
+				       "%d\n",
+				       dcache_timeout_msecs);
+			goto out;
+		} else if (!strcmp(orangefs_attr->attr.name,
+				   "getattr_timeout_msecs")) {
+			rc = scnprintf(buf,
+				       PAGE_SIZE,
+				       "%d\n",
+				       getattr_timeout_msecs);
+			goto out;
 		} else {
 			goto out;
 		}
@@ -734,6 +779,12 @@ static ssize_t int_store(struct orangefs_obj *orangefs_obj,
 	} else if (!strcmp(attr->attr.name, "slot_timeout_secs")) {
 		rc = kstrtoint(buf, 0, &slot_timeout_secs);
 		goto out;
+	} else if (!strcmp(attr->attr.name, "dcache_timeout_msecs")) {
+		rc = kstrtoint(buf, 0, &dcache_timeout_msecs);
+		goto out;
+	} else if (!strcmp(attr->attr.name, "getattr_timeout_msecs")) {
+		rc = kstrtoint(buf, 0, &getattr_timeout_msecs);
+		goto out;
 	} else {
 		goto out;
 	}
@@ -803,6 +854,20 @@ static int sysfs_service_op_show(char *kobj_id, char *buf, void *attr)
 			new_op->upcall.req.param.op =
 				ORANGEFS_PARAM_REQUEST_OP_PERF_RESET;
 
+		else if (!strcmp(orangefs_attr->attr.name,
+				 "readahead_count"))
+			new_op->upcall.req.param.op =
+				ORANGEFS_PARAM_REQUEST_OP_READAHEAD_COUNT;
+
+		else if (!strcmp(orangefs_attr->attr.name,
+				 "readahead_size"))
+			new_op->upcall.req.param.op =
+				ORANGEFS_PARAM_REQUEST_OP_READAHEAD_SIZE;
+
+		else if (!strcmp(orangefs_attr->attr.name,
+				 "readahead_count_size"))
+			new_op->upcall.req.param.op =
+				ORANGEFS_PARAM_REQUEST_OP_READAHEAD_COUNT_SIZE;
 	} else if (!strcmp(kobj_id, ACACHE_KOBJ_ID)) {
 		acache_attr = (struct acache_orangefs_attribute *)attr;
 
@@ -916,10 +981,17 @@ static int sysfs_service_op_show(char *kobj_id, char *buf, void *attr)
 out:
 	if (!rc) {
 		if (strcmp(kobj_id, PC_KOBJ_ID)) {
-			rc = scnprintf(buf,
-				       PAGE_SIZE,
-				       "%d\n",
-				       (int)new_op->downcall.resp.param.value);
+			if (new_op->upcall.req.param.op ==
+			    ORANGEFS_PARAM_REQUEST_OP_READAHEAD_COUNT_SIZE) {
+				rc = scnprintf(buf, PAGE_SIZE, "%d %d\n",
+				    (int)new_op->downcall.resp.param.u.
+				    value32[0],
+				    (int)new_op->downcall.resp.param.u.
+				    value32[1]);
+			} else {
+				rc = scnprintf(buf, PAGE_SIZE, "%d\n",
+				    (int)new_op->downcall.resp.param.u.value64);
+			}
 		} else {
 			rc = scnprintf(
 				buf,
@@ -1046,11 +1118,18 @@ static int sysfs_service_op_store(char *kobj_id, const char *buf, void *attr)
 	}
 
 	/*
-	 * The value we want to send back to userspace is in buf.
+	 * The value we want to send back to userspace is in buf, unless this
+	 * there are two parameters, which is specially handled below.
 	 */
-	rc = kstrtoint(buf, 0, &val);
-	if (rc)
-		goto out;
+	if (strcmp(kobj_id, ORANGEFS_KOBJ_ID) ||
+	    strcmp(((struct orangefs_attribute *)attr)->attr.name,
+	    "readahead_count_size")) {
+		rc = kstrtoint(buf, 0, &val);
+		if (rc)
+			goto out;
+	}
+
+	new_op->upcall.req.param.type = ORANGEFS_PARAM_REQUEST_SET;
 
 	if (!strcmp(kobj_id, ORANGEFS_KOBJ_ID)) {
 		orangefs_attr = (struct orangefs_attribute *)attr;
@@ -1077,6 +1156,51 @@ static int sysfs_service_op_store(char *kobj_id, const char *buf, void *attr)
 			if ((val == 0) || (val == 1)) {
 				new_op->upcall.req.param.op =
 					ORANGEFS_PARAM_REQUEST_OP_PERF_RESET;
+			} else {
+				rc = 0;
+				goto out;
+			}
+		} else if (!strcmp(orangefs_attr->attr.name,
+				   "readahead_count")) {
+			if ((val >= 0)) {
+				new_op->upcall.req.param.op =
+				ORANGEFS_PARAM_REQUEST_OP_READAHEAD_COUNT;
+			} else {
+				rc = 0;
+				goto out;
+			}
+		} else if (!strcmp(orangefs_attr->attr.name,
+				   "readahead_size")) {
+			if ((val >= 0)) {
+				new_op->upcall.req.param.op =
+				ORANGEFS_PARAM_REQUEST_OP_READAHEAD_SIZE;
+			} else {
+				rc = 0;
+				goto out;
+			}
+		} else if (!strcmp(orangefs_attr->attr.name,
+				   "readahead_count_size")) {
+			int val1, val2;
+			rc = sscanf(buf, "%d %d", &val1, &val2);
+			if (rc < 2) {
+				rc = 0;
+				goto out;
+			}
+			if ((val1 >= 0) && (val2 >= 0)) {
+				new_op->upcall.req.param.op =
+				ORANGEFS_PARAM_REQUEST_OP_READAHEAD_COUNT_SIZE;
+			} else {
+				rc = 0;
+				goto out;
+			}
+			new_op->upcall.req.param.u.value32[0] = val1;
+			new_op->upcall.req.param.u.value32[1] = val2;
+			goto value_set;
+		} else if (!strcmp(orangefs_attr->attr.name,
+				   "perf_counter_reset")) {
+			if ((val > 0)) {
+				new_op->upcall.req.param.op =
+				ORANGEFS_PARAM_REQUEST_OP_READAHEAD_COUNT_SIZE;
 			} else {
 				rc = 0;
 				goto out;
@@ -1242,9 +1366,8 @@ static int sysfs_service_op_store(char *kobj_id, const char *buf, void *attr)
 		goto out;
 	}
 
-	new_op->upcall.req.param.type = ORANGEFS_PARAM_REQUEST_SET;
-
-	new_op->upcall.req.param.value = val;
+	new_op->upcall.req.param.u.value64 = val;
+value_set:
 
 	/*
 	 * The service_operation will return a errno return code on
@@ -1361,6 +1484,24 @@ static struct orangefs_attribute op_timeout_secs_attribute =
 static struct orangefs_attribute slot_timeout_secs_attribute =
 	__ATTR(slot_timeout_secs, 0664, int_orangefs_show, int_store);
 
+static struct orangefs_attribute dcache_timeout_msecs_attribute =
+	__ATTR(dcache_timeout_msecs, 0664, int_orangefs_show, int_store);
+
+static struct orangefs_attribute getattr_timeout_msecs_attribute =
+	__ATTR(getattr_timeout_msecs, 0664, int_orangefs_show, int_store);
+
+static struct orangefs_attribute readahead_count_attribute =
+	__ATTR(readahead_count, 0664, service_orangefs_show,
+	       service_orangefs_store);
+
+static struct orangefs_attribute readahead_size_attribute =
+	__ATTR(readahead_size, 0664, service_orangefs_show,
+	       service_orangefs_store);
+
+static struct orangefs_attribute readahead_count_size_attribute =
+	__ATTR(readahead_count_size, 0664, service_orangefs_show,
+	       service_orangefs_store);
+
 static struct orangefs_attribute perf_counter_reset_attribute =
 	__ATTR(perf_counter_reset,
 	       0664,
@@ -1382,6 +1523,11 @@ static struct orangefs_attribute perf_time_interval_secs_attribute =
 static struct attribute *orangefs_default_attrs[] = {
 	&op_timeout_secs_attribute.attr,
 	&slot_timeout_secs_attribute.attr,
+	&dcache_timeout_msecs_attribute.attr,
+	&getattr_timeout_msecs_attribute.attr,
+	&readahead_count_attribute.attr,
+	&readahead_size_attribute.attr,
+	&readahead_count_size_attribute.attr,
 	&perf_counter_reset_attribute.attr,
 	&perf_history_size_attribute.attr,
 	&perf_time_interval_secs_attribute.attr,

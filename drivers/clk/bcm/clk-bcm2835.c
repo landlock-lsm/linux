@@ -36,6 +36,7 @@
 
 #include <linux/clk-provider.h>
 #include <linux/clkdev.h>
+#include <linux/clk.h>
 #include <linux/clk/bcm2835.h>
 #include <linux/debugfs.h>
 #include <linux/module.h>
@@ -442,6 +443,8 @@ struct bcm2835_clock_data {
 	u32 int_bits;
 	/* Number of fractional bits in the divider */
 	u32 frac_bits;
+
+	u32 flags;
 
 	bool is_vpu_clock;
 	bool is_mash_clock;
@@ -1006,15 +1009,27 @@ static int bcm2835_clock_set_rate(struct clk_hw *hw,
 	return 0;
 }
 
+static bool
+bcm2835_clk_is_pllc(struct clk_hw *hw)
+{
+	if (!hw)
+		return false;
+
+	return strncmp(clk_hw_get_name(hw), "pllc", 4) == 0;
+}
+
 static int bcm2835_clock_determine_rate(struct clk_hw *hw,
 					struct clk_rate_request *req)
 {
 	struct bcm2835_clock *clock = bcm2835_clock_from_hw(hw);
 	struct clk_hw *parent, *best_parent = NULL;
+	bool current_parent_is_pllc;
 	unsigned long rate, best_rate = 0;
 	unsigned long prate, best_prate = 0;
 	size_t i;
 	u32 div;
+
+	current_parent_is_pllc = bcm2835_clk_is_pllc(clk_hw_get_parent(hw));
 
 	/*
 	 * Select parent clock that results in the closest but lower rate
@@ -1023,6 +1038,17 @@ static int bcm2835_clock_determine_rate(struct clk_hw *hw,
 		parent = clk_hw_get_parent_by_index(hw, i);
 		if (!parent)
 			continue;
+
+		/*
+		 * Don't choose a PLLC-derived clock as our parent
+		 * unless it had been manually set that way.  PLLC's
+		 * frequency gets adjusted by the firmware due to
+		 * over-temp or under-voltage conditions, without
+		 * prior notification to our clock consumer.
+		 */
+		if (bcm2835_clk_is_pllc(parent) && !current_parent_is_pllc)
+			continue;
+
 		prate = clk_hw_get_rate(parent);
 		div = bcm2835_clock_choose_div(hw, req->rate, prate, true);
 		rate = bcm2835_clock_rate_from_divisor(clock, prate, div);
@@ -1230,13 +1256,19 @@ static struct clk *bcm2835_register_clock(struct bcm2835_cprman *cprman,
 	init.parent_names = parents;
 	init.num_parents = data->num_mux_parents;
 	init.name = data->name;
-	init.flags = CLK_IGNORE_UNUSED;
+	init.flags = data->flags | CLK_IGNORE_UNUSED;
 
 	if (data->is_vpu_clock) {
 		init.ops = &bcm2835_vpu_clock_clk_ops;
 	} else {
 		init.ops = &bcm2835_clock_clk_ops;
 		init.flags |= CLK_SET_RATE_GATE | CLK_SET_PARENT_GATE;
+
+		/* If the clock wasn't actually enabled at boot, it's not
+		 * critical.
+		 */
+		if (!(cprman_read(cprman, data->ctl_reg) & CM_ENABLE))
+			init.flags &= ~CLK_IS_CRITICAL;
 	}
 
 	clock = devm_kzalloc(cprman->dev, sizeof(*clock), GFP_KERNEL);
@@ -1649,6 +1681,7 @@ static const struct bcm2835_clk_desc clk_desc_array[] = {
 		.div_reg = CM_VPUDIV,
 		.int_bits = 12,
 		.frac_bits = 8,
+		.flags = CLK_IS_CRITICAL,
 		.is_vpu_clock = true),
 
 	/* clocks with per parent mux */
@@ -1705,13 +1738,15 @@ static const struct bcm2835_clk_desc clk_desc_array[] = {
 		.div_reg = CM_GP1DIV,
 		.int_bits = 12,
 		.frac_bits = 12,
+		.flags = CLK_IS_CRITICAL,
 		.is_mash_clock = true),
 	[BCM2835_CLOCK_GP2]	= REGISTER_PER_CLK(
 		.name = "gp2",
 		.ctl_reg = CM_GP2CTL,
 		.div_reg = CM_GP2DIV,
 		.int_bits = 12,
-		.frac_bits = 12),
+		.frac_bits = 12,
+		.flags = CLK_IS_CRITICAL),
 
 	/* HDMI state machine */
 	[BCM2835_CLOCK_HSM]	= REGISTER_PER_CLK(
@@ -1790,6 +1825,25 @@ static const struct bcm2835_clk_desc clk_desc_array[] = {
 		.ctl_reg = CM_PERIICTL),
 };
 
+/*
+ * Permanently take a reference on the parent of the SDRAM clock.
+ *
+ * While the SDRAM is being driven by its dedicated PLL most of the
+ * time, there is a little loop running in the firmware that
+ * periodically switches the SDRAM to using our CM clock to do PVT
+ * recalibration, with the assumption that the previously configured
+ * SDRAM parent is still enabled and running.
+ */
+static int bcm2835_mark_sdc_parent_critical(struct clk *sdc)
+{
+	struct clk *parent = clk_get_parent(sdc);
+
+	if (IS_ERR(parent))
+		return PTR_ERR(parent);
+
+	return clk_prepare_enable(parent);
+}
+
 static int bcm2835_clk_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -1799,6 +1853,7 @@ static int bcm2835_clk_probe(struct platform_device *pdev)
 	const struct bcm2835_clk_desc *desc;
 	const size_t asize = ARRAY_SIZE(clk_desc_array);
 	size_t i;
+	int ret;
 
 	cprman = devm_kzalloc(dev,
 			      sizeof(*cprman) + asize * sizeof(*clks),
@@ -1828,6 +1883,10 @@ static int bcm2835_clk_probe(struct platform_device *pdev)
 		if (desc->clk_register && desc->data)
 			clks[i] = desc->clk_register(cprman, desc->data);
 	}
+
+	ret = bcm2835_mark_sdc_parent_critical(clks[BCM2835_CLOCK_SDRAM]);
+	if (ret)
+		return ret;
 
 	return of_clk_add_provider(dev->of_node, of_clk_src_onecell_get,
 				   &cprman->onecell);

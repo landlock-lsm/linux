@@ -48,7 +48,7 @@ resdir=""
 configs=""
 cpus=0
 ds=`date +%Y.%m.%d-%H:%M:%S`
-jitter=0
+jitter="-1"
 
 . functions.sh
 
@@ -163,7 +163,7 @@ do
 		shift
 		;;
 	--torture)
-		checkarg --torture "(suite name)" "$#" "$2" '^\(lock\|rcu\|rcuperf\)$' '^--'
+		checkarg --torture "(suite name)" "$#" "$2" '^\(lock\|rcu\|rcuperf\|wake\)$' '^--'
 		TORTURE_SUITE=$2
 		shift
 		;;

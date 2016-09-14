@@ -118,7 +118,7 @@ static void rf_serial_write(struct adapter *adapt,
 	phy_set_bb_reg(adapt, phyreg->rf3wireOffset, bMaskDWord, data_and_addr);
 }
 
-u32 phy_query_rf_reg(struct adapter *adapt, enum rf_radio_path rf_path,
+u32 rtw_hal_read_rfreg(struct adapter *adapt, enum rf_radio_path rf_path,
 		     u32 reg_addr, u32 bit_mask)
 {
 	u32 original_value, readback_value, bit_shift;
@@ -274,7 +274,7 @@ static void phy_set_bw_mode_callback(struct adapter *adapt)
 		rtl88eu_phy_rf6052_set_bandwidth(adapt, hal_data->CurrentChannelBW);
 }
 
-void phy_set_bw_mode(struct adapter *adapt, enum ht_channel_width bandwidth,
+void rtw_hal_set_bwmode(struct adapter *adapt, enum ht_channel_width bandwidth,
 		     unsigned char offset)
 {
 	struct hal_data_8188e	*hal_data = GET_HAL_DATA(adapt);
@@ -295,9 +295,6 @@ static void phy_sw_chnl_callback(struct adapter *adapt, u8 channel)
 	u32 param1, param2;
 	struct hal_data_8188e *hal_data = GET_HAL_DATA(adapt);
 
-	if (adapt->bNotifyChannelChange)
-		DBG_88E("[%s] ch = %d\n", __func__, channel);
-
 	phy_set_tx_power_level(adapt, channel);
 
 	param1 = RF_CHNLBW;
@@ -310,7 +307,7 @@ static void phy_sw_chnl_callback(struct adapter *adapt, u8 channel)
 	}
 }
 
-void phy_sw_chnl(struct adapter *adapt, u8 channel)
+void rtw_hal_set_chan(struct adapter *adapt, u8 channel)
 {
 	struct hal_data_8188e *hal_data = GET_HAL_DATA(adapt);
 	u8 tmpchannel = hal_data->CurrentChannel;
@@ -439,7 +436,7 @@ void rtl88eu_dm_txpower_tracking_callback_thermalmeter(struct adapter *adapt)
 
 	dm_odm->RFCalibrateInfo.RegA24 = 0x090e1317;
 
-	thermal_val = (u8)phy_query_rf_reg(adapt, RF_PATH_A,
+	thermal_val = (u8)rtw_hal_read_rfreg(adapt, RF_PATH_A,
 					   RF_T_METER_88E, 0xfc00);
 
 	if (is2t)
@@ -1232,12 +1229,12 @@ static void phy_lc_calibrate(struct adapter *adapt, bool is2t)
 	if ((tmpreg&0x70) != 0) {
 		/* 1. Read original RF mode */
 		/* Path-A */
-		rf_a_mode = phy_query_rf_reg(adapt, RF_PATH_A, RF_AC,
+		rf_a_mode = rtw_hal_read_rfreg(adapt, RF_PATH_A, RF_AC,
 					     bMask12Bits);
 
 		/* Path-B */
 		if (is2t)
-			rf_b_mode = phy_query_rf_reg(adapt, RF_PATH_B, RF_AC,
+			rf_b_mode = rtw_hal_read_rfreg(adapt, RF_PATH_B, RF_AC,
 						     bMask12Bits);
 
 		/* 2. Set RF mode = standby mode */
@@ -1252,7 +1249,7 @@ static void phy_lc_calibrate(struct adapter *adapt, bool is2t)
 	}
 
 	/* 3. Read RF reg18 */
-	lc_cal = phy_query_rf_reg(adapt, RF_PATH_A, RF_CHNLBW, bMask12Bits);
+	lc_cal = rtw_hal_read_rfreg(adapt, RF_PATH_A, RF_CHNLBW, bMask12Bits);
 
 	/* 4. Set LC calibration begin bit15 */
 	phy_set_rf_reg(adapt, RF_PATH_A, RF_CHNLBW, bMask12Bits,

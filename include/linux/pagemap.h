@@ -25,6 +25,10 @@ enum mapping_flags {
 	AS_MM_ALL_LOCKS	= __GFP_BITS_SHIFT + 2,	/* under mm_take_all_locks() */
 	AS_UNEVICTABLE	= __GFP_BITS_SHIFT + 3,	/* e.g., ramdisk, SHM_LOCK */
 	AS_EXITING	= __GFP_BITS_SHIFT + 4, /* final truncate in progress */
+	/* writeback related tags are not used */
+	AS_NO_WRITEBACK_TAGS = __GFP_BITS_SHIFT + 5,
+
+	AS_LAST_FLAG,
 };
 
 static inline void mapping_set_error(struct address_space *mapping, int error)
@@ -62,6 +66,16 @@ static inline void mapping_set_exiting(struct address_space *mapping)
 static inline int mapping_exiting(struct address_space *mapping)
 {
 	return test_bit(AS_EXITING, &mapping->flags);
+}
+
+static inline void mapping_set_no_writeback_tags(struct address_space *mapping)
+{
+	set_bit(AS_NO_WRITEBACK_TAGS, &mapping->flags);
+}
+
+static inline int mapping_use_writeback_tags(struct address_space *mapping)
+{
+	return !test_bit(AS_NO_WRITEBACK_TAGS, &mapping->flags);
 }
 
 static inline gfp_t mapping_gfp_mask(struct address_space * mapping)
@@ -209,10 +223,10 @@ static inline struct page *page_cache_alloc_cold(struct address_space *x)
 	return __page_cache_alloc(mapping_gfp_mask(x)|__GFP_COLD);
 }
 
-static inline struct page *page_cache_alloc_readahead(struct address_space *x)
+static inline gfp_t readahead_gfp_mask(struct address_space *x)
 {
-	return __page_cache_alloc(mapping_gfp_mask(x) |
-				  __GFP_COLD | __GFP_NORETRY | __GFP_NOWARN);
+	return mapping_gfp_mask(x) |
+				  __GFP_COLD | __GFP_NORETRY | __GFP_NOWARN;
 }
 
 typedef int filler_t(void *, struct page *);
@@ -396,7 +410,7 @@ static inline loff_t page_offset(struct page *page)
 
 static inline loff_t page_file_offset(struct page *page)
 {
-	return ((loff_t)page_file_index(page)) << PAGE_SHIFT;
+	return ((loff_t)page_index(page)) << PAGE_SHIFT;
 }
 
 extern pgoff_t linear_hugepage_index(struct vm_area_struct *vma,
@@ -510,7 +524,7 @@ static inline void wait_on_page_writeback(struct page *page)
 extern void end_page_writeback(struct page *page);
 void wait_for_stable_page(struct page *page);
 
-void page_endio(struct page *page, int rw, int err);
+void page_endio(struct page *page, bool is_write, int err);
 
 /*
  * Add an arbitrary waiter to a page's wait queue

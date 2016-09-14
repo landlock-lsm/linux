@@ -15,11 +15,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * version 2 along with this program; If not, see
- * http://www.sun.com/software/products/lustre/docs/GPLv2.pdf
- *
- * Please contact Sun Microsystems, Inc., 4150 Network Circle, Santa Clara,
- * CA 95054 USA or visit www.sun.com if you need additional information or
- * have any questions.
+ * http://www.gnu.org/licenses/gpl-2.0.html
  *
  * GPL HEADER END
  */
@@ -46,12 +42,11 @@
 
 #include "obd_class.h"
 #include "lustre_net.h"
-#include "lustre_mds.h"
 #include "lustre_ha.h"
 
 /* 4UL * 1024 * 1024 */
 #define LL_MAX_BLKSIZE_BITS     (22)
-#define LL_MAX_BLKSIZE	  (1UL<<LL_MAX_BLKSIZE_BITS)
+#define LL_MAX_BLKSIZE	  (1UL << LL_MAX_BLKSIZE_BITS)
 
 /*
  * This is embedded into llite super-blocks to keep track of
@@ -83,17 +78,6 @@ static inline void ll_dir_chain_init(struct ll_dir_chain *chain)
 
 static inline void ll_dir_chain_fini(struct ll_dir_chain *chain)
 {
-}
-
-static inline unsigned long hash_x_index(__u64 hash, int hash64)
-{
-	if (BITS_PER_LONG == 32 && hash64)
-		hash >>= 32;
-	/* save hash 0 as index 0 because otherwise we'll save it at
-	 * page index end (~0UL) and it causes truncate_inode_pages_range()
-	 * to loop forever.
-	 */
-	return ~0UL - (hash + !hash);
 }
 
 /** @} lite */

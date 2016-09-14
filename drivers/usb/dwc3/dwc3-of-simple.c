@@ -61,6 +61,7 @@ static int dwc3_of_simple_probe(struct platform_device *pdev)
 	if (!simple->clks)
 		return -ENOMEM;
 
+	platform_set_drvdata(pdev, simple);
 	simple->dev = dev;
 
 	for (i = 0; i < simple->num_clocks; i++) {
@@ -161,6 +162,7 @@ static const struct dev_pm_ops dwc3_of_simple_dev_pm_ops = {
 
 static const struct of_device_id of_dwc3_simple_match[] = {
 	{ .compatible = "qcom,dwc3" },
+	{ .compatible = "rockchip,rk3399-dwc3" },
 	{ .compatible = "xlnx,zynqmp-dwc3" },
 	{ /* Sentinel */ }
 };

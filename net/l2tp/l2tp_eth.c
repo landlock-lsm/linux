@@ -67,7 +67,6 @@ static inline struct l2tp_eth_net *l2tp_eth_pernet(struct net *net)
 	return net_generic(net, l2tp_eth_net_id);
 }
 
-static struct lock_class_key l2tp_eth_tx_busylock;
 static int l2tp_eth_dev_init(struct net_device *dev)
 {
 	struct l2tp_eth *priv = netdev_priv(dev);
@@ -75,7 +74,8 @@ static int l2tp_eth_dev_init(struct net_device *dev)
 	priv->dev = dev;
 	eth_hw_addr_random(dev);
 	eth_broadcast_addr(dev->broadcast);
-	dev->qdisc_tx_busylock = &l2tp_eth_tx_busylock;
+	netdev_lockdep_set_classes(dev);
+
 	return 0;
 }
 
@@ -195,7 +195,7 @@ static void l2tp_eth_delete(struct l2tp_session *session)
 	}
 }
 
-#if defined(CONFIG_L2TP_DEBUGFS) || defined(CONFIG_L2TP_DEBUGFS_MODULE)
+#if IS_ENABLED(CONFIG_L2TP_DEBUGFS)
 static void l2tp_eth_show(struct seq_file *m, void *arg)
 {
 	struct l2tp_session *session = arg;
@@ -268,7 +268,7 @@ static int l2tp_eth_create(struct net *net, u32 tunnel_id, u32 session_id, u32 p
 	priv->tunnel_sock = tunnel->sock;
 	session->recv_skb = l2tp_eth_dev_recv;
 	session->session_close = l2tp_eth_delete;
-#if defined(CONFIG_L2TP_DEBUGFS) || defined(CONFIG_L2TP_DEBUGFS_MODULE)
+#if IS_ENABLED(CONFIG_L2TP_DEBUGFS)
 	session->show = l2tp_eth_show;
 #endif
 

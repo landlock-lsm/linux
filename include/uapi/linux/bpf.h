@@ -73,6 +73,8 @@ enum bpf_cmd {
 	BPF_PROG_LOAD,
 	BPF_OBJ_PIN,
 	BPF_OBJ_GET,
+	BPF_PROG_ATTACH,
+	BPF_PROG_DETACH,
 };
 
 enum bpf_map_type {
@@ -84,20 +86,19 @@ enum bpf_map_type {
 	BPF_MAP_TYPE_PERCPU_HASH,
 	BPF_MAP_TYPE_PERCPU_ARRAY,
 	BPF_MAP_TYPE_STACK_TRACE,
+	BPF_MAP_TYPE_CGROUP_ARRAY,
 	BPF_MAP_TYPE_LANDLOCK_ARRAY,
 };
 
 enum bpf_map_array_type {
 	BPF_MAP_ARRAY_TYPE_UNSPEC,
 	BPF_MAP_ARRAY_TYPE_LANDLOCK_FS,
-	BPF_MAP_ARRAY_TYPE_LANDLOCK_CGROUP,
 };
 
 enum bpf_map_handle_type {
 	BPF_MAP_HANDLE_TYPE_UNSPEC,
 	BPF_MAP_HANDLE_TYPE_LANDLOCK_FS_FD,
-	BPF_MAP_HANDLE_TYPE_LANDLOCK_FS_GLOB,
-	BPF_MAP_HANDLE_TYPE_LANDLOCK_CGROUP_FD,
+	/* BPF_MAP_HANDLE_TYPE_LANDLOCK_FS_GLOB, */
 };
 
 enum bpf_map_array_op {
@@ -114,10 +115,20 @@ enum bpf_prog_type {
 	BPF_PROG_TYPE_SCHED_CLS,
 	BPF_PROG_TYPE_SCHED_ACT,
 	BPF_PROG_TYPE_TRACEPOINT,
-	BPF_PROG_TYPE_LANDLOCK_FILE_OPEN,
-	BPF_PROG_TYPE_LANDLOCK_FILE_PERMISSION,
-	BPF_PROG_TYPE_LANDLOCK_MMAP_FILE,
+	BPF_PROG_TYPE_XDP,
+	BPF_PROG_TYPE_PERF_EVENT,
+	BPF_PROG_TYPE_CGROUP_SOCKET,
+	BPF_PROG_TYPE_LANDLOCK,
 };
+
+enum bpf_attach_type {
+	BPF_CGROUP_INET_INGRESS,
+	BPF_CGROUP_INET_EGRESS,
+	BPF_CGROUP_LANDLOCK,
+	__MAX_BPF_ATTACH_TYPE
+};
+
+#define MAX_BPF_ATTACH_TYPE __MAX_BPF_ATTACH_TYPE
 
 #define BPF_PSEUDO_MAP_FD	1
 
@@ -127,6 +138,14 @@ enum bpf_prog_type {
 #define BPF_EXIST	2 /* update existing element */
 
 #define BPF_F_NO_PREALLOC	(1U << 0)
+
+union bpf_prog_subtype {
+	struct {
+		__u32		id; /* enum landlock_hook_id */
+		__u16		origin; /* LANDLOCK_FLAG_ORIGIN_* */
+		__aligned_u64	access; /* LANDLOCK_FLAG_ACCESS_* */
+	} landlock_hook;
+} __attribute__((aligned(8)));
 
 union bpf_attr {
 	struct { /* anonymous struct used by BPF_MAP_CREATE command */
@@ -156,11 +175,18 @@ union bpf_attr {
 		__u32		log_size;	/* size of user buffer */
 		__aligned_u64	log_buf;	/* user supplied buffer */
 		__u32		kern_version;	/* checked when prog_type=kprobe */
+		union bpf_prog_subtype prog_subtype;	/* checked when prog_type=landlock */
 	};
 
 	struct { /* anonymous struct used by BPF_OBJ_* commands */
 		__aligned_u64	pathname;
 		__u32		bpf_fd;
+	};
+
+	struct { /* anonymous struct used by BPF_PROG_ATTACH/DETACH commands */
+		__u32		target_fd;	/* container object to attach to */
+		__u32		attach_bpf_fd;	/* eBPF program to attach */
+		__u32		attach_type;
 	};
 } __attribute__((aligned(8)));
 
@@ -339,6 +365,87 @@ enum bpf_func_id {
 	BPF_FUNC_skb_set_tunnel_opt,
 
 	/**
+	 * bpf_skb_change_proto(skb, proto, flags)
+	 * Change protocol of the skb. Currently supported is
+	 * v4 -> v6, v6 -> v4 transitions. The helper will also
+	 * resize the skb. eBPF program is expected to fill the
+	 * new headers via skb_store_bytes and lX_csum_replace.
+	 * @skb: pointer to skb
+	 * @proto: new skb->protocol type
+	 * @flags: reserved
+	 * Return: 0 on success or negative error
+	 */
+	BPF_FUNC_skb_change_proto,
+
+	/**
+	 * bpf_skb_change_type(skb, type)
+	 * Change packet type of skb.
+	 * @skb: pointer to skb
+	 * @type: new skb->pkt_type type
+	 * Return: 0 on success or negative error
+	 */
+	BPF_FUNC_skb_change_type,
+
+	/**
+	 * bpf_skb_under_cgroup(skb, map, index) - Check cgroup2 membership of skb
+	 * @skb: pointer to skb
+	 * @map: pointer to bpf_map in BPF_MAP_TYPE_CGROUP_ARRAY type
+	 * @index: index of the cgroup in the bpf_map
+	 * Return:
+	 *   == 0 skb failed the cgroup2 descendant test
+	 *   == 1 skb succeeded the cgroup2 descendant test
+	 *    < 0 error
+	 */
+	BPF_FUNC_skb_under_cgroup,
+
+	/**
+	 * bpf_get_hash_recalc(skb)
+	 * Retrieve and possibly recalculate skb->hash.
+	 * @skb: pointer to skb
+	 * Return: hash
+	 */
+	BPF_FUNC_get_hash_recalc,
+
+	/**
+	 * u64 bpf_get_current_task(void)
+	 * Returns current task_struct
+	 * Return: current
+	 */
+	BPF_FUNC_get_current_task,
+
+	/**
+	 * bpf_probe_write_user(void *dst, void *src, int len)
+	 * safely attempt to write to a location
+	 * @dst: destination address in userspace
+	 * @src: source address on stack
+	 * @len: number of bytes to copy
+	 * Return: 0 on success or negative error
+	 */
+	BPF_FUNC_probe_write_user,
+
+	/**
+	 * bpf_current_task_under_cgroup(map, index) - Check cgroup2 membership of current task
+	 * @map: pointer to bpf_map in BPF_MAP_TYPE_CGROUP_ARRAY type
+	 * @index: index of the cgroup in the bpf_map
+	 * Return:
+	 *   == 0 current failed the cgroup2 descendant test
+	 *   == 1 current succeeded the cgroup2 descendant test
+	 *    < 0 error
+	 */
+	BPF_FUNC_current_task_under_cgroup,
+
+	/**
+	 * bpf_skb_change_tail(skb, len, flags)
+	 * The helper will resize the skb to the given new size,
+	 * to be used f.e. with control messages.
+	 * @skb: pointer to skb
+	 * @len: new skb length
+	 * @flags: reserved
+	 * Return: 0 on success or negative error
+	 */
+	BPF_FUNC_skb_change_tail,
+
+	/**
 	 * bpf_landlock_cmp_fs_prop_with_struct_file(prop, map, map_op, file)
 	 * Compare file system handles with a struct file
 	 *
@@ -365,19 +472,6 @@ enum bpf_func_id {
 	 * 1 otherwise, or a negative value if an error occurred.
 	 */
 	BPF_FUNC_landlock_cmp_fs_beneath_with_struct_file,
-
-	/**
-	 * bpf_landlock_cmp_cgroup_beneath(opt, map, map_op)
-	 * Check if the current process is a leaf of cgroup handles
-	 *
-	 * @opt: check options (e.g. LANDLOCK_FLAG_OPT_REVERSE)
-	 * @map: handles to compare against
-	 * @map_op: which elements of the map to use (e.g. BPF_MAP_ARRAY_OP_OR)
-	 *
-	 * Return: 0 if the current cgroup is the sam or beneath the handle,
-	 * 1 otherwise, or a negative value if an error occurred.
-	 */
-	BPF_FUNC_landlock_cmp_cgroup_beneath,
 
 	__BPF_FUNC_MAX_ID,
 };
@@ -413,9 +507,11 @@ enum bpf_func_id {
 #define BPF_F_ZERO_CSUM_TX		(1ULL << 1)
 #define BPF_F_DONT_FRAGMENT		(1ULL << 2)
 
-/* BPF_FUNC_perf_event_output flags. */
+/* BPF_FUNC_perf_event_output and BPF_FUNC_perf_event_read flags. */
 #define BPF_F_INDEX_MASK		0xffffffffULL
 #define BPF_F_CURRENT_CPU		BPF_F_INDEX_MASK
+/* BPF_FUNC_perf_event_output for sk_buff input context. */
+#define BPF_F_CTXLEN_MASK		(0xfffffULL << 32)
 
 /* user accessible mirror of in-kernel sk_buff.
  * new fields can only be added to the end of this structure
@@ -452,16 +548,58 @@ struct bpf_tunnel_key {
 	__u32 tunnel_label;
 };
 
+/* User return codes for XDP prog type.
+ * A valid XDP program must return one of these defined values. All other
+ * return codes are reserved for future use. Unknown return codes will result
+ * in packet drop.
+ */
+enum xdp_action {
+	XDP_ABORTED = 0,
+	XDP_DROP,
+	XDP_PASS,
+	XDP_TX,
+};
+
+/* user accessible metadata for XDP packet hook
+ * new fields must be added to the end of this structure
+ */
+struct xdp_md {
+	__u32 data;
+	__u32 data_end;
+};
+
+/* LSM hooks */
+enum landlock_hook_id {
+	LANDLOCK_HOOK_UNSPEC,
+	LANDLOCK_HOOK_FILE_OPEN,
+	LANDLOCK_HOOK_FILE_PERMISSION,
+	LANDLOCK_HOOK_MMAP_FILE,
+};
+#define _LANDLOCK_HOOK_LAST LANDLOCK_HOOK_MMAP_FILE
+
+/* Trigger type */
+#define LANDLOCK_FLAG_ORIGIN_SYSCALL	(1 << 0)
+#define LANDLOCK_FLAG_ORIGIN_SECCOMP	(1 << 1)
+#define LANDLOCK_FLAG_ORIGIN_INTERRUPT	(1 << 2)
+#define _LANDLOCK_FLAG_ORIGIN_MASK	((1 << 3) - 1)
+
+/* context of function access flags */
+#define LANDLOCK_FLAG_ACCESS_UPDATE	(1 << 0)
+#define LANDLOCK_FLAG_ACCESS_DEBUG	(1 << 1)
+#define LANDLOCK_FLAG_ACCESS_SKB_READ	(1 << 2)
+#define LANDLOCK_FLAG_ACCESS_SKB_WRITE	(1 << 3)
+#define _LANDLOCK_FLAG_ACCESS_MASK	((1ULL << 4) - 1)
+
 /* Handle check flags */
-#define LANDLOCK_FLAG_FS_DENTRY	(1 << 0)
-#define LANDLOCK_FLAG_FS_INODE	(1 << 1)
-#define LANDLOCK_FLAG_FS_DEVICE	(1 << 2)
-#define LANDLOCK_FLAG_FS_MOUNT	(1 << 3)
-#define _LANDLOCK_FLAG_FS_MASK	((1 << 4) - 1)
+#define LANDLOCK_FLAG_FS_DENTRY		(1 << 0)
+#define LANDLOCK_FLAG_FS_INODE		(1 << 1)
+#define LANDLOCK_FLAG_FS_DEVICE		(1 << 2)
+#define LANDLOCK_FLAG_FS_MOUNT		(1 << 3)
+#define _LANDLOCK_FLAG_FS_MASK		((1ULL << 4) - 1)
 
 /* Handle option flags */
 #define LANDLOCK_FLAG_OPT_REVERSE	(1<<0)
-#define _LANDLOCK_FLAG_OPT_MASK	((1 << 1) - 1)
+#define _LANDLOCK_FLAG_OPT_MASK		((1ULL << 1) - 1)
 
 /* Map handle entry */
 struct landlock_handle {
@@ -476,17 +614,22 @@ struct landlock_handle {
  * struct landlock_data
  *
  * @hook: LSM hook ID (e.g. BPF_PROG_TYPE_LANDLOCK_FILE_OPEN)
+ * @origin: bit indicating for which reason the program is running
  * @cookie: value set by a seccomp-filter return value RET_LANDLOCK. This come
  *          from a trusted seccomp-bpf program: the same process that loaded
  *          this Landlock hook program.
  * @args: LSM hook arguments, see include/linux/lsm_hooks.h for there
  *        description and the LANDLOCK_HOOK* definitions from
  *        security/landlock/lsm.c for their types.
+ * @opt_skb: optional skb pointer, accessible with the
+ *           LANDLOCK_FLAG_ACCESS_SKB_* flags for network-related hooks.
  */
 struct landlock_data {
-	__u32 hook;
-	__u16 cookie;
+	__u32 hook; /* enum landlock_hook_id */
+	__u16 origin; /* LANDLOCK_FLAG_ORIGIN_* */
+	__u16 cookie; /* seccomp RET_LANDLOCK */
 	__u64 args[6];
+	__u64 opt_skb;
 };
 
 #endif /* _UAPI__LINUX_BPF_H__ */

@@ -367,9 +367,14 @@ DECLARE_PER_CPU(struct irq_stack *, hardirq_stack);
 DECLARE_PER_CPU(struct irq_stack *, softirq_stack);
 #endif	/* X86_64 */
 
-extern unsigned int xstate_size;
+extern unsigned int fpu_kernel_xstate_size;
+extern unsigned int fpu_user_xstate_size;
 
 struct perf_event;
+
+typedef struct {
+	unsigned long		seg;
+} mm_segment_t;
 
 struct thread_struct {
 	/* Cached TLS descriptors: */
@@ -383,9 +388,6 @@ struct thread_struct {
 	unsigned short		ds;
 	unsigned short		fsindex;
 	unsigned short		gsindex;
-#endif
-#ifdef CONFIG_X86_32
-	unsigned long		ip;
 #endif
 #ifdef CONFIG_X86_64
 	unsigned long		fsbase;
@@ -418,6 +420,11 @@ struct thread_struct {
 	unsigned long		iopl;
 	/* Max allowed port in the bitmap, in bytes: */
 	unsigned		io_bitmap_max;
+
+	mm_segment_t		addr_limit;
+
+	unsigned int		sig_on_uaccess_err:1;
+	unsigned int		uaccess_err:1;	/* uaccess failed */
 
 	/* Floating point and extended processor state */
 	struct fpu		fpu;
@@ -489,11 +496,6 @@ static inline void load_sp0(struct tss_struct *tss,
 
 #define set_iopl_mask native_set_iopl_mask
 #endif /* CONFIG_PARAVIRT */
-
-typedef struct {
-	unsigned long		seg;
-} mm_segment_t;
-
 
 /* Free all resources held by a thread. */
 extern void release_thread(struct task_struct *);
@@ -716,9 +718,8 @@ static inline void spin_lock_prefetch(const void *x)
 	.sp0			= TOP_OF_INIT_STACK,			  \
 	.sysenter_cs		= __KERNEL_CS,				  \
 	.io_bitmap_ptr		= NULL,					  \
+	.addr_limit		= KERNEL_DS,				  \
 }
-
-extern unsigned long thread_saved_pc(struct task_struct *tsk);
 
 /*
  * TOP_OF_KERNEL_STACK_PADDING reserves 8 bytes on top of the ring0 stack.
@@ -765,20 +766,17 @@ extern unsigned long thread_saved_pc(struct task_struct *tsk);
 #define STACK_TOP		TASK_SIZE
 #define STACK_TOP_MAX		TASK_SIZE_MAX
 
-#define INIT_THREAD  { \
-	.sp0 = TOP_OF_INIT_STACK \
+#define INIT_THREAD  {						\
+	.sp0			= TOP_OF_INIT_STACK,		\
+	.addr_limit		= KERNEL_DS,			\
 }
-
-/*
- * Return saved PC of a blocked thread.
- * What is this good for? it will be always the scheduler or ret_from_fork.
- */
-#define thread_saved_pc(t)	READ_ONCE_NOCHECK(*(unsigned long *)((t)->thread.sp - 8))
 
 #define task_pt_regs(tsk)	((struct pt_regs *)(tsk)->thread.sp0 - 1)
 extern unsigned long KSTK_ESP(struct task_struct *task);
 
 #endif /* CONFIG_X86_64 */
+
+extern unsigned long thread_saved_pc(struct task_struct *tsk);
 
 extern void start_thread(struct pt_regs *regs, unsigned long new_ip,
 					       unsigned long new_sp);

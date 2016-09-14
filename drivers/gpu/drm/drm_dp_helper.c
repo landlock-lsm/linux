@@ -28,8 +28,9 @@
 #include <linux/sched.h>
 #include <linux/i2c.h>
 #include <drm/drm_dp_helper.h>
-#include <drm/drm_dp_aux_dev.h>
 #include <drm/drmP.h>
+
+#include "drm_crtc_helper_internal.h"
 
 /**
  * DOC: dp helpers
@@ -203,7 +204,7 @@ static int drm_dp_dpcd_access(struct drm_dp_aux *aux, u8 request,
 
 		ret = aux->transfer(aux, &msg);
 
-		if (ret > 0) {
+		if (ret >= 0) {
 			native_reply = msg.reply & DP_AUX_NATIVE_REPLY_MASK;
 			if (native_reply == DP_AUX_NATIVE_REPLY_ACK) {
 				if (ret == size)
@@ -223,7 +224,7 @@ static int drm_dp_dpcd_access(struct drm_dp_aux *aux, u8 request,
 			err = ret;
 	}
 
-	DRM_DEBUG_KMS("too many retries, giving up\n");
+	DRM_DEBUG_KMS("Too many retries, giving up. First error: %d\n", err);
 	ret = err;
 
 unlock:
@@ -574,7 +575,17 @@ static int drm_dp_i2c_do_msg(struct drm_dp_aux *aux, struct drm_dp_aux_msg *msg)
 			if (ret == -EBUSY)
 				continue;
 
-			DRM_DEBUG_KMS("transaction failed: %d\n", ret);
+			/*
+			 * While timeouts can be errors, they're usually normal
+			 * behavior (for instance, when a driver tries to
+			 * communicate with a non-existant DisplayPort device).
+			 * Avoid spamming the kernel log with timeout errors.
+			 */
+			if (ret == -ETIMEDOUT)
+				DRM_DEBUG_KMS_RATELIMITED("transaction timed out\n");
+			else
+				DRM_DEBUG_KMS("transaction failed: %d\n", ret);
+
 			return ret;
 		}
 
@@ -708,8 +719,6 @@ static int drm_dp_i2c_xfer(struct i2c_adapter *adapter, struct i2c_msg *msgs,
 
 	memset(&msg, 0, sizeof(msg));
 
-	mutex_lock(&aux->hw_mutex);
-
 	for (i = 0; i < num; i++) {
 		msg.address = msgs[i].addr;
 		drm_dp_i2c_msg_set_request(&msg, &msgs[i]);
@@ -764,8 +773,6 @@ static int drm_dp_i2c_xfer(struct i2c_adapter *adapter, struct i2c_msg *msgs,
 	msg.size = 0;
 	(void)drm_dp_i2c_do_msg(aux, &msg);
 
-	mutex_unlock(&aux->hw_mutex);
-
 	return err;
 }
 
@@ -774,9 +781,58 @@ static const struct i2c_algorithm drm_dp_i2c_algo = {
 	.master_xfer = drm_dp_i2c_xfer,
 };
 
+static struct drm_dp_aux *i2c_to_aux(struct i2c_adapter *i2c)
+{
+	return container_of(i2c, struct drm_dp_aux, ddc);
+}
+
+static void lock_bus(struct i2c_adapter *i2c, unsigned int flags)
+{
+	mutex_lock(&i2c_to_aux(i2c)->hw_mutex);
+}
+
+static int trylock_bus(struct i2c_adapter *i2c, unsigned int flags)
+{
+	return mutex_trylock(&i2c_to_aux(i2c)->hw_mutex);
+}
+
+static void unlock_bus(struct i2c_adapter *i2c, unsigned int flags)
+{
+	mutex_unlock(&i2c_to_aux(i2c)->hw_mutex);
+}
+
+static const struct i2c_lock_operations drm_dp_i2c_lock_ops = {
+	.lock_bus = lock_bus,
+	.trylock_bus = trylock_bus,
+	.unlock_bus = unlock_bus,
+};
+
+/**
+ * drm_dp_aux_init() - minimally initialise an aux channel
+ * @aux: DisplayPort AUX channel
+ *
+ * If you need to use the drm_dp_aux's i2c adapter prior to registering it
+ * with the outside world, call drm_dp_aux_init() first. You must still
+ * call drm_dp_aux_register() once the connector has been registered to
+ * allow userspace access to the auxiliary DP channel.
+ */
+void drm_dp_aux_init(struct drm_dp_aux *aux)
+{
+	mutex_init(&aux->hw_mutex);
+
+	aux->ddc.algo = &drm_dp_i2c_algo;
+	aux->ddc.algo_data = aux;
+	aux->ddc.retries = 3;
+
+	aux->ddc.lock_ops = &drm_dp_i2c_lock_ops;
+}
+EXPORT_SYMBOL(drm_dp_aux_init);
+
 /**
  * drm_dp_aux_register() - initialise and register aux channel
  * @aux: DisplayPort AUX channel
+ *
+ * Automatically calls drm_dp_aux_init() if this hasn't been done yet.
  *
  * Returns 0 on success or a negative error code on failure.
  */
@@ -784,11 +840,8 @@ int drm_dp_aux_register(struct drm_dp_aux *aux)
 {
 	int ret;
 
-	mutex_init(&aux->hw_mutex);
-
-	aux->ddc.algo = &drm_dp_i2c_algo;
-	aux->ddc.algo_data = aux;
-	aux->ddc.retries = 3;
+	if (!aux->ddc.algo)
+		drm_dp_aux_init(aux);
 
 	aux->ddc.class = I2C_CLASS_DDC;
 	aux->ddc.owner = THIS_MODULE;
@@ -822,3 +875,35 @@ void drm_dp_aux_unregister(struct drm_dp_aux *aux)
 	i2c_del_adapter(&aux->ddc);
 }
 EXPORT_SYMBOL(drm_dp_aux_unregister);
+
+#define PSR_SETUP_TIME(x) [DP_PSR_SETUP_TIME_ ## x >> DP_PSR_SETUP_TIME_SHIFT] = (x)
+
+/**
+ * drm_dp_psr_setup_time() - PSR setup in time usec
+ * @psr_cap: PSR capabilities from DPCD
+ *
+ * Returns:
+ * PSR setup time for the panel in microseconds,  negative
+ * error code on failure.
+ */
+int drm_dp_psr_setup_time(const u8 psr_cap[EDP_PSR_RECEIVER_CAP_SIZE])
+{
+	static const u16 psr_setup_time_us[] = {
+		PSR_SETUP_TIME(330),
+		PSR_SETUP_TIME(275),
+		PSR_SETUP_TIME(165),
+		PSR_SETUP_TIME(110),
+		PSR_SETUP_TIME(55),
+		PSR_SETUP_TIME(0),
+	};
+	int i;
+
+	i = (psr_cap[1] & DP_PSR_SETUP_TIME_MASK) >> DP_PSR_SETUP_TIME_SHIFT;
+	if (i >= ARRAY_SIZE(psr_setup_time_us))
+		return -EINVAL;
+
+	return psr_setup_time_us[i];
+}
+EXPORT_SYMBOL(drm_dp_psr_setup_time);
+
+#undef PSR_SETUP_TIME

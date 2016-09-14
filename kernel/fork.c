@@ -158,27 +158,39 @@ void __weak arch_release_thread_stack(unsigned long *stack)
  * Allocate pages if THREAD_SIZE is >= PAGE_SIZE, otherwise use a
  * kmemcache based allocator.
  */
-# if THREAD_SIZE >= PAGE_SIZE
-static unsigned long *alloc_thread_stack_node(struct task_struct *tsk,
-						  int node)
+# if THREAD_SIZE >= PAGE_SIZE || defined(CONFIG_VMAP_STACK)
+static unsigned long *alloc_thread_stack_node(struct task_struct *tsk, int node)
 {
-	struct page *page = alloc_kmem_pages_node(node, THREADINFO_GFP,
-						  THREAD_SIZE_ORDER);
+#ifdef CONFIG_VMAP_STACK
+	void *stack = __vmalloc_node_range(THREAD_SIZE, THREAD_SIZE,
+					   VMALLOC_START, VMALLOC_END,
+					   THREADINFO_GFP | __GFP_HIGHMEM,
+					   PAGE_KERNEL,
+					   0, node,
+					   __builtin_return_address(0));
 
-	if (page)
-		memcg_kmem_update_page_stat(page, MEMCG_KERNEL_STACK,
-					    1 << THREAD_SIZE_ORDER);
+	/*
+	 * We can't call find_vm_area() in interrupt context, and
+	 * free_thread_stack() can be called in interrupt context,
+	 * so cache the vm_struct.
+	 */
+	if (stack)
+		tsk->stack_vm_area = find_vm_area(stack);
+	return stack;
+#else
+	struct page *page = alloc_pages_node(node, THREADINFO_GFP,
+					     THREAD_SIZE_ORDER);
 
 	return page ? page_address(page) : NULL;
+#endif
 }
 
-static inline void free_thread_stack(unsigned long *stack)
+static inline void free_thread_stack(struct task_struct *tsk)
 {
-	struct page *page = virt_to_page(stack);
-
-	memcg_kmem_update_page_stat(page, MEMCG_KERNEL_STACK,
-				    -(1 << THREAD_SIZE_ORDER));
-	__free_kmem_pages(page, THREAD_SIZE_ORDER);
+	if (task_stack_vm_area(tsk))
+		vfree(tsk->stack);
+	else
+		__free_pages(virt_to_page(tsk->stack), THREAD_SIZE_ORDER);
 }
 # else
 static struct kmem_cache *thread_stack_cache;
@@ -189,9 +201,9 @@ static unsigned long *alloc_thread_stack_node(struct task_struct *tsk,
 	return kmem_cache_alloc_node(thread_stack_cache, THREADINFO_GFP, node);
 }
 
-static void free_thread_stack(unsigned long *stack)
+static void free_thread_stack(struct task_struct *tsk)
 {
-	kmem_cache_free(thread_stack_cache, stack);
+	kmem_cache_free(thread_stack_cache, tsk->stack);
 }
 
 void thread_stack_cache_init(void)
@@ -221,18 +233,47 @@ struct kmem_cache *vm_area_cachep;
 /* SLAB cache for mm_struct structures (tsk->mm) */
 static struct kmem_cache *mm_cachep;
 
-static void account_kernel_stack(unsigned long *stack, int account)
+static void account_kernel_stack(struct task_struct *tsk, int account)
 {
-	struct zone *zone = page_zone(virt_to_page(stack));
+	void *stack = task_stack_page(tsk);
+	struct vm_struct *vm = task_stack_vm_area(tsk);
 
-	mod_zone_page_state(zone, NR_KERNEL_STACK, account);
+	BUILD_BUG_ON(IS_ENABLED(CONFIG_VMAP_STACK) && PAGE_SIZE % 1024 != 0);
+
+	if (vm) {
+		int i;
+
+		BUG_ON(vm->nr_pages != THREAD_SIZE / PAGE_SIZE);
+
+		for (i = 0; i < THREAD_SIZE / PAGE_SIZE; i++) {
+			mod_zone_page_state(page_zone(vm->pages[i]),
+					    NR_KERNEL_STACK_KB,
+					    PAGE_SIZE / 1024 * account);
+		}
+
+		/* All stack pages belong to the same memcg. */
+		memcg_kmem_update_page_stat(vm->pages[0], MEMCG_KERNEL_STACK_KB,
+					    account * (THREAD_SIZE / 1024));
+	} else {
+		/*
+		 * All stack pages are in the same zone and belong to the
+		 * same memcg.
+		 */
+		struct page *first_page = virt_to_page(stack);
+
+		mod_zone_page_state(page_zone(first_page), NR_KERNEL_STACK_KB,
+				    THREAD_SIZE / 1024 * account);
+
+		memcg_kmem_update_page_stat(first_page, MEMCG_KERNEL_STACK_KB,
+					    account * (THREAD_SIZE / 1024));
+	}
 }
 
 void free_task(struct task_struct *tsk)
 {
-	account_kernel_stack(tsk->stack, -1);
+	account_kernel_stack(tsk, -1);
 	arch_release_thread_stack(tsk->stack);
-	free_thread_stack(tsk->stack);
+	free_thread_stack(tsk);
 	rt_mutex_debug_task_free(tsk);
 	ftrace_graph_exit_task(tsk);
 	put_seccomp(tsk);
@@ -245,6 +286,12 @@ static inline void free_signal_struct(struct signal_struct *sig)
 {
 	taskstats_tgid_free(sig);
 	sched_autogroup_exit(sig);
+	/*
+	 * __mmdrop is not safe to call from softirq context on x86 due to
+	 * pgd_dtor so postpone it to the async context
+	 */
+	if (sig->oom_mm)
+		mmdrop_async(sig->oom_mm);
 	kmem_cache_free(signal_cachep, sig);
 }
 
@@ -344,6 +391,7 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 {
 	struct task_struct *tsk;
 	unsigned long *stack;
+	struct vm_struct *stack_vm_area;
 	int err;
 
 	if (node == NUMA_NO_NODE)
@@ -356,11 +404,23 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 	if (!stack)
 		goto free_tsk;
 
+	stack_vm_area = task_stack_vm_area(tsk);
+
 	err = arch_dup_task_struct(tsk, orig);
+
+	/*
+	 * arch_dup_task_struct() clobbers the stack-related fields.  Make
+	 * sure they're properly initialized before using any stack-related
+	 * functions again.
+	 */
+	tsk->stack = stack;
+#ifdef CONFIG_VMAP_STACK
+	tsk->stack_vm_area = stack_vm_area;
+#endif
+
 	if (err)
 		goto free_stack;
 
-	tsk->stack = stack;
 #ifdef CONFIG_SECCOMP
 	/*
 	 * We must handle setting up seccomp filters once we're under
@@ -370,9 +430,9 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 	 */
 	tsk->seccomp.filter = NULL;
 #ifdef CONFIG_SECURITY_LANDLOCK
-	tsk->seccomp.landlock_filter = NULL;
+	tsk->seccomp.thread_filter = NULL;
 	tsk->seccomp.landlock_ret = NULL;
-	tsk->seccomp.landlock_prog = NULL;
+	tsk->seccomp.landlock_hooks = NULL;
 #endif /* CONFIG_SECURITY_LANDLOCK */
 #endif /* CONFIG_SECCOMP */
 
@@ -397,21 +457,22 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 	tsk->task_frag.page = NULL;
 	tsk->wake_q.next = NULL;
 
-	account_kernel_stack(stack, 1);
+	account_kernel_stack(tsk, 1);
 
 	kcov_task_init(tsk);
 
 	return tsk;
 
 free_stack:
-	free_thread_stack(stack);
+	free_thread_stack(tsk);
 free_tsk:
 	free_task_struct(tsk);
 	return NULL;
 }
 
 #ifdef CONFIG_MMU
-static int dup_mmap(struct mm_struct *mm, struct mm_struct *oldmm)
+static __latent_entropy int dup_mmap(struct mm_struct *mm,
+					struct mm_struct *oldmm)
 {
 	struct vm_area_struct *mpnt, *tmp, *prev, **pprev;
 	struct rb_node **rb_link, *rb_parent;
@@ -718,6 +779,7 @@ static inline void __mmput(struct mm_struct *mm)
 	ksm_exit(mm);
 	khugepaged_exit(mm); /* must run before exit_mmap */
 	exit_mmap(mm);
+	mm_put_huge_zero_page(mm);
 	set_mm_exe_file(mm, NULL);
 	if (!list_empty(&mm->mmlist)) {
 		spin_lock(&mmlist_lock);
@@ -726,6 +788,7 @@ static inline void __mmput(struct mm_struct *mm)
 	}
 	if (mm->binfmt)
 		module_put(mm->binfmt->module);
+	set_bit(MMF_OOM_SKIP, &mm->flags);
 	mmdrop(mm);
 }
 
@@ -804,6 +867,29 @@ struct file *get_mm_exe_file(struct mm_struct *mm)
 	return exe_file;
 }
 EXPORT_SYMBOL(get_mm_exe_file);
+
+/**
+ * get_task_exe_file - acquire a reference to the task's executable file
+ *
+ * Returns %NULL if task's mm (if any) has no associated executable file or
+ * this is a kernel thread with borrowed mm (see the comment above get_task_mm).
+ * User must release file via fput().
+ */
+struct file *get_task_exe_file(struct task_struct *task)
+{
+	struct file *exe_file = NULL;
+	struct mm_struct *mm;
+
+	task_lock(task);
+	mm = task->mm;
+	if (mm) {
+		if (!(task->flags & PF_KTHREAD))
+			exe_file = get_mm_exe_file(mm);
+	}
+	task_unlock(task);
+	return exe_file;
+}
+EXPORT_SYMBOL(get_task_exe_file);
 
 /**
  * get_task_mm - acquire a reference to the task's mm
@@ -920,14 +1006,12 @@ void mm_release(struct task_struct *tsk, struct mm_struct *mm)
 	deactivate_mm(tsk, mm);
 
 	/*
-	 * If we're exiting normally, clear a user-space tid field if
-	 * requested.  We leave this alone when dying by signal, to leave
-	 * the value intact in a core dump, and to save the unnecessary
-	 * trouble, say, a killed vfork parent shouldn't touch this mm.
-	 * Userland only wants this done for a sys_exit.
+	 * Signal userspace if we're not exiting with a core dump
+	 * because we want to leave the value intact for debugging
+	 * purposes.
 	 */
 	if (tsk->clear_child_tid) {
-		if (!(tsk->flags & PF_SIGNALED) &&
+		if (!(tsk->signal->flags & SIGNAL_GROUP_COREDUMP) &&
 		    atomic_read(&mm->mm_users) > 1) {
 			/*
 			 * We don't check the error code - if userspace has
@@ -1208,9 +1292,6 @@ static int copy_signal(unsigned long clone_flags, struct task_struct *tsk)
 static int copy_seccomp(struct task_struct *p)
 {
 #ifdef CONFIG_SECCOMP
-#ifdef CONFIG_SECURITY_LANDLOCK
-	struct seccomp_landlock_ret *ret_walk;
-#endif /* CONFIG_SECURITY_LANDLOCK */
 	/*
 	 * Must be called with sighand->lock held, which is common to
 	 * all threads in the group. Holding cred_guard_mutex is not
@@ -1223,25 +1304,12 @@ static int copy_seccomp(struct task_struct *p)
 	get_seccomp_filter(current);
 	p->seccomp.mode = current->seccomp.mode;
 	p->seccomp.filter = current->seccomp.filter;
-#ifdef CONFIG_SECURITY_LANDLOCK
-	/* No copy for: landlock_filter, landlock_handle */
-	p->seccomp.landlock_prog = current->seccomp.landlock_prog;
-	if (p->seccomp.landlock_prog)
-		atomic_inc(&p->seccomp.landlock_prog->usage);
-	/* Deep copy for landlock_ret to avoid allocating for each syscall */
-	for (ret_walk = current->seccomp.landlock_ret;
-			ret_walk; ret_walk = ret_walk->prev) {
-		struct seccomp_landlock_ret *ret_new;
-
-		ret_new = dup_landlock_ret(ret_walk);
-		if (IS_ERR(ret_new)) {
-			put_landlock_ret(p->seccomp.landlock_ret);
-			return PTR_ERR(ret_new);
-		}
-		ret_new->prev = p->seccomp.landlock_ret;
-		p->seccomp.landlock_ret = ret_new;
-	}
-#endif /* CONFIG_SECURITY_LANDLOCK */
+#if defined(CONFIG_SECCOMP_FILTER) && defined(CONFIG_SECURITY_LANDLOCK)
+	/* No copy for thread_filter nor landlock_ret. */
+	p->seccomp.landlock_hooks = current->seccomp.landlock_hooks;
+	if (p->seccomp.landlock_hooks)
+		atomic_inc(&p->seccomp.landlock_hooks->usage);
+#endif /* CONFIG_SECCOMP_FILTER && CONFIG_SECURITY_LANDLOCK */
 
 	/*
 	 * Explicitly enable no_new_privs here in case it got set
@@ -1306,7 +1374,8 @@ init_task_pid(struct task_struct *task, enum pid_type type, struct pid *pid)
  * parts of the process environment (as per the clone
  * flags). The actual kick-off is left to the caller.
  */
-static struct task_struct *copy_process(unsigned long clone_flags,
+static __latent_entropy struct task_struct *copy_process(
+					unsigned long clone_flags,
 					unsigned long stack_start,
 					unsigned long stack_size,
 					int __user *child_tidptr,
@@ -1435,7 +1504,6 @@ static struct task_struct *copy_process(unsigned long clone_flags,
 	p->real_start_time = ktime_get_boot_ns();
 	p->io_context = NULL;
 	p->audit_context = NULL;
-	threadgroup_change_begin(current);
 	cgroup_fork(p);
 #ifdef CONFIG_NUMA
 	p->mempolicy = mpol_dup(p->mempolicy);
@@ -1587,6 +1655,7 @@ static struct task_struct *copy_process(unsigned long clone_flags,
 	INIT_LIST_HEAD(&p->thread_group);
 	p->task_works = NULL;
 
+	threadgroup_change_begin(current);
 	/*
 	 * Ensure that the cgroup subsystem policies allow the new process to be
 	 * forked. It should be noted the the new process's css_set can be changed
@@ -1689,6 +1758,7 @@ static struct task_struct *copy_process(unsigned long clone_flags,
 bad_fork_cancel_cgroup:
 	cgroup_cancel_fork(p);
 bad_fork_free_pid:
+	threadgroup_change_end(current);
 	if (pid != &init_struct_pid)
 		free_pid(pid);
 bad_fork_cleanup_thread:
@@ -1721,7 +1791,6 @@ bad_fork_cleanup_policy:
 	mpol_put(p->mempolicy);
 bad_fork_cleanup_threadgroup_lock:
 #endif
-	threadgroup_change_end(current);
 	delayacct_tsk_free(p);
 bad_fork_cleanup_count:
 	atomic_dec(&p->cred->user->processes);
@@ -1792,6 +1861,7 @@ long _do_fork(unsigned long clone_flags,
 
 	p = copy_process(clone_flags, stack_start, stack_size,
 			 child_tidptr, NULL, trace, tls, NUMA_NO_NODE);
+	add_latent_entropy();
 	/*
 	 * Do this prior waking up the new thread - the thread pointer
 	 * might get invalid after that point, if the thread exits quickly.

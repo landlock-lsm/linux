@@ -19,7 +19,8 @@
 */
 
 #include <linux/errno.h>
-#include <linux/module.h>
+#include <linux/init.h>
+#include <linux/export.h>
 #include <linux/efi.h>
 #include <linux/bcd.h>
 #include <linux/highmem.h>
@@ -55,12 +56,12 @@ asm (".pushsection .entry.text, \"ax\"\n"
      ".popsection");
 
 /* identity function, which can be inlined */
-u32 _paravirt_ident_32(u32 x)
+u32 notrace _paravirt_ident_32(u32 x)
 {
 	return x;
 }
 
-u64 _paravirt_ident_64(u64 x)
+u64 notrace _paravirt_ident_64(u64 x)
 {
 	return x;
 }
@@ -388,7 +389,7 @@ NOKPROBE_SYMBOL(native_load_idt);
 #define PTE_IDENT	__PV_IS_CALLEE_SAVE(_paravirt_ident_64)
 #endif
 
-struct pv_mmu_ops pv_mmu_ops = {
+struct pv_mmu_ops pv_mmu_ops __ro_after_init = {
 
 	.read_cr2 = native_read_cr2,
 	.write_cr2 = native_write_cr2,

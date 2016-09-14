@@ -68,6 +68,36 @@
 /* Unicast Filter MAC Address Register - High */
 #define MTK_GDMA_MAC_ADRH(x)	(0x50C + (x * 0x1000))
 
+/* PDMA RX Base Pointer Register */
+#define MTK_PRX_BASE_PTR0	0x900
+
+/* PDMA RX Maximum Count Register */
+#define MTK_PRX_MAX_CNT0	0x904
+
+/* PDMA RX CPU Pointer Register */
+#define MTK_PRX_CRX_IDX0	0x908
+
+/* PDMA Global Configuration Register */
+#define MTK_PDMA_GLO_CFG	0xa04
+#define MTK_MULTI_EN		BIT(10)
+
+/* PDMA Reset Index Register */
+#define MTK_PDMA_RST_IDX	0xa08
+#define MTK_PST_DRX_IDX0	BIT(16)
+
+/* PDMA Delay Interrupt Register */
+#define MTK_PDMA_DELAY_INT	0xa0c
+
+/* PDMA Interrupt Status Register */
+#define MTK_PDMA_INT_STATUS	0xa20
+
+/* PDMA Interrupt Mask Register */
+#define MTK_PDMA_INT_MASK	0xa28
+
+/* PDMA Interrupt grouping registers */
+#define MTK_PDMA_INT_GRP1	0xa50
+#define MTK_PDMA_INT_GRP2	0xa54
+
 /* QDMA TX Queue Configuration Registers */
 #define MTK_QTX_CFG(x)		(0x1800 + (x * 0x10))
 #define QDMA_RES_THRES		4
@@ -115,15 +145,23 @@
 
 /* QDMA Interrupt Status Register */
 #define MTK_QMTK_INT_STATUS	0x1A18
+#define MTK_RX_DONE_INT3	BIT(19)
+#define MTK_RX_DONE_INT2	BIT(18)
 #define MTK_RX_DONE_INT1	BIT(17)
 #define MTK_RX_DONE_INT0	BIT(16)
 #define MTK_TX_DONE_INT3	BIT(3)
 #define MTK_TX_DONE_INT2	BIT(2)
 #define MTK_TX_DONE_INT1	BIT(1)
 #define MTK_TX_DONE_INT0	BIT(0)
-#define MTK_RX_DONE_INT		(MTK_RX_DONE_INT0 | MTK_RX_DONE_INT1)
+#define MTK_RX_DONE_INT		(MTK_RX_DONE_INT0 | MTK_RX_DONE_INT1 | \
+				 MTK_RX_DONE_INT2 | MTK_RX_DONE_INT3)
 #define MTK_TX_DONE_INT		(MTK_TX_DONE_INT0 | MTK_TX_DONE_INT1 | \
 				 MTK_TX_DONE_INT2 | MTK_TX_DONE_INT3)
+
+/* QDMA Interrupt grouping registers */
+#define MTK_QDMA_INT_GRP1	0x1a20
+#define MTK_QDMA_INT_GRP2	0x1a24
+#define MTK_RLS_DONE_INT	BIT(0)
 
 /* QDMA Interrupt Status Register */
 #define MTK_QDMA_INT_MASK	0x1A1C
@@ -281,6 +319,17 @@ enum mtk_tx_flags {
 	MTK_TX_FLAGS_PAGE0	= 0x02,
 };
 
+/* This enum allows us to identify how the clock is defined on the array of the
+ * clock in the order
+ */
+enum mtk_clks_map {
+	MTK_CLK_ETHIF,
+	MTK_CLK_ESW,
+	MTK_CLK_GP1,
+	MTK_CLK_GP2,
+	MTK_CLK_MAX
+};
+
 /* struct mtk_tx_buf -	This struct holds the pointers to the memory pointed at
  *			by the TX descriptor	s
  * @skb:		The SKB pointer of the packet being sent
@@ -356,14 +405,12 @@ struct mtk_rx_ring {
  * @dma_refcnt:		track how many netdevs are using the DMA engine
  * @tx_ring:		Pointer to the memore holding info about the TX ring
  * @rx_ring:		Pointer to the memore holding info about the RX ring
- * @rx_napi:		The NAPI struct
+ * @tx_napi:		The TX NAPI struct
+ * @rx_napi:		The RX NAPI struct
  * @scratch_ring:	Newer SoCs need memory for a second HW managed TX ring
  * @phy_scratch_ring:	physical address of scratch_ring
  * @scratch_head:	The scratch memory that scratch_ring points to.
- * @clk_ethif:		The ethif clock
- * @clk_esw:		The switch clock
- * @clk_gp1:		The gmac1 clock
- * @clk_gp2:		The gmac2 clock
+ * @clks:		clock array for all clocks required
  * @mii_bus:		If there is a bus we need to create an instance for it
  * @pending_work:	The workqueue used to reset the dma ring
  */
@@ -373,10 +420,11 @@ struct mtk_eth {
 	void __iomem			*base;
 	struct reset_control		*rstc;
 	spinlock_t			page_lock;
+	spinlock_t			irq_lock;
 	struct net_device		dummy_dev;
 	struct net_device		*netdev[MTK_MAX_DEVS];
 	struct mtk_mac			*mac[MTK_MAX_DEVS];
-	int				irq;
+	int				irq[3];
 	u32				msg_enable;
 	unsigned long			sysclk;
 	struct regmap			*ethsys;
@@ -384,14 +432,13 @@ struct mtk_eth {
 	atomic_t			dma_refcnt;
 	struct mtk_tx_ring		tx_ring;
 	struct mtk_rx_ring		rx_ring;
+	struct napi_struct		tx_napi;
 	struct napi_struct		rx_napi;
 	struct mtk_tx_dma		*scratch_ring;
 	dma_addr_t			phy_scratch_ring;
 	void				*scratch_head;
-	struct clk			*clk_ethif;
-	struct clk			*clk_esw;
-	struct clk			*clk_gp1;
-	struct clk			*clk_gp2;
+	struct clk			*clks[MTK_CLK_MAX];
+
 	struct mii_bus			*mii_bus;
 	struct work_struct		pending_work;
 };

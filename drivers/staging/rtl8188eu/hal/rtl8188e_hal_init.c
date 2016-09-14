@@ -117,13 +117,13 @@ void rtl8188e_InitializeFirmwareVars(struct adapter *padapter)
 	pHalData->LastHMEBoxNum = 0;
 }
 
-static void rtl8188e_free_hal_data(struct adapter *padapter)
+void rtw_hal_free_data(struct adapter *padapter)
 {
 	kfree(padapter->HalData);
 	padapter->HalData = NULL;
 }
 
-static void ReadChipVersion8188E(struct adapter *padapter)
+void rtw_hal_read_chip_version(struct adapter *padapter)
 {
 	u32				value32;
 	struct HAL_VERSION		ChipVersion;
@@ -145,7 +145,7 @@ static void ReadChipVersion8188E(struct adapter *padapter)
 	MSG_88E("RF_Type is %x!!\n", pHalData->rf_type);
 }
 
-static void rtl8188e_SetHalODMVar(struct adapter *Adapter, enum hal_odm_variable eVariable, void *pValue1, bool bSet)
+void rtw_hal_set_odm_var(struct adapter *Adapter, enum hal_odm_variable eVariable, void *pValue1, bool bSet)
 {
 	struct hal_data_8188e	*pHalData = GET_HAL_DATA(Adapter);
 	struct odm_dm_struct *podmpriv = &pHalData->odmpriv;
@@ -175,7 +175,7 @@ static void rtl8188e_SetHalODMVar(struct adapter *Adapter, enum hal_odm_variable
 	}
 }
 
-static void hal_notch_filter_8188e(struct adapter *adapter, bool enable)
+void rtw_hal_notch_filter(struct adapter *adapter, bool enable)
 {
 	if (enable) {
 		DBG_88E("Enable notch filter\n");
@@ -184,32 +184,6 @@ static void hal_notch_filter_8188e(struct adapter *adapter, bool enable)
 		DBG_88E("Disable notch filter\n");
 		usb_write8(adapter, rOFDM0_RxDSP+1, usb_read8(adapter, rOFDM0_RxDSP+1) & ~BIT(1));
 	}
-}
-void rtl8188e_set_hal_ops(struct hal_ops *pHalFunc)
-{
-	pHalFunc->free_hal_data = &rtl8188e_free_hal_data;
-
-	pHalFunc->dm_init = &rtl8188e_init_dm_priv;
-
-	pHalFunc->read_chip_version = &ReadChipVersion8188E;
-
-	pHalFunc->set_bwmode_handler = &phy_set_bw_mode;
-	pHalFunc->set_channel_handler = &phy_sw_chnl;
-
-	pHalFunc->hal_dm_watchdog = &rtl8188e_HalDmWatchDog;
-
-	pHalFunc->Add_RateATid = &rtl8188e_Add_RateATid;
-
-	pHalFunc->AntDivBeforeLinkHandler = &AntDivBeforeLink8188E;
-	pHalFunc->AntDivCompareHandler = &AntDivCompare8188E;
-	pHalFunc->read_rfreg = &phy_query_rf_reg;
-
-	pHalFunc->sreset_init_value = &sreset_init_value;
-	pHalFunc->sreset_get_wifi_status  = &sreset_get_wifi_status;
-
-	pHalFunc->SetHalODMVarHandler = &rtl8188e_SetHalODMVar;
-
-	pHalFunc->hal_notch_filter = &hal_notch_filter_8188e;
 }
 
 /*  */

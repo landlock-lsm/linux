@@ -15,11 +15,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * version 2 along with this program; If not, see
- * http://www.sun.com/software/products/lustre/docs/GPLv2.pdf
- *
- * Please contact Sun Microsystems, Inc., 4150 Network Circle, Santa Clara,
- * CA 95054 USA or visit www.sun.com if you need additional information or
- * have any questions.
+ * http://www.gnu.org/licenses/gpl-2.0.html
  *
  * GPL HEADER END
  */
@@ -273,7 +269,7 @@ static unsigned long enc_pools_shrink_scan(struct shrinker *s,
 static inline
 int npages_to_npools(unsigned long npages)
 {
-	return (int) ((npages + PAGES_PER_POOL - 1) / PAGES_PER_POOL);
+	return (int)((npages + PAGES_PER_POOL - 1) / PAGES_PER_POOL);
 }
 
 /*
@@ -330,12 +326,12 @@ void sptlrpc_enc_pool_put_pages(struct ptlrpc_bulk_desc *desc)
 	LASSERT(page_pools.epp_pools[p_idx]);
 
 	for (i = 0; i < desc->bd_iov_count; i++) {
-		LASSERT(desc->bd_enc_iov[i].kiov_page);
+		LASSERT(desc->bd_enc_iov[i].bv_page);
 		LASSERT(g_idx != 0 || page_pools.epp_pools[p_idx]);
 		LASSERT(!page_pools.epp_pools[p_idx][g_idx]);
 
 		page_pools.epp_pools[p_idx][g_idx] =
-					desc->bd_enc_iov[i].kiov_page;
+					desc->bd_enc_iov[i].bv_page;
 
 		if (++g_idx == PAGES_PER_POOL) {
 			p_idx++;
@@ -526,9 +522,10 @@ int sptlrpc_get_bulk_checksum(struct ptlrpc_bulk_desc *desc, __u8 alg,
 	hashsize = cfs_crypto_hash_digestsize(cfs_hash_alg_id[alg]);
 
 	for (i = 0; i < desc->bd_iov_count; i++) {
-		cfs_crypto_hash_update_page(hdesc, desc->bd_iov[i].kiov_page,
-				  desc->bd_iov[i].kiov_offset & ~PAGE_MASK,
-				  desc->bd_iov[i].kiov_len);
+		cfs_crypto_hash_update_page(hdesc, desc->bd_iov[i].bv_page,
+					    desc->bd_iov[i].bv_offset &
+					    ~PAGE_MASK,
+					    desc->bd_iov[i].bv_len);
 	}
 
 	if (hashsize > buflen) {

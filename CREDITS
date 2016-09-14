@@ -1090,6 +1090,10 @@ S: 6350 Stoneridge Mall Road
 S: Pleasanton, CA 94588
 S: USA
 
+N: Dmitry Eremin-Solenikov
+E: dbaryshkov@gmail.com
+D: Power Supply Maintainer from v3.14 - v3.15
+
 N: Doug Evans
 E: dje@cygnus.com
 D: Wrote Xenix FS (part of standard kernel since 0.99.15)
@@ -1943,6 +1947,11 @@ W: http://bytesex.org
 E: kraxel@bytesex.org
 E: kraxel@suse.de
 D: video4linux, bttv, vesafb, some scsi, misc fixes
+
+N: Hans J. Koch
+D: USERSPACE I/O, MAX6650
+D: Hans passed away in June 2016, and will be greatly missed.
+W: https://lwn.net/Articles/691000/
 
 N: Harald Koenig
 E: koenig@tat.physik.uni-tuebingen.de
@@ -3518,6 +3527,10 @@ S: 145 Howard St.
 S: Northborough, MA 01532
 S: USA
 
+N: Doug Thompson
+E: dougthompson@xmission.com
+D: EDAC
+
 N: Tommy Thorn
 E: Tommy.Thorn@irisa.fr
 W: http://www.irisa.fr/prive/thorn/index.html
@@ -3653,6 +3666,10 @@ D: Author of a German book on Linux
 S: Obere Heerbergstrasse 17
 S: 97078 Wuerzburg
 S: Germany
+
+N: Jason Uhlenkott
+E: juhlenko@akamai.com
+D: I3000 EDAC driver
 
 N: Greg Ungerer
 E: gerg@snapgear.com
