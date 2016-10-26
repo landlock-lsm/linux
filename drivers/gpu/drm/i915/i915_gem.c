@@ -860,7 +860,7 @@ i915_gem_gtt_pread(struct drm_device *dev,
 
 	mutex_unlock(&dev->struct_mutex);
 	if (likely(!i915.prefault_disable)) {
-		ret = fault_in_multipages_writeable(user_data, remain);
+		ret = fault_in_pages_writeable(user_data, remain);
 		if (ret) {
 			mutex_lock(&dev->struct_mutex);
 			goto out_unpin;
@@ -983,7 +983,7 @@ i915_gem_shmem_pread(struct drm_device *dev,
 		mutex_unlock(&dev->struct_mutex);
 
 		if (likely(!i915.prefault_disable) && !prefaulted) {
-			ret = fault_in_multipages_writeable(user_data, remain);
+			ret = fault_in_pages_writeable(user_data, remain);
 			/* Userspace is tricking us, but we've already clobbered
 			 * its pages with the prefault and promised to write the
 			 * data up to the first fault. Hence ignore any errors
@@ -1431,7 +1431,7 @@ i915_gem_pwrite_ioctl(struct drm_device *dev, void *data,
 		return -EFAULT;
 
 	if (likely(!i915.prefault_disable)) {
-		ret = fault_in_multipages_readable(u64_to_user_ptr(args->data_ptr),
+		ret = fault_in_pages_readable(u64_to_user_ptr(args->data_ptr),
 						   args->size);
 		if (ret)
 			return -EFAULT;
@@ -2628,6 +2628,13 @@ void i915_gem_reset(struct drm_i915_private *dev_priv)
 		i915_gem_reset_engine(engine);
 
 	i915_gem_restore_fences(&dev_priv->drm);
+
+	if (dev_priv->gt.awake) {
+		intel_sanitize_gt_powersave(dev_priv);
+		intel_enable_gt_powersave(dev_priv);
+		if (INTEL_GEN(dev_priv) >= 6)
+			gen6_rps_busy(dev_priv);
+	}
 }
 
 static void nop_submit_request(struct drm_i915_gem_request *request)
@@ -4586,6 +4593,19 @@ void i915_gem_load_cleanup(struct drm_device *dev)
 	rcu_barrier();
 }
 
+int i915_gem_freeze(struct drm_i915_private *dev_priv)
+{
+	intel_runtime_pm_get(dev_priv);
+
+	mutex_lock(&dev_priv->drm.struct_mutex);
+	i915_gem_shrink_all(dev_priv);
+	mutex_unlock(&dev_priv->drm.struct_mutex);
+
+	intel_runtime_pm_put(dev_priv);
+
+	return 0;
+}
+
 int i915_gem_freeze_late(struct drm_i915_private *dev_priv)
 {
 	struct drm_i915_gem_object *obj;
@@ -4609,7 +4629,8 @@ int i915_gem_freeze_late(struct drm_i915_private *dev_priv)
 	 * the objects as well.
 	 */
 
-	i915_gem_shrink_all(dev_priv);
+	mutex_lock(&dev_priv->drm.struct_mutex);
+	i915_gem_shrink(dev_priv, -1UL, I915_SHRINK_UNBOUND);
 
 	for (p = phases; *p; p++) {
 		list_for_each_entry(obj, *p, global_list) {
@@ -4617,6 +4638,7 @@ int i915_gem_freeze_late(struct drm_i915_private *dev_priv)
 			obj->base.write_domain = I915_GEM_DOMAIN_CPU;
 		}
 	}
+	mutex_unlock(&dev_priv->drm.struct_mutex);
 
 	return 0;
 }

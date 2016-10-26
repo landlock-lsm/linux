@@ -514,7 +514,6 @@ static int slic_card_download(struct adapter *adapter)
 			slic_write32(adapter, SLIC_REG_WCS, instruction);
 			instruction = *(u32 *)(fw->data + index);
 			index += 4;
-
 		}
 	}
 	release_firmware(fw);
@@ -1631,11 +1630,10 @@ static u32 slic_rcvqueue_reinsert(struct adapter *adapter, struct sk_buff *skb)
 		dev_err(dev, "         rcvq->tail[%p]\n", rcvq->tail);
 		dev_err(dev, "         rcvq->count[%x]\n", rcvq->count);
 	}
-	if (paddrh == 0) {
+	if (paddrh == 0)
 		slic_write32(adapter, SLIC_REG_HBAR, (u32)paddrl);
-	} else {
+	else
 		slic_write64(adapter, SLIC_REG_HBAR64, paddrl, paddrh);
-	}
 	if (rcvq->head)
 		rcvq->tail->next = skb;
 	else
@@ -1660,7 +1658,6 @@ static int slic_link_event_handler(struct adapter *adapter)
 	int status;
 	struct slic_shmemory *sm = &adapter->shmem;
 	dma_addr_t phaddr = sm->lnkstatus_phaddr;
-
 
 	if (adapter->state != ADAPT_UP) {
 		/* Adapter is not operational.  Ignore.  */
@@ -2620,14 +2617,14 @@ static int slic_card_init(struct sliccard *card, struct adapter *adapter)
 					       sizeof(struct slic_eeprom),
 					       &phys_config);
 
-		phys_configl = SLIC_GET_ADDR_LOW(phys_config);
-		phys_configh = SLIC_GET_ADDR_HIGH(phys_config);
-
 		if (!peeprom) {
 			dev_err(&adapter->pcidev->dev,
 				"Failed to allocate DMA memory for EEPROM.\n");
 			return -ENOMEM;
 		}
+
+		phys_configl = SLIC_GET_ADDR_LOW(phys_config);
+		phys_configh = SLIC_GET_ADDR_HIGH(phys_config);
 
 		memset(peeprom, 0, sizeof(struct slic_eeprom));
 
@@ -2718,7 +2715,6 @@ static int slic_card_init(struct sliccard *card, struct adapter *adapter)
 		/*  see if the EEPROM is valid by checking it's checksum */
 		if ((eecodesize <= MAX_EECODE_SIZE) &&
 		    (eecodesize >= MIN_EECODE_SIZE)) {
-
 			ee_chksum =
 			    *(u16 *)((char *)peeprom + (eecodesize - 2));
 			/*
@@ -2856,7 +2852,6 @@ static int slic_init_adapter(struct net_device *netdev,
 	 */
 	for (index = 1, pslic_handle = &adapter->slic_handles[1];
 	     index < SLIC_CMDQ_MAXCMDS; index++, pslic_handle++) {
-
 		pslic_handle->token.handle_index = index;
 		pslic_handle->type = SLIC_HANDLE_FREE;
 		pslic_handle->next = adapter->pfree_slic_handles;

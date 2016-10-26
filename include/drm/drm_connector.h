@@ -27,6 +27,10 @@
 #include <linux/ctype.h>
 #include <drm/drm_mode_object.h>
 
+#include <uapi/drm/drm_mode.h>
+
+struct drm_device;
+
 struct drm_connector_helper_funcs;
 struct drm_device;
 struct drm_crtc;
@@ -163,6 +167,17 @@ struct drm_display_info {
 	u32 bus_flags;
 
 	/**
+	 * @max_tmds_clock: Maximum TMDS clock rate supported by the
+	 * sink in kHz. 0 means undefined.
+	 */
+	int max_tmds_clock;
+
+	/**
+	 * @dvi_dual: Dual-link DVI sink?
+	 */
+	bool dvi_dual;
+
+	/**
 	 * @edid_hdmi_dc_modes: Mask of supported hdmi deep color modes. Even
 	 * more stuff redundant with @bus_formats.
 	 */
@@ -181,14 +196,19 @@ int drm_display_info_set_bus_formats(struct drm_display_info *info,
 /**
  * struct drm_connector_state - mutable connector state
  * @connector: backpointer to the connector
- * @crtc: CRTC to connect connector to, NULL if disabled
  * @best_encoder: can be used by helpers and drivers to select the encoder
  * @state: backpointer to global drm_atomic_state
  */
 struct drm_connector_state {
 	struct drm_connector *connector;
 
-	struct drm_crtc *crtc;  /* do not write directly, use drm_atomic_set_crtc_for_connector() */
+	/**
+	 * @crtc: CRTC to connect connector to, NULL if disabled.
+	 *
+	 * Do not change this directly, use drm_atomic_set_crtc_for_connector()
+	 * instead.
+	 */
+	struct drm_crtc *crtc;
 
 	struct drm_encoder *best_encoder;
 
@@ -336,7 +356,7 @@ struct drm_connector_funcs {
 	 *
 	 * This optional hook should be used to unregister the additional
 	 * userspace interfaces attached to the connector from
-	 * late_unregister(). It is called from drm_connector_unregister(),
+	 * late_register(). It is called from drm_connector_unregister(),
 	 * early in the driver unload sequence to disable userspace access
 	 * before data structures are torndown.
 	 */
@@ -356,7 +376,7 @@ struct drm_connector_funcs {
 	 * @atomic_duplicate_state:
 	 *
 	 * Duplicate the current atomic state for this connector and return it.
-	 * The core and helpers gurantee that any atomic state duplicated with
+	 * The core and helpers guarantee that any atomic state duplicated with
 	 * this hook and still owned by the caller (i.e. not transferred to the
 	 * driver by calling ->atomic_commit() from struct
 	 * &drm_mode_config_funcs) will be cleaned up by calling the
@@ -506,8 +526,6 @@ struct drm_cmdline_mode {
  * @encoder_ids: valid encoders for this connector
  * @encoder: encoder driving this connector, if any
  * @eld: EDID-like data, if present
- * @dvi_dual: dual link DVI, if found
- * @max_tmds_clock: max clock rate, if found
  * @latency_present: AV delay info from ELD, if found
  * @video_latency: video latency info from ELD, if found
  * @audio_latency: audio latency info from ELD, if found
@@ -641,8 +659,6 @@ struct drm_connector {
 #define MAX_ELD_BYTES	128
 	/* EDID bits */
 	uint8_t eld[MAX_ELD_BYTES];
-	bool dvi_dual;
-	int max_tmds_clock;	/* in MHz */
 	bool latency_present[2];
 	int video_latency[2];	/* [0]: progressive, [1]: interlaced */
 	int audio_latency[2];
@@ -744,4 +760,19 @@ int drm_mode_connector_set_path_property(struct drm_connector *connector,
 int drm_mode_connector_set_tile_property(struct drm_connector *connector);
 int drm_mode_connector_update_edid_property(struct drm_connector *connector,
 					    const struct edid *edid);
+
+/**
+ * drm_for_each_connector - iterate over all connectors
+ * @connector: the loop cursor
+ * @dev: the DRM device
+ *
+ * Iterate over all connectors of @dev.
+ */
+#define drm_for_each_connector(connector, dev) \
+	for (assert_drm_connector_list_read_locked(&(dev)->mode_config),	\
+	     connector = list_first_entry(&(dev)->mode_config.connector_list,	\
+					  struct drm_connector, head);		\
+	     &connector->head != (&(dev)->mode_config.connector_list);		\
+	     connector = list_next_entry(connector, head))
+
 #endif

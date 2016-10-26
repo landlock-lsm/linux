@@ -99,7 +99,7 @@ int mdc_resource_get_unused(struct obd_export *exp, const struct lu_fid *fid,
 }
 
 int mdc_setattr(struct obd_export *exp, struct md_op_data *op_data,
-		void *ea, int ealen, void *ea2, int ea2len,
+		void *ea, size_t ealen, void *ea2, size_t ea2len,
 		struct ptlrpc_request **request, struct md_open_data **mod)
 {
 	LIST_HEAD(cancels);
@@ -113,8 +113,7 @@ int mdc_setattr(struct obd_export *exp, struct md_op_data *op_data,
 	if (op_data->op_attr.ia_valid & (ATTR_MODE | ATTR_UID | ATTR_GID))
 		bits |= MDS_INODELOCK_LOOKUP;
 	if ((op_data->op_flags & MF_MDC_CANCEL_FID1) &&
-	    (fid_is_sane(&op_data->op_fid1)) &&
-	    !OBD_FAIL_CHECK(OBD_FAIL_LDLM_BL_CALLBACK_NET))
+	    (fid_is_sane(&op_data->op_fid1)))
 		count = mdc_resource_get_unused(exp, &op_data->op_fid1,
 						&cancels, LCK_EX, bits);
 	req = ptlrpc_request_alloc(class_exp2cliimp(exp),
@@ -197,9 +196,9 @@ int mdc_setattr(struct obd_export *exp, struct md_op_data *op_data,
 }
 
 int mdc_create(struct obd_export *exp, struct md_op_data *op_data,
-	       const void *data, int datalen, int mode, __u32 uid, __u32 gid,
-	       cfs_cap_t cap_effective, __u64 rdev,
-	       struct ptlrpc_request **request)
+	       const void *data, size_t datalen, umode_t mode,
+	       uid_t uid, gid_t gid, cfs_cap_t cap_effective,
+	       __u64 rdev, struct ptlrpc_request **request)
 {
 	struct ptlrpc_request *req;
 	int level, rc;
@@ -305,14 +304,12 @@ int mdc_unlink(struct obd_export *exp, struct md_op_data *op_data,
 	LASSERT(!req);
 
 	if ((op_data->op_flags & MF_MDC_CANCEL_FID1) &&
-	    (fid_is_sane(&op_data->op_fid1)) &&
-	    !OBD_FAIL_CHECK(OBD_FAIL_LDLM_BL_CALLBACK_NET))
+	    (fid_is_sane(&op_data->op_fid1)))
 		count = mdc_resource_get_unused(exp, &op_data->op_fid1,
 						&cancels, LCK_EX,
 						MDS_INODELOCK_UPDATE);
 	if ((op_data->op_flags & MF_MDC_CANCEL_FID3) &&
-	    (fid_is_sane(&op_data->op_fid3)) &&
-	    !OBD_FAIL_CHECK(OBD_FAIL_LDLM_BL_CALLBACK_NET))
+	    (fid_is_sane(&op_data->op_fid3)))
 		count += mdc_resource_get_unused(exp, &op_data->op_fid3,
 						 &cancels, LCK_EX,
 						 MDS_INODELOCK_FULL);
@@ -392,7 +389,7 @@ int mdc_link(struct obd_export *exp, struct md_op_data *op_data,
 }
 
 int mdc_rename(struct obd_export *exp, struct md_op_data *op_data,
-	       const char *old, int oldlen, const char *new, int newlen,
+	       const char *old, size_t oldlen, const char *new, size_t newlen,
 	       struct ptlrpc_request **request)
 {
 	LIST_HEAD(cancels);

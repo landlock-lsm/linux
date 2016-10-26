@@ -140,7 +140,7 @@ err:
 	return ret;
 }
 
-void sti_drm_dbg_cleanup(struct drm_minor *minor)
+static void sti_drm_dbg_cleanup(struct drm_minor *minor)
 {
 	drm_debugfs_remove_files(sti_drm_dbg_list,
 				 ARRAY_SIZE(sti_drm_dbg_list), minor);
@@ -365,8 +365,8 @@ static int sti_bind(struct device *dev)
 	int ret;
 
 	ddev = drm_dev_alloc(&sti_driver, dev);
-	if (!ddev)
-		return -ENOMEM;
+	if (IS_ERR(ddev))
+		return PTR_ERR(ddev);
 
 	ddev->platformdev = to_platform_device(dev);
 

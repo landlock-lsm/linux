@@ -249,7 +249,6 @@ extern int extcon_set_state(struct extcon_dev *edev, unsigned int id,
 				   bool cable_state);
 extern int extcon_set_state_sync(struct extcon_dev *edev, unsigned int id,
 				bool cable_state);
-
 /*
  * Synchronize the state and property data for a specific external connector.
  */

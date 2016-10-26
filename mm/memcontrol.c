@@ -1710,17 +1710,22 @@ static DEFINE_MUTEX(percpu_charge_mutex);
 static bool consume_stock(struct mem_cgroup *memcg, unsigned int nr_pages)
 {
 	struct memcg_stock_pcp *stock;
+	unsigned long flags;
 	bool ret = false;
 
 	if (nr_pages > CHARGE_BATCH)
 		return ret;
 
-	stock = &get_cpu_var(memcg_stock);
+	local_irq_save(flags);
+
+	stock = this_cpu_ptr(&memcg_stock);
 	if (memcg == stock->cached && stock->nr_pages >= nr_pages) {
 		stock->nr_pages -= nr_pages;
 		ret = true;
 	}
-	put_cpu_var(memcg_stock);
+
+	local_irq_restore(flags);
+
 	return ret;
 }
 
@@ -1741,15 +1746,18 @@ static void drain_stock(struct memcg_stock_pcp *stock)
 	stock->cached = NULL;
 }
 
-/*
- * This must be called under preempt disabled or must be called by
- * a thread which is pinned to local cpu.
- */
 static void drain_local_stock(struct work_struct *dummy)
 {
-	struct memcg_stock_pcp *stock = this_cpu_ptr(&memcg_stock);
+	struct memcg_stock_pcp *stock;
+	unsigned long flags;
+
+	local_irq_save(flags);
+
+	stock = this_cpu_ptr(&memcg_stock);
 	drain_stock(stock);
 	clear_bit(FLUSHING_CACHED_CHARGE, &stock->flags);
+
+	local_irq_restore(flags);
 }
 
 /*
@@ -1758,14 +1766,19 @@ static void drain_local_stock(struct work_struct *dummy)
  */
 static void refill_stock(struct mem_cgroup *memcg, unsigned int nr_pages)
 {
-	struct memcg_stock_pcp *stock = &get_cpu_var(memcg_stock);
+	struct memcg_stock_pcp *stock;
+	unsigned long flags;
 
+	local_irq_save(flags);
+
+	stock = this_cpu_ptr(&memcg_stock);
 	if (stock->cached != memcg) { /* reset if necessary */
 		drain_stock(stock);
 		stock->cached = memcg;
 	}
 	stock->nr_pages += nr_pages;
-	put_cpu_var(memcg_stock);
+
+	local_irq_restore(flags);
 }
 
 /*
@@ -2926,16 +2939,16 @@ static int memcg_update_tcp_limit(struct mem_cgroup *memcg, unsigned long limit)
 		/*
 		 * The active flag needs to be written after the static_key
 		 * update. This is what guarantees that the socket activation
-		 * function is the last one to run. See sock_update_memcg() for
-		 * details, and note that we don't mark any socket as belonging
-		 * to this memcg until that flag is up.
+		 * function is the last one to run. See mem_cgroup_sk_alloc()
+		 * for details, and note that we don't mark any socket as
+		 * belonging to this memcg until that flag is up.
 		 *
 		 * We need to do this, because static_keys will span multiple
 		 * sites, but we can't control their order. If we mark a socket
 		 * as accounted, but the accounting functions are not patched in
 		 * yet, we'll lose accounting.
 		 *
-		 * We never race with the readers in sock_update_memcg(),
+		 * We never race with the readers in mem_cgroup_sk_alloc(),
 		 * because when this value change, the code to process it is not
 		 * patched in yet.
 		 */
@@ -5638,11 +5651,15 @@ void mem_cgroup_migrate(struct page *oldpage, struct page *newpage)
 DEFINE_STATIC_KEY_FALSE(memcg_sockets_enabled_key);
 EXPORT_SYMBOL(memcg_sockets_enabled_key);
 
-void sock_update_memcg(struct sock *sk)
+void mem_cgroup_sk_alloc(struct sock *sk)
 {
 	struct mem_cgroup *memcg;
 
-	/* Socket cloning can throw us here with sk_cgrp already
+	if (!mem_cgroup_sockets_enabled)
+		return;
+
+	/*
+	 * Socket cloning can throw us here with sk_memcg already
 	 * filled. It won't however, necessarily happen from
 	 * process context. So the test for root memcg given
 	 * the current task's memcg won't help us in this case.
@@ -5667,12 +5684,11 @@ void sock_update_memcg(struct sock *sk)
 out:
 	rcu_read_unlock();
 }
-EXPORT_SYMBOL(sock_update_memcg);
 
-void sock_release_memcg(struct sock *sk)
+void mem_cgroup_sk_free(struct sock *sk)
 {
-	WARN_ON(!sk->sk_memcg);
-	css_put(&sk->sk_memcg->css);
+	if (sk->sk_memcg)
+		css_put(&sk->sk_memcg->css);
 }
 
 /**

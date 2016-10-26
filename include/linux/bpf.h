@@ -15,6 +15,7 @@
 
 #ifdef CONFIG_SECURITY_LANDLOCK
 #include <linux/fs.h> /* struct file */
+#include <linux/spinlock_types.h> /* spinlock_t */
 #endif /* CONFIG_SECURITY_LANDLOCK */
 
 struct perf_event;
@@ -86,9 +87,8 @@ enum bpf_arg_type {
 	ARG_PTR_TO_CTX,		/* pointer to context */
 	ARG_ANYTHING,		/* any (initialized) argument is ok */
 
-	ARG_PTR_TO_STRUCT_FILE,		/* pointer to struct file */
-	ARG_CONST_PTR_TO_LANDLOCK_HANDLE_FS,	/* pointer to Landlock FS handle */
-	ARG_PTR_TO_STRUCT_SKB,		/* pointer to struct skb */
+	ARG_CONST_PTR_TO_LANDLOCK_HANDLE_FS,	/* pointer to Landlock FS map handle */
+	ARG_CONST_PTR_TO_LANDLOCK_ARG_FS,	/* pointer to Landlock FS hook argument */
 };
 
 /* type of values returned from helper functions */
@@ -105,6 +105,7 @@ enum bpf_return_type {
 struct bpf_func_proto {
 	u64 (*func)(u64 r1, u64 r2, u64 r3, u64 r4, u64 r5);
 	bool gpl_only;
+	bool pkt_access;
 	enum bpf_return_type ret_type;
 	enum bpf_arg_type arg1_type;
 	enum bpf_arg_type arg2_type;
@@ -148,10 +149,16 @@ enum bpf_reg_type {
 	PTR_TO_PACKET,
 	PTR_TO_PACKET_END,	 /* skb->data + headlen */
 
+	/* PTR_TO_MAP_VALUE_ADJ is used for doing pointer math inside of a map
+	 * elem value.  We only allow this if we can statically verify that
+	 * access from this register are going to fall within the size of the
+	 * map element.
+	 */
+	PTR_TO_MAP_VALUE_ADJ,
+
 	/* Landlock */
-	PTR_TO_STRUCT_FILE,
 	CONST_PTR_TO_LANDLOCK_HANDLE_FS,
-	PTR_TO_STRUCT_SKB,
+	CONST_PTR_TO_LANDLOCK_ARG_FS,
 };
 
 struct bpf_prog;
@@ -167,11 +174,11 @@ struct bpf_verifier_ops {
 	bool (*is_valid_access)(int off, int size, enum bpf_access_type type,
 				enum bpf_reg_type *reg_type,
 				union bpf_prog_subtype *prog_subtype);
-
+	int (*gen_prologue)(struct bpf_insn *insn, bool direct_write,
+			    const struct bpf_prog *prog);
 	u32 (*convert_ctx_access)(enum bpf_access_type type, int dst_reg,
 				  int src_reg, int ctx_off,
 				  struct bpf_insn *insn, struct bpf_prog *prog);
-
 	bool (*is_valid_subtype)(union bpf_prog_subtype *prog_subtype);
 };
 
@@ -206,7 +213,8 @@ struct bpf_array {
 	enum bpf_prog_type owner_prog_type;
 	bool owner_jited;
 #ifdef CONFIG_SECURITY_LANDLOCK
-	u32 n_entries;	/* number of entries in a handle array */
+	atomic_t n_entries;	/* number of entries in a handle array */
+	raw_spinlock_t update;	/* protect n_entries consistency */
 #endif /* CONFIG_SECURITY_LANDLOCK */
 	union {
 		char value[0] __aligned(8);
@@ -356,8 +364,8 @@ extern const struct bpf_func_proto bpf_skb_vlan_pop_proto;
 extern const struct bpf_func_proto bpf_get_stackid_proto;
 
 #ifdef CONFIG_SECURITY_LANDLOCK
-extern const struct bpf_func_proto bpf_landlock_cmp_fs_prop_with_struct_file_proto;
-extern const struct bpf_func_proto bpf_landlock_cmp_fs_beneath_with_struct_file_proto;
+extern const struct bpf_func_proto bpf_landlock_cmp_fs_beneath_proto;
+extern const struct bpf_func_proto bpf_landlock_get_fs_mode_proto;
 #endif /* CONFIG_SECURITY_LANDLOCK */
 
 /* Shared helpers among cBPF and eBPF. */

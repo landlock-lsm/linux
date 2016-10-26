@@ -1541,16 +1541,13 @@ enum ldlm_error ldlm_lock_enqueue(struct ldlm_namespace *ns,
 	struct ldlm_lock *lock = *lockp;
 	struct ldlm_resource *res = lock->l_resource;
 
-	lock->l_last_activity = ktime_get_real_seconds();
-
 	lock_res_and_lock(lock);
 	if (lock->l_req_mode == lock->l_granted_mode) {
 		/* The server returned a blocked lock, but it was granted
 		 * before we got a chance to actually enqueue it.  We don't
 		 * need to do anything else.
 		 */
-		*flags &= ~(LDLM_FL_BLOCK_GRANTED |
-			    LDLM_FL_BLOCK_CONV | LDLM_FL_BLOCK_WAIT);
+		*flags &= ~LDLM_FL_BLOCKED_MASK;
 		goto out;
 	}
 

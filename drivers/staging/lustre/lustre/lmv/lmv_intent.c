@@ -113,7 +113,7 @@ static int lmv_intent_remote(struct obd_export *exp, struct lookup_intent *it,
 	}
 
 	op_data->op_bias = MDS_CROSS_REF;
-	CDEBUG(D_INODE, "REMOTE_INTENT with fid="DFID" -> mds #%d\n",
+	CDEBUG(D_INODE, "REMOTE_INTENT with fid=" DFID " -> mds #%u\n",
 	       PFID(&body->mbo_fid1), tgt->ltd_idx);
 
 	rc = md_intent_lock(tgt->ltd_exp, op_data, it, &req, cb_blocking,
@@ -148,20 +148,16 @@ out:
 	return rc;
 }
 
-int lmv_revalidate_slaves(struct obd_export *exp, struct mdt_body *mbody,
-			  struct lmv_stripe_md *lsm,
+int lmv_revalidate_slaves(struct obd_export *exp,
+			  const struct lmv_stripe_md *lsm,
 			  ldlm_blocking_callback cb_blocking,
 			  int extra_lock_flags)
 {
 	struct obd_device *obd = exp->exp_obd;
 	struct lmv_obd *lmv = &obd->u.lmv;
+	struct ptlrpc_request *req = NULL;
 	struct mdt_body *body;
 	struct md_op_data *op_data;
-	unsigned long size = 0;
-	unsigned long nlink = 0;
-	__s64 atime = 0;
-	__s64 ctime = 0;
-	__s64 mtime = 0;
 	int rc = 0, i;
 
 	/**
@@ -178,7 +174,6 @@ int lmv_revalidate_slaves(struct obd_export *exp, struct mdt_body *mbody,
 	 */
 	for (i = 0; i < lsm->lsm_md_stripe_count; i++) {
 		struct lookup_intent it = { .it_op = IT_GETATTR };
-		struct ptlrpc_request *req = NULL;
 		struct lustre_handle *lockh = NULL;
 		struct lmv_tgt_desc *tgt = NULL;
 		struct inode *inode;
@@ -202,8 +197,13 @@ int lmv_revalidate_slaves(struct obd_export *exp, struct mdt_body *mbody,
 			goto cleanup;
 		}
 
-		CDEBUG(D_INODE, "Revalidate slave "DFID" -> mds #%d\n",
+		CDEBUG(D_INODE, "Revalidate slave " DFID " -> mds #%u\n",
 		       PFID(&fid), tgt->ltd_idx);
+
+		if (req) {
+			ptlrpc_req_finished(req);
+			req = NULL;
+		}
 
 		rc = md_intent_lock(tgt->ltd_exp, op_data, &it, &req,
 				    cb_blocking, extra_lock_flags);
@@ -228,9 +228,6 @@ int lmv_revalidate_slaves(struct obd_export *exp, struct mdt_body *mbody,
 				       PFID(&lsm->lsm_md_oinfo[i].lmo_fid),
 				       PFID(&lsm->lsm_md_oinfo[0].lmo_fid));
 
-				if (req)
-					ptlrpc_req_finished(req);
-
 				if (it.it_lock_mode && lockh) {
 					ldlm_lock_decref(lockh, it.it_lock_mode);
 					it.it_lock_mode = 0;
@@ -241,53 +238,25 @@ int lmv_revalidate_slaves(struct obd_export *exp, struct mdt_body *mbody,
 			}
 
 			i_size_write(inode, body->mbo_size);
+			inode->i_blocks = body->mbo_blocks;
 			set_nlink(inode, body->mbo_nlink);
 			LTIME_S(inode->i_atime) = body->mbo_atime;
 			LTIME_S(inode->i_ctime) = body->mbo_ctime;
 			LTIME_S(inode->i_mtime) = body->mbo_mtime;
-
-			if (req)
-				ptlrpc_req_finished(req);
 		}
 
 		md_set_lock_data(tgt->ltd_exp, lockh, inode, NULL);
-
-		if (i != 0)
-			nlink += inode->i_nlink - 2;
-		else
-			nlink += inode->i_nlink;
-
-		atime = LTIME_S(inode->i_atime) > atime ?
-				LTIME_S(inode->i_atime) : atime;
-		ctime = LTIME_S(inode->i_ctime) > ctime ?
-				LTIME_S(inode->i_ctime) : ctime;
-		mtime = LTIME_S(inode->i_mtime) > mtime ?
-				LTIME_S(inode->i_mtime) : mtime;
 
 		if (it.it_lock_mode && lockh) {
 			ldlm_lock_decref(lockh, it.it_lock_mode);
 			it.it_lock_mode = 0;
 		}
-
-		CDEBUG(D_INODE, "i %d "DFID" size %llu, nlink %u, atime %lu, mtime %lu, ctime %lu.\n",
-		       i, PFID(&fid), i_size_read(inode), inode->i_nlink,
-		       LTIME_S(inode->i_atime), LTIME_S(inode->i_mtime),
-		       LTIME_S(inode->i_ctime));
 	}
 
-	/*
-	 * update attr of master request.
-	 */
-	CDEBUG(D_INODE, "Return refreshed attrs: size = %lu nlink %lu atime %llu ctime %llu mtime %llu for " DFID"\n",
-	       size, nlink, atime, ctime, mtime,
-	       PFID(&lsm->lsm_md_oinfo[0].lmo_fid));
-
-	if (mbody) {
-		mbody->mbo_atime = atime;
-		mbody->mbo_ctime = ctime;
-		mbody->mbo_mtime = mtime;
-	}
 cleanup:
+	if (req)
+		ptlrpc_req_finished(req);
+
 	kfree(op_data);
 	return rc;
 }
@@ -347,7 +316,7 @@ static int lmv_intent_open(struct obd_export *exp, struct md_op_data *op_data,
 			return rc;
 	}
 
-	CDEBUG(D_INODE, "OPEN_INTENT with fid1=" DFID ", fid2=" DFID ", name='%s' -> mds #%d\n",
+	CDEBUG(D_INODE, "OPEN_INTENT with fid1=" DFID ", fid2=" DFID ", name='%s' -> mds #%u\n",
 	       PFID(&op_data->op_fid1),
 	       PFID(&op_data->op_fid2), op_data->op_name, tgt->ltd_idx);
 
@@ -412,7 +381,7 @@ static int lmv_intent_lookup(struct obd_export *exp,
 	 * Both migrating dir and unknown hash dir need to try
 	 * all of sub-stripes
 	 */
-	if (lsm && !lmv_is_known_hash_type(lsm)) {
+	if (lsm && !lmv_is_known_hash_type(lsm->lsm_md_hash_type)) {
 		struct lmv_oinfo *oinfo = &lsm->lsm_md_oinfo[0];
 
 		op_data->op_fid1 = oinfo->lmo_fid;
@@ -425,7 +394,7 @@ static int lmv_intent_lookup(struct obd_export *exp,
 	if (!fid_is_sane(&op_data->op_fid2))
 		fid_zero(&op_data->op_fid2);
 
-	CDEBUG(D_INODE, "LOOKUP_INTENT with fid1="DFID", fid2="DFID", name='%s' -> mds #%d lsm=%p lsm_magic=%x\n",
+	CDEBUG(D_INODE, "LOOKUP_INTENT with fid1=" DFID ", fid2=" DFID ", name='%s' -> mds #%u lsm=%p lsm_magic=%x\n",
 	       PFID(&op_data->op_fid1), PFID(&op_data->op_fid2),
 	       op_data->op_name ? op_data->op_name : "<NULL>",
 	       tgt->ltd_idx, lsm, !lsm ? -1 : lsm->lsm_md_magic);
@@ -443,7 +412,7 @@ static int lmv_intent_lookup(struct obd_export *exp,
 		 * during update_inode process (see ll_update_lsm_md)
 		 */
 		if (op_data->op_mea2) {
-			rc = lmv_revalidate_slaves(exp, NULL, op_data->op_mea2,
+			rc = lmv_revalidate_slaves(exp, op_data->op_mea2,
 						   cb_blocking,
 						   extra_lock_flags);
 			if (rc != 0)
@@ -518,8 +487,9 @@ int lmv_intent_lock(struct obd_export *exp, struct md_op_data *op_data,
 	LASSERT(fid_is_sane(&op_data->op_fid1));
 
 	CDEBUG(D_INODE, "INTENT LOCK '%s' for "DFID" '%*s' on "DFID"\n",
-	       LL_IT2STR(it), PFID(&op_data->op_fid2), op_data->op_namelen,
-	       op_data->op_name, PFID(&op_data->op_fid1));
+	       LL_IT2STR(it), PFID(&op_data->op_fid2),
+	       (int)op_data->op_namelen, op_data->op_name,
+	       PFID(&op_data->op_fid1));
 
 	rc = lmv_check_connect(obd);
 	if (rc)
@@ -533,5 +503,27 @@ int lmv_intent_lock(struct obd_export *exp, struct md_op_data *op_data,
 				     extra_lock_flags);
 	else
 		LBUG();
+
+	if (rc < 0) {
+		struct lustre_handle lock_handle;
+
+		if (it->it_lock_mode) {
+			lock_handle.cookie = it->it_lock_handle;
+			ldlm_lock_decref(&lock_handle, it->it_lock_mode);
+		}
+
+		it->it_lock_handle = 0;
+		it->it_lock_mode = 0;
+
+		if (it->it_remote_lock_mode) {
+			lock_handle.cookie = it->it_remote_lock_handle;
+			ldlm_lock_decref(&lock_handle,
+					 it->it_remote_lock_mode);
+		}
+
+		it->it_remote_lock_handle = 0;
+		it->it_remote_lock_mode = 0;
+	}
+
 	return rc;
 }

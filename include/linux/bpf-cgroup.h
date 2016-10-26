@@ -18,7 +18,7 @@ extern struct static_key_false cgroup_bpf_enabled_key;
 struct landlock_hooks;
 #endif /* CONFIG_SECURITY_LANDLOCK */
 
-union bpf_object {
+struct bpf_object {
 	struct bpf_prog *prog;
 #ifdef CONFIG_SECURITY_LANDLOCK
 	struct landlock_hooks *hooks;
@@ -31,8 +31,8 @@ struct cgroup_bpf {
 	 * pinned directly to this cgroup, and one for those that are effective
 	 * when this cgroup is accessed.
 	 */
-	union bpf_object pinned[MAX_BPF_ATTACH_TYPE];
-	union bpf_object effective[MAX_BPF_ATTACH_TYPE];
+	struct bpf_object pinned[MAX_BPF_ATTACH_TYPE];
+	struct bpf_object effective[MAX_BPF_ATTACH_TYPE];
 };
 
 void cgroup_bpf_put(struct cgroup *cgrp);

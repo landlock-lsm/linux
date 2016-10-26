@@ -36,6 +36,7 @@ aspeed	ASPEED Technology Inc.
 atlas	Atlas Scientific LLC
 atmel	Atmel Corporation
 auo	AU Optronics Corporation
+auvidea Auvidea GmbH
 avago	Avago Technologies
 avic	Shanghai AVIC Optoelectronics Co., Ltd.
 axis	Axis Communications AB
@@ -86,6 +87,7 @@ elan	Elan Microelectronic Corp.
 embest	Shenzhen Embest Technology Co., Ltd.
 emmicro	EM Microelectronic
 energymicro	Silicon Laboratories (formerly Energy Micro AS)
+engicam	Engicam S.r.l.
 epcos	EPCOS AG
 epfl	Ecole Polytechnique Fédérale de Lausanne
 epson	Seiko Epson Corp.
@@ -144,6 +146,7 @@ issi	Integrated Silicon Solutions Inc.
 jdi	Japan Display Inc.
 jedec	JEDEC Solid State Technology Association
 karo	Ka-Ro electronics GmbH
+keithkoep	Keith & Koep GmbH
 keymile	Keymile GmbH
 kinetic Kinetic Technologies
 kosagi	Sutajio Ko-Usagi PTE Ltd.
@@ -160,9 +163,11 @@ maxim	Maxim Integrated Products
 meas	Measurement Specialties
 mediatek	MediaTek Inc.
 melexis	Melexis N.V.
+melfas	MELFAS Inc.
 merrii	Merrii Technology Co., Ltd.
 micrel	Micrel Inc.
 microchip	Microchip Technology Inc.
+microcrystal	Micro Crystal AG
 micron	Micron Technology Inc.
 minix	MINIX Technology Ltd.
 mitsubishi	Mitsubishi Electric Corporation
@@ -238,6 +243,7 @@ sigma	Sigma Designs, Inc.
 sii	Seiko Instruments, Inc.
 sil	Silicon Image
 silabs	Silicon Laboratories
+silead	Silead Inc.
 silergy	Silergy Corp.
 siliconmitus	Silicon Mitus, Inc.
 simtek
@@ -258,6 +264,7 @@ starry	Starry Electronic Technology (ShenZhen) Co., LTD
 startek	Startek
 ste	ST-Ericsson
 stericsson	ST-Ericsson
+summit	Summit microelectronics
 sunchip	Shenzhen Sunchip Technology Co., Ltd
 SUNW	Sun Microsystems, Inc
 swir	Sierra Wireless
@@ -271,11 +278,13 @@ technologic	Technologic Systems
 thine	THine Electronics, Inc.
 ti	Texas Instruments
 tlm	Trusted Logic Mobility
+topeet  Topeet
 toradex	Toradex AG
 toshiba	Toshiba Corporation
 toumaz	Toumaz
 tpk	TPK U.S.A. LLC
 tplink	TP-LINK Technologies Co., Ltd.
+tpo	TPO
 tronfy	Tronfy
 tronsmart	Tronsmart
 truly	Truly Semiconductors Limited

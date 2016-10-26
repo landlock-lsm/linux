@@ -158,7 +158,6 @@ int obd_ioctl_popdata(void __user *arg, void *data, int len)
 	err = copy_to_user(arg, data, len) ? -EFAULT : 0;
 	return err;
 }
-EXPORT_SYMBOL(obd_ioctl_popdata);
 
 /*  opening /dev/obd */
 static int obd_class_open(struct inode *inode, struct file *file)
@@ -292,7 +291,7 @@ static ssize_t jobid_name_store(struct kobject *kobj, struct attribute *attr,
 				const char *buffer,
 				size_t count)
 {
-	if (!count || count > JOBSTATS_JOBID_SIZE)
+	if (!count || count > LUSTRE_JOBID_SIZE)
 		return -EINVAL;
 
 	memcpy(obd_jobid_node, buffer, count);

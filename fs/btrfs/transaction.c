@@ -65,8 +65,9 @@ void btrfs_put_transaction(struct btrfs_transaction *transaction)
 		BUG_ON(!list_empty(&transaction->list));
 		WARN_ON(!RB_EMPTY_ROOT(&transaction->delayed_refs.href_root));
 		if (transaction->delayed_refs.pending_csums)
-			printk(KERN_ERR "pending csums is %llu\n",
-			       transaction->delayed_refs.pending_csums);
+			btrfs_err(transaction->fs_info,
+				  "pending csums is %llu",
+				  transaction->delayed_refs.pending_csums);
 		while (!list_empty(&transaction->pending_chunks)) {
 			struct extent_map *em;
 
@@ -245,6 +246,7 @@ loop:
 		return -EROFS;
 	}
 
+	cur_trans->fs_info = fs_info;
 	atomic_set(&cur_trans->num_writers, 1);
 	extwriter_counter_init(cur_trans, type);
 	init_waitqueue_head(&cur_trans->writer_wait);
@@ -272,11 +274,9 @@ loop:
 	 */
 	smp_mb();
 	if (!list_empty(&fs_info->tree_mod_seq_list))
-		WARN(1, KERN_ERR "BTRFS: tree_mod_seq_list not empty when "
-			"creating a fresh transaction\n");
+		WARN(1, KERN_ERR "BTRFS: tree_mod_seq_list not empty when creating a fresh transaction\n");
 	if (!RB_EMPTY_ROOT(&fs_info->tree_mod_log))
-		WARN(1, KERN_ERR "BTRFS: tree_mod_log rb tree not empty when "
-			"creating a fresh transaction\n");
+		WARN(1, KERN_ERR "BTRFS: tree_mod_log rb tree not empty when creating a fresh transaction\n");
 	atomic64_set(&fs_info->tree_mod_seq, 0);
 
 	spin_lock_init(&cur_trans->delayed_refs.lock);
@@ -549,11 +549,8 @@ again:
 		}
 	} while (ret == -EBUSY);
 
-	if (ret < 0) {
-		/* We must get the transaction if we are JOIN_NOLOCK. */
-		BUG_ON(type == TRANS_JOIN_NOLOCK);
+	if (ret < 0)
 		goto join_fail;
-	}
 
 	cur_trans = root->fs_info->running_transaction;
 
@@ -1299,11 +1296,11 @@ int btrfs_defrag_root(struct btrfs_root *root)
 		btrfs_btree_balance_dirty(info->tree_root);
 		cond_resched();
 
-		if (btrfs_fs_closing(root->fs_info) || ret != -EAGAIN)
+		if (btrfs_fs_closing(info) || ret != -EAGAIN)
 			break;
 
-		if (btrfs_defrag_cancelled(root->fs_info)) {
-			pr_debug("BTRFS: defrag_root cancelled\n");
+		if (btrfs_defrag_cancelled(info)) {
+			btrfs_debug(info, "defrag_root cancelled");
 			ret = -EAGAIN;
 			break;
 		}
@@ -1473,7 +1470,7 @@ static noinline int create_pending_snapshot(struct btrfs_trans_handle *trans,
 	parent_root = BTRFS_I(parent_inode)->root;
 	record_root_in_trans(trans, parent_root, 0);
 
-	cur_time = current_fs_time(parent_inode->i_sb);
+	cur_time = current_time(parent_inode);
 
 	/*
 	 * insert the directory item
@@ -1629,7 +1626,7 @@ static noinline int create_pending_snapshot(struct btrfs_trans_handle *trans,
 	btrfs_i_size_write(parent_inode, parent_inode->i_size +
 					 dentry->d_name.len * 2);
 	parent_inode->i_mtime = parent_inode->i_ctime =
-		current_fs_time(parent_inode->i_sb);
+		current_time(parent_inode);
 	ret = btrfs_update_inode_fallback(trans, parent_root, parent_inode);
 	if (ret) {
 		btrfs_abort_transaction(trans, ret);
@@ -2326,7 +2323,7 @@ int btrfs_clean_one_deleted_snapshot(struct btrfs_root *root)
 	list_del_init(&root->root_list);
 	spin_unlock(&fs_info->trans_lock);
 
-	pr_debug("BTRFS: cleaner removing %llu\n", root->objectid);
+	btrfs_debug(fs_info, "cleaner removing %llu", root->objectid);
 
 	btrfs_kill_all_delayed_nodes(root);
 

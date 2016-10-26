@@ -19,6 +19,7 @@ static int ovl_copy_up_truncate(struct dentry *dentry)
 	struct dentry *parent;
 	struct kstat stat;
 	struct path lowerpath;
+	const struct cred *old_cred;
 
 	parent = dget_parent(dentry);
 	err = ovl_copy_up(parent);
@@ -26,12 +27,14 @@ static int ovl_copy_up_truncate(struct dentry *dentry)
 		goto out_dput_parent;
 
 	ovl_path_lower(dentry, &lowerpath);
-	err = vfs_getattr(&lowerpath, &stat);
-	if (err)
-		goto out_dput_parent;
 
-	stat.size = 0;
-	err = ovl_copy_up_one(parent, dentry, &lowerpath, &stat);
+	old_cred = ovl_override_creds(dentry->d_sb);
+	err = vfs_getattr(&lowerpath, &stat);
+	if (!err) {
+		stat.size = 0;
+		err = ovl_copy_up_one(parent, dentry, &lowerpath, &stat);
+	}
+	revert_creds(old_cred);
 
 out_dput_parent:
 	dput(parent);
@@ -53,7 +56,7 @@ int ovl_setattr(struct dentry *dentry, struct iattr *attr)
 	 * inode_newsize_ok() will always check against MAX_LFS_FILESIZE and not
 	 * check for a swapfile (which this won't be anyway).
 	 */
-	err = inode_change_ok(dentry->d_inode, attr);
+	err = setattr_prepare(dentry, attr);
 	if (err)
 		return err;
 
@@ -61,9 +64,26 @@ int ovl_setattr(struct dentry *dentry, struct iattr *attr)
 	if (err)
 		goto out;
 
+	if (attr->ia_valid & ATTR_SIZE) {
+		struct inode *realinode = d_inode(ovl_dentry_real(dentry));
+
+		err = -ETXTBSY;
+		if (atomic_read(&realinode->i_writecount) < 0)
+			goto out_drop_write;
+	}
+
 	err = ovl_copy_up(dentry);
 	if (!err) {
+		struct inode *winode = NULL;
+
 		upperdentry = ovl_dentry_upper(dentry);
+
+		if (attr->ia_valid & ATTR_SIZE) {
+			winode = d_inode(upperdentry);
+			err = get_write_access(winode);
+			if (err)
+				goto out_drop_write;
+		}
 
 		if (attr->ia_valid & (ATTR_KILL_SUID|ATTR_KILL_SGID))
 			attr->ia_valid &= ~ATTR_MODE;
@@ -75,7 +95,11 @@ int ovl_setattr(struct dentry *dentry, struct iattr *attr)
 		if (!err)
 			ovl_copyattr(upperdentry->d_inode, dentry->d_inode);
 		inode_unlock(upperdentry->d_inode);
+
+		if (winode)
+			put_write_access(winode);
 	}
+out_drop_write:
 	ovl_drop_write(dentry);
 out:
 	return err;
@@ -132,43 +156,16 @@ static const char *ovl_get_link(struct dentry *dentry,
 				struct inode *inode,
 				struct delayed_call *done)
 {
-	struct dentry *realdentry;
-	struct inode *realinode;
 	const struct cred *old_cred;
 	const char *p;
 
 	if (!dentry)
 		return ERR_PTR(-ECHILD);
 
-	realdentry = ovl_dentry_real(dentry);
-	realinode = realdentry->d_inode;
-
-	if (WARN_ON(!realinode->i_op->get_link))
-		return ERR_PTR(-EPERM);
-
 	old_cred = ovl_override_creds(dentry->d_sb);
-	p = realinode->i_op->get_link(realdentry, realinode, done);
+	p = vfs_get_link(ovl_dentry_real(dentry), done);
 	revert_creds(old_cred);
 	return p;
-}
-
-static int ovl_readlink(struct dentry *dentry, char __user *buf, int bufsiz)
-{
-	struct path realpath;
-	struct inode *realinode;
-	const struct cred *old_cred;
-	int err;
-
-	ovl_path_real(dentry, &realpath);
-	realinode = realpath.dentry->d_inode;
-
-	if (!realinode->i_op->readlink)
-		return -EINVAL;
-
-	old_cred = ovl_override_creds(dentry->d_sb);
-	err = realinode->i_op->readlink(realpath.dentry, buf, bufsiz);
-	revert_creds(old_cred);
-	return err;
 }
 
 bool ovl_is_private_xattr(const char *name)
@@ -346,10 +343,7 @@ static const struct inode_operations ovl_file_inode_operations = {
 	.setattr	= ovl_setattr,
 	.permission	= ovl_permission,
 	.getattr	= ovl_getattr,
-	.setxattr	= generic_setxattr,
-	.getxattr	= generic_getxattr,
 	.listxattr	= ovl_listxattr,
-	.removexattr	= generic_removexattr,
 	.get_acl	= ovl_get_acl,
 	.update_time	= ovl_update_time,
 };
@@ -357,12 +351,9 @@ static const struct inode_operations ovl_file_inode_operations = {
 static const struct inode_operations ovl_symlink_inode_operations = {
 	.setattr	= ovl_setattr,
 	.get_link	= ovl_get_link,
-	.readlink	= ovl_readlink,
+	.readlink	= generic_readlink,
 	.getattr	= ovl_getattr,
-	.setxattr	= generic_setxattr,
-	.getxattr	= generic_getxattr,
 	.listxattr	= ovl_listxattr,
-	.removexattr	= generic_removexattr,
 	.update_time	= ovl_update_time,
 };
 

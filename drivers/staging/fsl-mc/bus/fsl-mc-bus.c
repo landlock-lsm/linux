@@ -139,7 +139,6 @@ static struct attribute *fsl_mc_dev_attrs[] = {
 
 ATTRIBUTE_GROUPS(fsl_mc_dev);
 
-
 struct bus_type fsl_mc_bus_type = {
 	.name = "fsl-mc",
 	.match = fsl_mc_bus_match,
@@ -259,8 +258,8 @@ bool fsl_mc_bus_exists(void)
 EXPORT_SYMBOL_GPL(fsl_mc_bus_exists);
 
 /**
-* fsl_mc_get_root_dprc - function to traverse to the root dprc
-*/
+ * fsl_mc_get_root_dprc - function to traverse to the root dprc
+ */
 void fsl_mc_get_root_dprc(struct device *dev,
 			  struct device **root_dprc_dev)
 {

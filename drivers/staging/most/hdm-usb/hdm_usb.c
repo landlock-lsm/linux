@@ -65,17 +65,6 @@
 #define DRCI_WRITE_REQ		0xA1
 
 /**
- * struct buf_anchor - used to create a list of pending URBs
- * @urb: pointer to USB request block
- * @list: linked list
- * @urb_completion:
- */
-struct buf_anchor {
-	struct urb *urb;
-	struct list_head list;
-};
-
-/**
  * struct most_dci_obj - Direct Communication Interface
  * @kobj:position in sysfs
  * @usb_device: pointer to the usb device
@@ -113,10 +102,10 @@ struct clear_hold_work {
  * @link_stat: link status of hardware
  * @description: device description
  * @suffix: suffix for channel name
- * @anchor_list_lock: locks list access
+ * @channel_lock: synchronize channel access
  * @padding_active: indicates channel uses padding
  * @is_channel_healthy: health status table of each channel
- * @anchor_list: list of anchored items
+ * @busy_urbs: list of anchored items
  * @io_mutex: synchronize I/O with disconnect
  * @link_stat_timer: timer for link status reports
  * @poll_work_obj: work for polling link status
@@ -133,11 +122,11 @@ struct most_dev {
 	u16 link_stat;
 	char description[MAX_STRING_LEN];
 	char suffix[MAX_NUM_ENDPOINTS][MAX_SUFFIX_LEN];
-	spinlock_t anchor_list_lock[MAX_NUM_ENDPOINTS];
+	spinlock_t channel_lock[MAX_NUM_ENDPOINTS]; /* sync channel access */
 	bool padding_active[MAX_NUM_ENDPOINTS];
 	bool is_channel_healthy[MAX_NUM_ENDPOINTS];
 	struct clear_hold_work clear_work[MAX_NUM_ENDPOINTS];
-	struct list_head *anchor_list;
+	struct usb_anchor *busy_urbs;
 	struct mutex io_mutex;
 	struct timer_list link_stat_timer;
 	struct work_struct poll_work_obj;
@@ -207,31 +196,18 @@ static void free_anchored_buffers(struct most_dev *mdev, unsigned int channel,
 				  enum mbo_status_flags status)
 {
 	struct mbo *mbo;
-	struct buf_anchor *anchor, *tmp;
-	spinlock_t *lock = mdev->anchor_list_lock + channel; /* temp. lock */
-	unsigned long flags;
+	struct urb *urb;
 
-	spin_lock_irqsave(lock, flags);
-	list_for_each_entry_safe(anchor, tmp, &mdev->anchor_list[channel],
-				 list) {
-		struct urb *urb = anchor->urb;
-
-		spin_unlock_irqrestore(lock, flags);
-		if (likely(urb)) {
-			mbo = urb->context;
-			usb_kill_urb(urb);
-			if (mbo && mbo->complete) {
-				mbo->status = status;
-				mbo->processed_length = 0;
-				mbo->complete(mbo);
-			}
-			usb_free_urb(urb);
+	while ((urb = usb_get_from_anchor(&mdev->busy_urbs[channel]))) {
+		mbo = urb->context;
+		usb_kill_urb(urb);
+		if (mbo && mbo->complete) {
+			mbo->status = status;
+			mbo->processed_length = 0;
+			mbo->complete(mbo);
 		}
-		spin_lock_irqsave(lock, flags);
-		list_del(&anchor->list);
-		kfree(anchor);
+		usb_free_urb(urb);
 	}
-	spin_unlock_irqrestore(lock, flags);
 }
 
 /**
@@ -248,7 +224,7 @@ static unsigned int get_stream_frame_size(struct most_channel_config *cfg)
 		return frame_size;
 	}
 	switch (cfg->data_type) {
-	case MOST_CH_ISOC_AVP:
+	case MOST_CH_ISOC:
 		frame_size = AV_PACKETS_PER_XACT * sub_size;
 		break;
 	case MOST_CH_SYNC:
@@ -294,7 +270,7 @@ static int hdm_poison_channel(struct most_interface *iface, int channel)
 		return -ECHRNG;
 	}
 
-	lock = mdev->anchor_list_lock + channel;
+	lock = mdev->channel_lock + channel;
 	spin_lock_irqsave(lock, flags);
 	mdev->is_channel_healthy[channel] = false;
 	spin_unlock_irqrestore(lock, flags);
@@ -394,11 +370,10 @@ static int hdm_remove_padding(struct most_dev *mdev, int channel,
 static void hdm_write_completion(struct urb *urb)
 {
 	struct mbo *mbo = urb->context;
-	struct buf_anchor *anchor = mbo->priv;
 	struct most_dev *mdev = to_mdev(mbo->ifp);
 	unsigned int channel = mbo->hdm_channel_id;
 	struct device *dev = &mdev->usb_device->dev;
-	spinlock_t *lock = mdev->anchor_list_lock + channel; /* temp. lock */
+	spinlock_t *lock = mdev->channel_lock + channel;
 	unsigned long flags;
 
 	spin_lock_irqsave(lock, flags);
@@ -431,9 +406,7 @@ static void hdm_write_completion(struct urb *urb)
 		mbo->processed_length = urb->actual_length;
 	}
 
-	list_del(&anchor->list);
 	spin_unlock_irqrestore(lock, flags);
-	kfree(anchor);
 
 	if (likely(mbo->complete))
 		mbo->complete(mbo);
@@ -551,11 +524,10 @@ static void hdm_write_completion(struct urb *urb)
 static void hdm_read_completion(struct urb *urb)
 {
 	struct mbo *mbo = urb->context;
-	struct buf_anchor *anchor = mbo->priv;
 	struct most_dev *mdev = to_mdev(mbo->ifp);
 	unsigned int channel = mbo->hdm_channel_id;
 	struct device *dev = &mdev->usb_device->dev;
-	spinlock_t *lock = mdev->anchor_list_lock + channel; /* temp. lock */
+	spinlock_t *lock = mdev->channel_lock + channel;
 	unsigned long flags;
 
 	spin_lock_irqsave(lock, flags);
@@ -595,9 +567,7 @@ static void hdm_read_completion(struct urb *urb)
 		}
 	}
 
-	list_del(&anchor->list);
 	spin_unlock_irqrestore(lock, flags);
-	kfree(anchor);
 
 	if (likely(mbo->complete))
 		mbo->complete(mbo);
@@ -623,15 +593,12 @@ static int hdm_enqueue(struct most_interface *iface, int channel,
 		       struct mbo *mbo)
 {
 	struct most_dev *mdev;
-	struct buf_anchor *anchor;
 	struct most_channel_config *conf;
 	struct device *dev;
 	int retval = 0;
 	struct urb *urb;
-	unsigned long flags;
 	unsigned long length;
 	void *virt_address;
-	spinlock_t *lock; /* temp. lock */
 
 	if (unlikely(!iface || !mbo))
 		return -EIO;
@@ -648,15 +615,6 @@ static int hdm_enqueue(struct most_interface *iface, int channel,
 	urb = usb_alloc_urb(NO_ISOCHRONOUS_URB, GFP_ATOMIC);
 	if (!urb)
 		return -ENOMEM;
-
-	anchor = kzalloc(sizeof(*anchor), GFP_ATOMIC);
-	if (!anchor) {
-		retval = -ENOMEM;
-		goto _error;
-	}
-
-	anchor->urb = urb;
-	mbo->priv = anchor;
 
 	if ((conf->direction & MOST_CH_TX) && mdev->padding_active[channel] &&
 	    hdm_add_padding(mdev, channel, mbo)) {
@@ -676,7 +634,7 @@ static int hdm_enqueue(struct most_interface *iface, int channel,
 				  length,
 				  hdm_write_completion,
 				  mbo);
-		if (conf->data_type != MOST_CH_ISOC_AVP)
+		if (conf->data_type != MOST_CH_ISOC)
 			urb->transfer_flags |= URB_ZERO_PACKET;
 	} else {
 		usb_fill_bulk_urb(urb, mdev->usb_device,
@@ -689,10 +647,7 @@ static int hdm_enqueue(struct most_interface *iface, int channel,
 	}
 	urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
 
-	lock = mdev->anchor_list_lock + channel;
-	spin_lock_irqsave(lock, flags);
-	list_add_tail(&anchor->list, &mdev->anchor_list[channel]);
-	spin_unlock_irqrestore(lock, flags);
+	usb_anchor_urb(urb, &mdev->busy_urbs[channel]);
 
 	retval = usb_submit_urb(urb, GFP_KERNEL);
 	if (retval) {
@@ -702,10 +657,7 @@ static int hdm_enqueue(struct most_interface *iface, int channel,
 	return 0;
 
 _error_1:
-	spin_lock_irqsave(lock, flags);
-	list_del(&anchor->list);
-	spin_unlock_irqrestore(lock, flags);
-	kfree(anchor);
+	usb_unanchor_urb(urb);
 _error:
 	usb_free_urb(urb);
 	return retval;
@@ -746,7 +698,7 @@ static int hdm_configure_channel(struct most_interface *iface, int channel,
 	}
 
 	if (conf->data_type != MOST_CH_SYNC &&
-	    !(conf->data_type == MOST_CH_ISOC_AVP &&
+	    !(conf->data_type == MOST_CH_ISOC &&
 	      conf->packets_per_xact != 0xFF)) {
 		mdev->padding_active[channel] = false;
 		goto exit;
@@ -1281,9 +1233,9 @@ hdm_probe(struct usb_interface *interface, const struct usb_device_id *id)
 	if (!mdev->ep_address)
 		goto exit_free2;
 
-	mdev->anchor_list =
-		kcalloc(num_endpoints, sizeof(*mdev->anchor_list), GFP_KERNEL);
-	if (!mdev->anchor_list)
+	mdev->busy_urbs =
+		kcalloc(num_endpoints, sizeof(*mdev->busy_urbs), GFP_KERNEL);
+	if (!mdev->busy_urbs)
 		goto exit_free3;
 
 	tmp_cap = mdev->cap;
@@ -1302,21 +1254,21 @@ hdm_probe(struct usb_interface *interface, const struct usb_device_id *id)
 		tmp_cap->num_buffers_packet = BUF_CHAIN_SIZE;
 		tmp_cap->num_buffers_streaming = BUF_CHAIN_SIZE;
 		tmp_cap->data_type = MOST_CH_CONTROL | MOST_CH_ASYNC |
-				     MOST_CH_ISOC_AVP | MOST_CH_SYNC;
+				     MOST_CH_ISOC | MOST_CH_SYNC;
 		if (usb_endpoint_dir_in(ep_desc))
 			tmp_cap->direction = MOST_CH_RX;
 		else
 			tmp_cap->direction = MOST_CH_TX;
 		tmp_cap++;
-		INIT_LIST_HEAD(&mdev->anchor_list[i]);
-		spin_lock_init(&mdev->anchor_list_lock[i]);
+		init_usb_anchor(&mdev->busy_urbs[i]);
+		spin_lock_init(&mdev->channel_lock[i]);
 		err = drci_wr_reg(usb_dev,
 				  DRCI_REG_BASE + DRCI_COMMAND +
 				  ep_desc->bEndpointAddress * 16,
 				  1);
 		if (err < 0)
-			pr_warn("DCI Sync for EP %02x failed",
-				ep_desc->bEndpointAddress);
+			dev_warn(dev, "DCI Sync for EP %02x failed",
+				 ep_desc->bEndpointAddress);
 	}
 	dev_notice(dev, "claimed gadget: Vendor=%4.4x ProdID=%4.4x Bus=%02x Device=%02x\n",
 		   le16_to_cpu(usb_dev->descriptor.idVendor),
@@ -1358,7 +1310,7 @@ hdm_probe(struct usb_interface *interface, const struct usb_device_id *id)
 	return 0;
 
 exit_free4:
-	kfree(mdev->anchor_list);
+	kfree(mdev->busy_urbs);
 exit_free3:
 	kfree(mdev->ep_address);
 exit_free2:
@@ -1399,7 +1351,7 @@ static void hdm_disconnect(struct usb_interface *interface)
 	destroy_most_dci_obj(mdev->dci);
 	most_deregister_interface(&mdev->iface);
 
-	kfree(mdev->anchor_list);
+	kfree(mdev->busy_urbs);
 	kfree(mdev->cap);
 	kfree(mdev->conf);
 	kfree(mdev->ep_address);

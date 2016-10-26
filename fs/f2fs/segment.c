@@ -345,6 +345,11 @@ int commit_inmem_pages(struct inode *inode)
  */
 void f2fs_balance_fs(struct f2fs_sb_info *sbi, bool need)
 {
+#ifdef CONFIG_F2FS_FAULT_INJECTION
+	if (time_to_inject(sbi, FAULT_CHECKPOINT))
+		f2fs_stop_checkpoint(sbi, false);
+#endif
+
 	if (!need)
 		return;
 
@@ -667,28 +672,6 @@ static int f2fs_issue_discard(struct f2fs_sb_info *sbi,
 	}
 	trace_f2fs_issue_discard(sbi->sb, blkstart, blklen);
 	return __f2fs_issue_discard_async(sbi, start, len, GFP_NOFS, 0);
-}
-
-bool discard_next_dnode(struct f2fs_sb_info *sbi, block_t blkaddr)
-{
-	int err = -EOPNOTSUPP;
-
-	if (test_opt(sbi, DISCARD)) {
-		struct seg_entry *se = get_seg_entry(sbi,
-				GET_SEGNO(sbi, blkaddr));
-		unsigned int offset = GET_BLKOFF_FROM_SEG0(sbi, blkaddr);
-
-		if (f2fs_test_bit(offset, se->discard_map))
-			return false;
-
-		err = f2fs_issue_discard(sbi, blkaddr, 1);
-	}
-
-	if (err) {
-		update_meta_page(sbi, NULL, blkaddr);
-		return true;
-	}
-	return false;
 }
 
 static void __add_discard_entry(struct f2fs_sb_info *sbi,
@@ -1675,10 +1658,8 @@ void f2fs_wait_on_encrypted_page_writeback(struct f2fs_sb_info *sbi,
 {
 	struct page *cpage;
 
-	if (blkaddr == NEW_ADDR)
+	if (blkaddr == NEW_ADDR || blkaddr == NULL_ADDR)
 		return;
-
-	f2fs_bug_on(sbi, blkaddr == NULL_ADDR);
 
 	cpage = find_lock_page(META_MAPPING(sbi), blkaddr);
 	if (cpage) {
@@ -1825,7 +1806,7 @@ static int restore_curseg_summaries(struct f2fs_sb_info *sbi)
 	int type = CURSEG_HOT_DATA;
 	int err;
 
-	if (is_set_ckpt_flags(F2FS_CKPT(sbi), CP_COMPACT_SUM_FLAG)) {
+	if (is_set_ckpt_flags(sbi, CP_COMPACT_SUM_FLAG)) {
 		int npages = npages_for_summary_flush(sbi, true);
 
 		if (npages >= 2)
@@ -1922,7 +1903,7 @@ static void write_normal_summaries(struct f2fs_sb_info *sbi,
 
 void write_data_summaries(struct f2fs_sb_info *sbi, block_t start_blk)
 {
-	if (is_set_ckpt_flags(F2FS_CKPT(sbi), CP_COMPACT_SUM_FLAG))
+	if (is_set_ckpt_flags(sbi, CP_COMPACT_SUM_FLAG))
 		write_compacted_summaries(sbi, start_blk);
 	else
 		write_normal_summaries(sbi, start_blk, CURSEG_HOT_DATA);
@@ -2329,6 +2310,8 @@ static void build_sit_entries(struct f2fs_sb_info *sbi)
 	struct sit_info *sit_i = SIT_I(sbi);
 	struct curseg_info *curseg = CURSEG_I(sbi, CURSEG_COLD_DATA);
 	struct f2fs_journal *journal = curseg->journal;
+	struct seg_entry *se;
+	struct f2fs_sit_entry sit;
 	int sit_blk_cnt = SIT_BLK_CNT(sbi);
 	unsigned int i, start, end;
 	unsigned int readed, start_blk = 0;
@@ -2341,11 +2324,10 @@ static void build_sit_entries(struct f2fs_sb_info *sbi)
 		end = (start_blk + readed) * sit_i->sents_per_block;
 
 		for (; start < end && start < MAIN_SEGS(sbi); start++) {
-			struct seg_entry *se = &sit_i->sentries[start];
 			struct f2fs_sit_block *sit_blk;
-			struct f2fs_sit_entry sit;
 			struct page *page;
 
+			se = &sit_i->sentries[start];
 			page = get_current_sit_page(sbi, start);
 			sit_blk = (struct f2fs_sit_block *)page_address(page);
 			sit = sit_blk->entries[SIT_ENTRY_OFFSET(sit_i, start)];
@@ -2371,8 +2353,6 @@ static void build_sit_entries(struct f2fs_sb_info *sbi)
 
 	down_read(&curseg->journal_rwsem);
 	for (i = 0; i < sits_in_cursum(journal); i++) {
-		struct f2fs_sit_entry sit;
-		struct seg_entry *se;
 		unsigned int old_valid_blocks;
 
 		start = le32_to_cpu(segno_in_journal(journal, i));

@@ -22,7 +22,6 @@
 #include <linux/uuid.h>
 #include <linux/io.h>
 
-#include "version.h"
 #include "visorbus.h"
 #include "controlvmchannel.h"
 
@@ -186,76 +185,66 @@ visorchannel_get_header(struct visorchannel *channel)
  * into host memory
  */
 #define SIG_WRITE_FIELD(channel, queue, sig_hdr, FIELD)			 \
-	(visorchannel_write(channel,					 \
-			    SIG_QUEUE_OFFSET(&channel->chan_hdr, queue) +\
-			    offsetof(struct signal_queue_header, FIELD), \
-			    &((sig_hdr)->FIELD),			 \
-			    sizeof((sig_hdr)->FIELD)) >= 0)
+	visorchannel_write(channel,					 \
+			   SIG_QUEUE_OFFSET(&channel->chan_hdr, queue) +\
+			   offsetof(struct signal_queue_header, FIELD), \
+			   &((sig_hdr)->FIELD),			 \
+			   sizeof((sig_hdr)->FIELD))
 
-static bool
+static int
 sig_read_header(struct visorchannel *channel, u32 queue,
 		struct signal_queue_header *sig_hdr)
 {
-	int err;
-
 	if (channel->chan_hdr.ch_space_offset < sizeof(struct channel_header))
-		return false;
+		return -EINVAL;
 
 	/* Read the appropriate SIGNAL_QUEUE_HEADER into local memory. */
-	err = visorchannel_read(channel,
-				SIG_QUEUE_OFFSET(&channel->chan_hdr, queue),
-				sig_hdr, sizeof(struct signal_queue_header));
-	if (err)
-		return false;
-
-	return true;
+	return visorchannel_read(channel,
+				 SIG_QUEUE_OFFSET(&channel->chan_hdr, queue),
+				 sig_hdr, sizeof(struct signal_queue_header));
 }
 
-static inline bool
+static inline int
 sig_read_data(struct visorchannel *channel, u32 queue,
 	      struct signal_queue_header *sig_hdr, u32 slot, void *data)
 {
-	int err;
 	int signal_data_offset = SIG_DATA_OFFSET(&channel->chan_hdr, queue,
 						 sig_hdr, slot);
 
-	err = visorchannel_read(channel, signal_data_offset,
-				data, sig_hdr->signal_size);
-	if (err)
-		return false;
-
-	return true;
+	return visorchannel_read(channel, signal_data_offset,
+				 data, sig_hdr->signal_size);
 }
 
-static inline bool
+static inline int
 sig_write_data(struct visorchannel *channel, u32 queue,
 	       struct signal_queue_header *sig_hdr, u32 slot, void *data)
 {
-	int err;
 	int signal_data_offset = SIG_DATA_OFFSET(&channel->chan_hdr, queue,
 						 sig_hdr, slot);
 
-	err = visorchannel_write(channel, signal_data_offset,
-				 data, sig_hdr->signal_size);
-	if (err)
-		return false;
-
-	return true;
+	return visorchannel_write(channel, signal_data_offset,
+				  data, sig_hdr->signal_size);
 }
 
-static bool
+static int
 signalremove_inner(struct visorchannel *channel, u32 queue, void *msg)
 {
 	struct signal_queue_header sig_hdr;
+	int error;
 
-	if (!sig_read_header(channel, queue, &sig_hdr))
-		return false;
+	error = sig_read_header(channel, queue, &sig_hdr);
+	if (error)
+		return error;
+
 	if (sig_hdr.head == sig_hdr.tail)
-		return false;	/* no signals to remove */
+		return -EIO;	/* no signals to remove */
 
 	sig_hdr.tail = (sig_hdr.tail + 1) % sig_hdr.max_slots;
-	if (!sig_read_data(channel, queue, &sig_hdr, sig_hdr.tail, msg))
-		return false;
+
+	error = sig_read_data(channel, queue, &sig_hdr, sig_hdr.tail, msg);
+	if (error)
+		return error;
+
 	sig_hdr.num_received++;
 
 	/*
@@ -263,11 +252,15 @@ signalremove_inner(struct visorchannel *channel, u32 queue, void *msg)
 	 * update host memory.
 	 */
 	mb(); /* required for channel synch */
-	if (!SIG_WRITE_FIELD(channel, queue, &sig_hdr, tail))
-		return false;
-	if (!SIG_WRITE_FIELD(channel, queue, &sig_hdr, num_received))
-		return false;
-	return true;
+
+	error = SIG_WRITE_FIELD(channel, queue, &sig_hdr, tail);
+	if (error)
+		return error;
+	error = SIG_WRITE_FIELD(channel, queue, &sig_hdr, num_received);
+	if (error)
+		return error;
+
+	return 0;
 }
 
 /**
@@ -277,12 +270,12 @@ signalremove_inner(struct visorchannel *channel, u32 queue, void *msg)
  * @queue:   the queue the message will be removed from
  * @msg:     the message to remove
  *
- * Return: boolean indicating whether the removal succeeded or failed
+ * Return: integer error code indicating the status of the removal
  */
-bool
+int
 visorchannel_signalremove(struct visorchannel *channel, u32 queue, void *msg)
 {
-	bool rc;
+	int rc;
 	unsigned long flags;
 
 	if (channel->needs_lock) {
@@ -316,7 +309,7 @@ visorchannel_signalempty(struct visorchannel *channel, u32 queue)
 	if (channel->needs_lock)
 		spin_lock_irqsave(&channel->remove_lock, flags);
 
-	if (!sig_read_header(channel, queue, &sig_hdr))
+	if (sig_read_header(channel, queue, &sig_hdr))
 		rc = true;
 	if (sig_hdr.head == sig_hdr.tail)
 		rc = true;
@@ -327,13 +320,15 @@ visorchannel_signalempty(struct visorchannel *channel, u32 queue)
 }
 EXPORT_SYMBOL_GPL(visorchannel_signalempty);
 
-static bool
+static int
 signalinsert_inner(struct visorchannel *channel, u32 queue, void *msg)
 {
 	struct signal_queue_header sig_hdr;
+	int error;
 
-	if (!sig_read_header(channel, queue, &sig_hdr))
-		return false;
+	error = sig_read_header(channel, queue, &sig_hdr);
+	if (error)
+		return error;
 
 	sig_hdr.head = (sig_hdr.head + 1) % sig_hdr.max_slots;
 	if (sig_hdr.head == sig_hdr.tail) {
@@ -344,11 +339,12 @@ signalinsert_inner(struct visorchannel *channel, u32 queue, void *msg)
 					    num_overflows),
 				   &sig_hdr.num_overflows,
 				   sizeof(sig_hdr.num_overflows));
-		return false;
+		return -EIO;
 	}
 
-	if (!sig_write_data(channel, queue, &sig_hdr, sig_hdr.head, msg))
-		return false;
+	error = sig_write_data(channel, queue, &sig_hdr, sig_hdr.head, msg);
+	if (error)
+		return error;
 
 	sig_hdr.num_sent++;
 
@@ -357,12 +353,15 @@ signalinsert_inner(struct visorchannel *channel, u32 queue, void *msg)
 	 * update host memory.
 	 */
 	mb(); /* required for channel synch */
-	if (!SIG_WRITE_FIELD(channel, queue, &sig_hdr, head))
-		return false;
-	if (!SIG_WRITE_FIELD(channel, queue, &sig_hdr, num_sent))
-		return false;
 
-	return true;
+	error = SIG_WRITE_FIELD(channel, queue, &sig_hdr, head);
+	if (error)
+		return error;
+	error = SIG_WRITE_FIELD(channel, queue, &sig_hdr, num_sent);
+	if (error)
+		return error;
+
+	return 0;
 }
 
 /**
@@ -494,12 +493,12 @@ visorchannel_create_with_lock(u64 physaddr, unsigned long channel_bytes,
  * @queue:   the queue the message will be added to
  * @msg:     the message to insert
  *
- * Return: boolean indicating whether the insertion succeeded or failed
+ * Return: integer error code indicating the status of the insertion
  */
-bool
+int
 visorchannel_signalinsert(struct visorchannel *channel, u32 queue, void *msg)
 {
-	bool rc;
+	int rc;
 	unsigned long flags;
 
 	if (channel->needs_lock) {

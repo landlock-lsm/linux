@@ -140,6 +140,8 @@ int inode_init_always(struct super_block *sb, struct inode *inode)
 	inode->i_fop = &no_open_fops;
 	inode->__i_nlink = 1;
 	inode->i_opflags = 0;
+	if (sb->s_xattr)
+		inode->i_opflags |= IOP_XATTR;
 	i_uid_write(inode, 0);
 	i_gid_write(inode, 0);
 	atomic_set(&inode->i_writecount, 0);
@@ -1021,13 +1023,17 @@ struct inode *iget5_locked(struct super_block *sb, unsigned long hashval,
 {
 	struct hlist_head *head = inode_hashtable + hash(sb, hashval);
 	struct inode *inode;
-
+again:
 	spin_lock(&inode_hash_lock);
 	inode = find_inode(sb, head, test, data);
 	spin_unlock(&inode_hash_lock);
 
 	if (inode) {
 		wait_on_inode(inode);
+		if (unlikely(inode_unhashed(inode))) {
+			iput(inode);
+			goto again;
+		}
 		return inode;
 	}
 
@@ -1064,6 +1070,10 @@ struct inode *iget5_locked(struct super_block *sb, unsigned long hashval,
 		destroy_inode(inode);
 		inode = old;
 		wait_on_inode(inode);
+		if (unlikely(inode_unhashed(inode))) {
+			iput(inode);
+			goto again;
+		}
 	}
 	return inode;
 
@@ -1091,12 +1101,16 @@ struct inode *iget_locked(struct super_block *sb, unsigned long ino)
 {
 	struct hlist_head *head = inode_hashtable + hash(sb, ino);
 	struct inode *inode;
-
+again:
 	spin_lock(&inode_hash_lock);
 	inode = find_inode_fast(sb, head, ino);
 	spin_unlock(&inode_hash_lock);
 	if (inode) {
 		wait_on_inode(inode);
+		if (unlikely(inode_unhashed(inode))) {
+			iput(inode);
+			goto again;
+		}
 		return inode;
 	}
 
@@ -1131,6 +1145,10 @@ struct inode *iget_locked(struct super_block *sb, unsigned long ino)
 		destroy_inode(inode);
 		inode = old;
 		wait_on_inode(inode);
+		if (unlikely(inode_unhashed(inode))) {
+			iput(inode);
+			goto again;
+		}
 	}
 	return inode;
 }
@@ -1266,10 +1284,16 @@ EXPORT_SYMBOL(ilookup5_nowait);
 struct inode *ilookup5(struct super_block *sb, unsigned long hashval,
 		int (*test)(struct inode *, void *), void *data)
 {
-	struct inode *inode = ilookup5_nowait(sb, hashval, test, data);
-
-	if (inode)
+	struct inode *inode;
+again:
+	inode = ilookup5_nowait(sb, hashval, test, data);
+	if (inode) {
 		wait_on_inode(inode);
+		if (unlikely(inode_unhashed(inode))) {
+			iput(inode);
+			goto again;
+		}
+	}
 	return inode;
 }
 EXPORT_SYMBOL(ilookup5);
@@ -1286,13 +1310,18 @@ struct inode *ilookup(struct super_block *sb, unsigned long ino)
 {
 	struct hlist_head *head = inode_hashtable + hash(sb, ino);
 	struct inode *inode;
-
+again:
 	spin_lock(&inode_hash_lock);
 	inode = find_inode_fast(sb, head, ino);
 	spin_unlock(&inode_hash_lock);
 
-	if (inode)
+	if (inode) {
 		wait_on_inode(inode);
+		if (unlikely(inode_unhashed(inode))) {
+			iput(inode);
+			goto again;
+		}
+	}
 	return inode;
 }
 EXPORT_SYMBOL(ilookup);
@@ -1544,11 +1573,11 @@ static void update_ovl_inode_times(struct dentry *dentry, struct inode *inode,
 	if (!rcu) {
 		struct inode *realinode = d_real_inode(dentry);
 
-		if (unlikely(inode != realinode)) {
+		if (unlikely(inode != realinode) &&
+		    (!timespec_equal(&inode->i_mtime, &realinode->i_mtime) ||
+		     !timespec_equal(&inode->i_ctime, &realinode->i_ctime))) {
 			inode->i_mtime = realinode->i_mtime;
 			inode->i_ctime = realinode->i_ctime;
-			WARN_ON_ONCE(!timespec_equal(&inode->i_atime,
-						     &realinode->i_atime));
 		}
 	}
 }
@@ -1632,8 +1661,8 @@ static int update_time(struct inode *inode, struct timespec *time, int flags)
  *	This function automatically handles read only file systems and media,
  *	as well as the "noatime" flag and inode specific "noatime" markers.
  */
-static bool __atime_needs_update(const struct path *path, struct inode *inode,
-				 bool rcu)
+bool __atime_needs_update(const struct path *path, struct inode *inode,
+			  bool rcu)
 {
 	struct vfsmount *mnt = path->mnt;
 	struct timespec now;
@@ -1657,7 +1686,7 @@ static bool __atime_needs_update(const struct path *path, struct inode *inode,
 	if ((mnt->mnt_flags & MNT_NODIRATIME) && S_ISDIR(inode->i_mode))
 		return false;
 
-	now = current_fs_time(inode->i_sb);
+	now = current_time(inode);
 
 	if (!relatime_need_update(path, inode, now, rcu))
 		return false;
@@ -1666,11 +1695,6 @@ static bool __atime_needs_update(const struct path *path, struct inode *inode,
 		return false;
 
 	return true;
-}
-
-bool atime_needs_update(const struct path *path, struct inode *inode)
-{
-	return __atime_needs_update(path, inode, true);
 }
 
 void touch_atime(const struct path *path)
@@ -1696,7 +1720,7 @@ void touch_atime(const struct path *path)
 	 * We may also fail on filesystems that have the ability to make parts
 	 * of the fs read only, e.g. subvolumes in Btrfs.
 	 */
-	now = current_fs_time(inode->i_sb);
+	now = current_time(inode);
 	update_time(inode, &now, S_ATIME);
 	__mnt_drop_write(mnt);
 skip_update:
@@ -1819,7 +1843,7 @@ int file_update_time(struct file *file)
 	if (IS_NOCMTIME(inode))
 		return 0;
 
-	now = current_fs_time(inode->i_sb);
+	now = current_time(inode);
 	if (!timespec_equal(&inode->i_mtime, &now))
 		sync_it = S_MTIME;
 
@@ -2075,3 +2099,26 @@ void inode_nohighmem(struct inode *inode)
 	mapping_set_gfp_mask(inode->i_mapping, GFP_USER);
 }
 EXPORT_SYMBOL(inode_nohighmem);
+
+/**
+ * current_time - Return FS time
+ * @inode: inode.
+ *
+ * Return the current time truncated to the time granularity supported by
+ * the fs.
+ *
+ * Note that inode and inode->sb cannot be NULL.
+ * Otherwise, the function warns and returns time without truncation.
+ */
+struct timespec current_time(struct inode *inode)
+{
+	struct timespec now = current_kernel_time();
+
+	if (unlikely(!inode->i_sb)) {
+		WARN(1, "current_time() called with uninitialized super_block in the inode");
+		return now;
+	}
+
+	return timespec_trunc(now, inode->i_sb->s_time_gran);
+}
+EXPORT_SYMBOL(current_time);

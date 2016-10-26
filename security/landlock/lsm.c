@@ -17,9 +17,13 @@
 #include <linux/kernel.h> /* FIELD_SIZEOF() */
 #include <linux/landlock.h>
 #include <linux/lsm_hooks.h>
-#include <linux/preempt.h> /* in_interrupt() */
 #include <linux/seccomp.h> /* struct seccomp_* */
 #include <linux/types.h> /* uintptr_t */
+
+/* hook arguments */
+#include <linux/dcache.h> /* struct dentry */
+#include <linux/fs.h> /* struct inode */
+#include <linux/path.h> /* struct path */
 
 #ifdef CONFIG_CGROUP_BPF
 #include <linux/cgroup-defs.h> /* struct cgroup */
@@ -28,27 +32,37 @@
 #include "checker_fs.h"
 #include "common.h"
 
-#define LANDLOCK_MAP0(m, ...)
-#define LANDLOCK_MAP1(m, d, t, a) m(d, t, a)
-#define LANDLOCK_MAP2(m, d, t, a, ...) m(d, t, a), LANDLOCK_MAP1(m, __VA_ARGS__)
-#define LANDLOCK_MAP3(m, d, t, a, ...) m(d, t, a), LANDLOCK_MAP2(m, __VA_ARGS__)
-#define LANDLOCK_MAP4(m, d, t, a, ...) m(d, t, a), LANDLOCK_MAP3(m, __VA_ARGS__)
-#define LANDLOCK_MAP5(m, d, t, a, ...) m(d, t, a), LANDLOCK_MAP4(m, __VA_ARGS__)
-#define LANDLOCK_MAP6(m, d, t, a, ...) m(d, t, a), LANDLOCK_MAP5(m, __VA_ARGS__)
-#define LANDLOCK_MAP(n, ...) LANDLOCK_MAP##n(__VA_ARGS__)
+#define MAP0(s, m, ...)
+#define MAP1(s, m, d, t, a) m(d, t, a)
+#define MAP2(s, m, d, t, a, ...) m(d, t, a) s() MAP1(s, m, __VA_ARGS__)
+#define MAP3(s, m, d, t, a, ...) m(d, t, a) s() MAP2(s, m, __VA_ARGS__)
+#define MAP4(s, m, d, t, a, ...) m(d, t, a) s() MAP3(s, m, __VA_ARGS__)
+#define MAP5(s, m, d, t, a, ...) m(d, t, a) s() MAP4(s, m, __VA_ARGS__)
+#define MAP6(s, m, d, t, a, ...) m(d, t, a) s() MAP5(s, m, __VA_ARGS__)
 
-#define LANDLOCK_ARG_D(d, t, a) d
-#define LANDLOCK_ARG_TA(d, t, a) t a
-#define LANDLOCK_ARG_A(d, t, a) ((u64)(uintptr_t)a)
+/* separators */
+#define SEP_COMMA() ,
+#define SEP_NONE()
+
+/* arguments */
+#define ARG_MAP(n, ...) MAP##n(SEP_COMMA, __VA_ARGS__)
+#define ARG_REGTYPE(d, t, a) d##_REGTYPE
+#define ARG_TA(d, t, a) t a
+#define ARG_GET(d, t, a) ((u64) d##_GET(a))
+
+/* declarations */
+#define DEC_MAP(n, ...) MAP##n(SEP_NONE, DEC, __VA_ARGS__)
+#define DEC(d, t, a) d##_DEC(a)
 
 #define LANDLOCK_HOOKx(X, NAME, CNAME, ...)				\
 	static inline int landlock_hook_##NAME(				\
-		LANDLOCK_MAP(X, LANDLOCK_ARG_TA, __VA_ARGS__))		\
+		ARG_MAP(X, ARG_TA, __VA_ARGS__))			\
 	{								\
+		DEC_MAP(X, __VA_ARGS__)					\
 		__u64 args[6] = {					\
-			LANDLOCK_MAP(X, LANDLOCK_ARG_A, __VA_ARGS__)	\
+			ARG_MAP(X, ARG_GET, __VA_ARGS__)		\
 		};							\
-		return landlock_run_prog(LANDLOCK_HOOK_##CNAME, args);	\
+		return landlock_enforce(LANDLOCK_HOOK_##CNAME, args);	\
 	}								\
 	static inline bool __is_valid_access_hook_##CNAME(		\
 			int off, int size, enum bpf_access_type type,	\
@@ -56,7 +70,7 @@
 			union bpf_prog_subtype *prog_subtype)		\
 	{								\
 		enum bpf_reg_type arg_types[6] = {			\
-			LANDLOCK_MAP(X, LANDLOCK_ARG_D, __VA_ARGS__)	\
+			ARG_MAP(X, ARG_REGTYPE, __VA_ARGS__)		\
 		};							\
 		return __is_valid_access(off, size, type, reg_type,	\
 				arg_types, prog_subtype);		\
@@ -71,50 +85,84 @@
 
 #define LANDLOCK_HOOK_INIT(NAME) LSM_HOOK_INIT(NAME, landlock_hook_##NAME)
 
+/* LANDLOCK_WRAPARG_NONE */
+#define LANDLOCK_WRAPARG_NONE_REGTYPE	NOT_INIT
+#define LANDLOCK_WRAPARG_NONE_DEC(arg)
+#define LANDLOCK_WRAPARG_NONE_GET(arg)	0
+
+/* LANDLOCK_WRAPARG_RAW */
+#define LANDLOCK_WRAPARG_RAW_REGTYPE	UNKNOWN_VALUE
+#define LANDLOCK_WRAPARG_RAW_DEC(arg)
+#define LANDLOCK_WRAPARG_RAW_GET(arg)	arg
+
+/* LANDLOCK_WRAPARG_FILE */
+#define LANDLOCK_WRAPARG_FILE_REGTYPE	CONST_PTR_TO_LANDLOCK_ARG_FS
+#define LANDLOCK_WRAPARG_FILE_DEC(arg)			\
+	const struct landlock_arg_fs wrap_##arg =	\
+	{ .type = LANDLOCK_ARGTYPE_FILE, .file = arg };
+#define LANDLOCK_WRAPARG_FILE_GET(arg)	(uintptr_t)&wrap_##arg
+
+/* LANDLOCK_WRAPARG_INODE */
+#define LANDLOCK_WRAPARG_INODE_REGTYPE	CONST_PTR_TO_LANDLOCK_ARG_FS
+#define LANDLOCK_WRAPARG_INODE_DEC(arg)			\
+	const struct landlock_arg_fs wrap_##arg =	\
+	{ .type = LANDLOCK_ARGTYPE_INODE, .inode = arg };
+#define LANDLOCK_WRAPARG_INODE_GET(arg)	(uintptr_t)&wrap_##arg
+
+/* LANDLOCK_WRAPARG_PATH */
+#define LANDLOCK_WRAPARG_PATH_REGTYPE	CONST_PTR_TO_LANDLOCK_ARG_FS
+#define LANDLOCK_WRAPARG_PATH_DEC(arg)			\
+	const struct landlock_arg_fs wrap_##arg =	\
+	{ .type = LANDLOCK_ARGTYPE_PATH, .path = arg };
+#define LANDLOCK_WRAPARG_PATH_GET(arg)	(uintptr_t)&wrap_##arg
+
 /**
- * landlock_run_prog_for_syscall - run Landlock program for a syscall
+ * landlock_run_prog - run Landlock program for a syscall
  *
  * @hook_idx: hook index in the rules array
- * @ctx: non-NULL eBPF context; the "origin" field will be updated
+ * @ctx: non-NULL eBPF context
  * @hooks: Landlock hooks pointer
  */
-static u32 landlock_run_prog_for_syscall(u32 hook_idx,
-		struct landlock_data *ctx, struct landlock_hooks *hooks)
+static u32 landlock_run_prog(u32 hook_idx, const struct landlock_data *ctx,
+		struct landlock_hooks *hooks)
 {
-	struct landlock_rule *rule;
-	u32 cur_ret = 0, ret = 0;
+	struct landlock_node *node;
+	u32 ret = 0;
 
 	if (!hooks)
 		return 0;
 
-	for (rule = hooks->rules[hook_idx]; rule && !ret; rule = rule->prev) {
-		if (!(rule->prog->subtype.landlock_hook.origin & ctx->origin))
-			continue;
-		cur_ret = BPF_PROG_RUN(rule->prog, (void *)ctx);
-		if (cur_ret > MAX_ERRNO)
-			ret = MAX_ERRNO;
-		else
-			ret = cur_ret;
+	for (node = hooks->nodes[hook_idx]; node; node = node->prev) {
+		struct landlock_rule *rule;
+
+		for (rule = node->rule; rule; rule = rule->prev) {
+			if (WARN_ON(!rule->prog))
+				continue;
+			rcu_read_lock();
+			ret = BPF_PROG_RUN(rule->prog, (void *)ctx);
+			rcu_read_unlock();
+			if (ret) {
+				if (ret > MAX_ERRNO)
+					ret = MAX_ERRNO;
+				goto out;
+			}
+		}
 	}
+
+out:
 	return ret;
 }
 
-static int landlock_run_prog(enum landlock_hook_id hook_id, __u64 args[6])
+static int landlock_enforce(enum landlock_hook hook, __u64 args[6])
 {
-	u32 cur_ret = 0, ret = 0;
-#ifdef CONFIG_SECCOMP_FILTER
-	struct landlock_seccomp_ret *lr;
-#endif /* CONFIG_SECCOMP_FILTER */
+	u32 ret = 0;
 #ifdef CONFIG_CGROUP_BPF
 	struct cgroup *cgrp;
 #endif /* CONFIG_CGROUP_BPF */
-	struct landlock_rule *rule;
-	u32 hook_idx = get_index(hook_id);
-	u16 current_call;
+	u32 hook_idx = get_index(hook);
 
 	struct landlock_data ctx = {
-		.hook = hook_id,
-		.cookie = 0,
+		.hook = hook,
 		.args[0] = args[0],
 		.args[1] = args[1],
 		.args[2] = args[2],
@@ -123,95 +171,39 @@ static int landlock_run_prog(enum landlock_hook_id hook_id, __u64 args[6])
 		.args[5] = args[5],
 	};
 
-	/* TODO: use lockless_dereference()? */
-
-	/*
-	 * Run the seccomp-based triggers before the cgroup-based triggers to
-	 * prioritize fine-grained policies (i.e. per thread), and return early.
-	 */
-
-	if (unlikely(in_interrupt())) {
-		current_call = LANDLOCK_FLAG_ORIGIN_INTERRUPT;
 #ifdef CONFIG_SECCOMP_FILTER
-		/* bypass landlock_ret evaluation */
-		goto seccomp_int;
-#endif /* CONFIG_SECCOMP_FILTER */
-	} else {
-		current_call = LANDLOCK_FLAG_ORIGIN_SYSCALL;
-	}
-
-#ifdef CONFIG_SECCOMP_FILTER
-	/* seccomp triggers and landlock_ret cleanup */
-	ctx.origin = LANDLOCK_FLAG_ORIGIN_SECCOMP;
-	for (lr = current->seccomp.landlock_ret; lr; lr = lr->prev) {
-		if (!lr->triggered)
-			continue;
-		lr->triggered = false;
-		/* clean up all seccomp results */
-		if (ret)
-			continue;
-		ctx.cookie = lr->cookie;
-		for (rule = current->seccomp.landlock_hooks->rules[hook_idx];
-				rule && !ret; rule = rule->prev) {
-			struct seccomp_filter *filter;
-
-			if (!(rule->prog->subtype.landlock_hook.origin &
-						ctx.origin))
-				continue;
-			for (filter = rule->thread_filter; filter;
-					filter = filter->thread_prev) {
-				if (rule->thread_filter != lr->filter)
-					continue;
-				cur_ret = BPF_PROG_RUN(rule->prog, (void *)&ctx);
-				if (cur_ret > MAX_ERRNO)
-					ret = MAX_ERRNO;
-				else
-					ret = cur_ret;
-				/* walk to the next program */
-				break;
-			}
-		}
-	}
-	if (ret)
-		return -ret;
-	ctx.cookie = 0;
-
-seccomp_int:
-	/* syscall trigger */
-	ctx.origin = current_call;
-	ret = landlock_run_prog_for_syscall(hook_idx, &ctx,
+	ret = landlock_run_prog(hook_idx, &ctx,
 			current->seccomp.landlock_hooks);
 	if (ret)
-		return -ret;
+		goto out;
 #endif /* CONFIG_SECCOMP_FILTER */
 
 #ifdef CONFIG_CGROUP_BPF
-	/* syscall trigger */
 	if (cgroup_bpf_enabled) {
-		ctx.origin = current_call;
 		/* get the default cgroup associated with the current thread */
 		cgrp = task_css_set(current)->dfl_cgrp;
-		ret = landlock_run_prog_for_syscall(hook_idx, &ctx,
+		ret = landlock_run_prog(hook_idx, &ctx,
 				cgrp->bpf.effective[BPF_CGROUP_LANDLOCK].hooks);
 	}
 #endif /* CONFIG_CGROUP_BPF */
 
+out:
 	return -ret;
 }
 
 static const struct bpf_func_proto *bpf_landlock_func_proto(
 		enum bpf_func_id func_id, union bpf_prog_subtype *prog_subtype)
 {
-	bool access_update = !!(prog_subtype->landlock_hook.access &
-			LANDLOCK_FLAG_ACCESS_UPDATE);
-	bool access_debug = !!(prog_subtype->landlock_hook.access &
-			LANDLOCK_FLAG_ACCESS_DEBUG);
+	bool access_update = !!(prog_subtype->landlock_rule.access &
+			LANDLOCK_SUBTYPE_ACCESS_UPDATE);
+	bool access_debug = !!(prog_subtype->landlock_rule.access &
+			LANDLOCK_SUBTYPE_ACCESS_DEBUG);
 
 	switch (func_id) {
-	case BPF_FUNC_landlock_cmp_fs_prop_with_struct_file:
-		return &bpf_landlock_cmp_fs_prop_with_struct_file_proto;
-	case BPF_FUNC_landlock_cmp_fs_beneath_with_struct_file:
-		return &bpf_landlock_cmp_fs_beneath_with_struct_file_proto;
+	case BPF_FUNC_landlock_get_fs_mode:
+		return &bpf_landlock_get_fs_mode_proto;
+	case BPF_FUNC_landlock_cmp_fs_beneath:
+		return &bpf_landlock_cmp_fs_beneath_proto;
 
 	/* access_update */
 	case BPF_FUNC_map_lookup_elem:
@@ -272,16 +264,11 @@ static bool __is_valid_access(int off, int size, enum bpf_access_type type,
 
 	/* check size */
 	switch (off) {
-	case offsetof(struct landlock_data, origin):
-	case offsetof(struct landlock_data, cookie):
-		expected_size = sizeof(__u16);
-		break;
 	case offsetof(struct landlock_data, hook):
 		expected_size = sizeof(__u32);
 		break;
 	case offsetof(struct landlock_data, args[0]) ...
 			offsetof(struct landlock_data, args[5]):
-	case offsetof(struct landlock_data, opt_skb):
 		expected_size = sizeof(__u64);
 		break;
 	default:
@@ -300,39 +287,64 @@ static bool __is_valid_access(int off, int size, enum bpf_access_type type,
 		if (*reg_type == NOT_INIT)
 			return false;
 		break;
-	case offsetof(struct landlock_data, opt_skb):
-		if (!(prog_subtype->landlock_hook.access &
-				(LANDLOCK_FLAG_ACCESS_SKB_READ |
-				 LANDLOCK_FLAG_ACCESS_SKB_WRITE)))
-			return false;
-		*reg_type = PTR_TO_STRUCT_SKB;
-		break;
 	}
 
 	return true;
 }
 
 LANDLOCK_HOOK2(file_open, FILE_OPEN,
-	PTR_TO_STRUCT_FILE, struct file *, file,
-	NOT_INIT, const struct cred *, cred
+	LANDLOCK_WRAPARG_FILE, struct file *, file,
+	LANDLOCK_WRAPARG_NONE, const struct cred *, cred
 )
 
 LANDLOCK_HOOK2(file_permission, FILE_PERMISSION,
-	PTR_TO_STRUCT_FILE, struct file *, file,
-	UNKNOWN_VALUE, int, mask
+	LANDLOCK_WRAPARG_FILE, struct file *, file,
+	LANDLOCK_WRAPARG_RAW, int, mask
 )
 
 LANDLOCK_HOOK4(mmap_file, MMAP_FILE,
-	PTR_TO_STRUCT_FILE, struct file *, file,
-	UNKNOWN_VALUE, unsigned long, reqprot,
-	UNKNOWN_VALUE, unsigned long, prot,
-	UNKNOWN_VALUE, unsigned long, flags
+	LANDLOCK_WRAPARG_FILE, struct file *, file,
+	LANDLOCK_WRAPARG_RAW, unsigned long, reqprot,
+	LANDLOCK_WRAPARG_RAW, unsigned long, prot,
+	LANDLOCK_WRAPARG_RAW, unsigned long, flags
+)
+
+/* a directory inode contains only one dentry */
+LANDLOCK_HOOK3(inode_create, INODE_CREATE,
+	LANDLOCK_WRAPARG_INODE, struct inode *, dir,
+	LANDLOCK_WRAPARG_NONE, struct dentry *, dentry,
+	LANDLOCK_WRAPARG_RAW, umode_t, mode
+)
+
+LANDLOCK_HOOK3(inode_link, INODE_LINK,
+	LANDLOCK_WRAPARG_NONE, struct dentry *, old_dentry,
+	LANDLOCK_WRAPARG_INODE, struct inode *, dir,
+	LANDLOCK_WRAPARG_NONE, struct dentry *, new_dentry
+)
+
+LANDLOCK_HOOK2(inode_unlink, INODE_UNLINK,
+	LANDLOCK_WRAPARG_INODE, struct inode *, dir,
+	LANDLOCK_WRAPARG_NONE, struct dentry *, dentry
+)
+
+LANDLOCK_HOOK2(inode_permission, INODE_PERMISSION,
+	LANDLOCK_WRAPARG_INODE, struct inode *, inode,
+	LANDLOCK_WRAPARG_RAW, int, mask
+)
+
+LANDLOCK_HOOK1(inode_getattr, INODE_GETATTR,
+	LANDLOCK_WRAPARG_PATH, const struct path *, path
 )
 
 static struct security_hook_list landlock_hooks[] = {
 	LANDLOCK_HOOK_INIT(file_open),
 	LANDLOCK_HOOK_INIT(file_permission),
 	LANDLOCK_HOOK_INIT(mmap_file),
+	LANDLOCK_HOOK_INIT(inode_create),
+	LANDLOCK_HOOK_INIT(inode_link),
+	LANDLOCK_HOOK_INIT(inode_unlink),
+	LANDLOCK_HOOK_INIT(inode_permission),
+	LANDLOCK_HOOK_INIT(inode_getattr),
 };
 
 #ifdef CONFIG_SECCOMP_FILTER
@@ -362,12 +374,17 @@ static inline bool bpf_landlock_is_valid_access(int off, int size,
 		enum bpf_access_type type, enum bpf_reg_type *reg_type,
 		union bpf_prog_subtype *prog_subtype)
 {
-	enum landlock_hook_id hook_id = prog_subtype->landlock_hook.id;
+	enum landlock_hook hook = prog_subtype->landlock_rule.hook;
 
-	switch (hook_id) {
+	switch (hook) {
 	LANDLOCK_CASE_ACCESS_HOOK(FILE_OPEN)
 	LANDLOCK_CASE_ACCESS_HOOK(FILE_PERMISSION)
 	LANDLOCK_CASE_ACCESS_HOOK(MMAP_FILE)
+	LANDLOCK_CASE_ACCESS_HOOK(INODE_CREATE)
+	LANDLOCK_CASE_ACCESS_HOOK(INODE_LINK)
+	LANDLOCK_CASE_ACCESS_HOOK(INODE_UNLINK)
+	LANDLOCK_CASE_ACCESS_HOOK(INODE_PERMISSION)
+	LANDLOCK_CASE_ACCESS_HOOK(INODE_GETATTR)
 	case LANDLOCK_HOOK_UNSPEC:
 	default:
 		return false;
@@ -377,55 +394,36 @@ static inline bool bpf_landlock_is_valid_access(int off, int size,
 static inline bool bpf_landlock_is_valid_subtype(
 		union bpf_prog_subtype *prog_subtype)
 {
-	enum landlock_hook_id hook_id = prog_subtype->landlock_hook.id;
+	enum landlock_hook hook = prog_subtype->landlock_rule.hook;
 
-	switch (hook_id) {
+	switch (hook) {
 	case LANDLOCK_HOOK_FILE_OPEN:
 	case LANDLOCK_HOOK_FILE_PERMISSION:
 	case LANDLOCK_HOOK_MMAP_FILE:
+	case LANDLOCK_HOOK_INODE_CREATE:
+	case LANDLOCK_HOOK_INODE_LINK:
+	case LANDLOCK_HOOK_INODE_UNLINK:
+	case LANDLOCK_HOOK_INODE_PERMISSION:
+	case LANDLOCK_HOOK_INODE_GETATTR:
 		break;
 	case LANDLOCK_HOOK_UNSPEC:
 	default:
 		return false;
 	}
-	if (!prog_subtype->landlock_hook.id ||
-			prog_subtype->landlock_hook.id > _LANDLOCK_HOOK_LAST)
+	if (!prog_subtype->landlock_rule.hook ||
+			prog_subtype->landlock_rule.hook > _LANDLOCK_HOOK_LAST)
 		return false;
-	if (!prog_subtype->landlock_hook.origin ||
-			(prog_subtype->landlock_hook.origin &
-			 ~_LANDLOCK_FLAG_ORIGIN_MASK))
+	if (prog_subtype->landlock_rule.access & ~_LANDLOCK_SUBTYPE_ACCESS_MASK)
 		return false;
-#ifndef CONFIG_SECCOMP_FILTER
-	if (prog_subtype->landlock_hook.origin & LANDLOCK_FLAG_ORIGIN_SECCOMP)
-		return false;
-#endif /* !CONFIG_SECCOMP_FILTER */
-	if (prog_subtype->landlock_hook.access & ~_LANDLOCK_FLAG_ACCESS_MASK)
+	if (prog_subtype->landlock_rule.option & ~_LANDLOCK_SUBTYPE_OPTION_MASK)
 		return false;
 
 	/* check access flags */
-	if (prog_subtype->landlock_hook.access & LANDLOCK_FLAG_ACCESS_UPDATE &&
+	if (prog_subtype->landlock_rule.access & LANDLOCK_SUBTYPE_ACCESS_UPDATE &&
 			!capable(CAP_SYS_ADMIN))
 		return false;
-	if (prog_subtype->landlock_hook.access & LANDLOCK_FLAG_ACCESS_DEBUG &&
+	if (prog_subtype->landlock_rule.access & LANDLOCK_SUBTYPE_ACCESS_DEBUG &&
 			!capable(CAP_SYS_ADMIN))
-		return false;
-	/*
-	 * Capability checks must be enforced for every landlocked process.
-	 * To support user namespaces/capabilities, we must then check the
-	 * namespaces of a task before putting it in a landlocked cgroup.
-	 * This could be implemented in the future.
-	 */
-	if (prog_subtype->landlock_hook.access & LANDLOCK_FLAG_ACCESS_SKB_READ &&
-			!capable(CAP_NET_ADMIN))
-		return false;
-	/*
-	 * It is interesting to differentiate read and write access to be able
-	 * to securely delegate some work to unprivileged (and potentially
-	 * compromised/untrusted) processes. This different type of access can
-	 * be checked for function calls or context accesses.
-	 */
-	if (prog_subtype->landlock_hook.access & LANDLOCK_FLAG_ACCESS_SKB_WRITE &&
-			!capable(CAP_NET_ADMIN))
 		return false;
 
 	return true;

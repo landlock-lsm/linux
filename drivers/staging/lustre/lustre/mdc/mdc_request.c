@@ -447,7 +447,7 @@ static int mdc_get_lustre_md(struct obd_export *exp,
 		if (rc < 0)
 			goto out;
 
-		if (rc < sizeof(*md->lsm)) {
+		if (rc < (typeof(rc))sizeof(*md->lsm)) {
 			CDEBUG(D_INFO,
 			       "lsm size too small: rc < sizeof (*md->lsm) (%d < %d)\n",
 			       rc, (int)sizeof(*md->lsm));
@@ -485,7 +485,7 @@ static int mdc_get_lustre_md(struct obd_export *exp,
 			if (rc < 0)
 				goto out;
 
-			if (rc < sizeof(*md->lmv)) {
+			if (rc < (typeof(rc))sizeof(*md->lmv)) {
 				CDEBUG(D_INFO,
 				       "size too small: rc < sizeof(*md->lmv) (%d < %d)\n",
 					rc, (int)sizeof(*md->lmv));
@@ -1264,8 +1264,7 @@ static int mdc_read_page_remote(void *data, struct page *page0)
 		lu_pgs >>= LU_PAGE_SHIFT;
 		LASSERT(!(req->rq_bulk->bd_nob_transferred & ~LU_PAGE_MASK));
 
-		CDEBUG(D_INODE, "read %d(%d)/%d pages\n", rd_pgs, lu_pgs,
-		       op_data->op_npages);
+		CDEBUG(D_INODE, "read %d(%d) pages\n", rd_pgs, lu_pgs);
 
 		mdc_adjust_dirpages(page_pool, rd_pgs, lu_pgs);
 
@@ -1368,7 +1367,7 @@ static int mdc_read_page(struct obd_export *exp, struct md_op_data *op_data,
 	page = mdc_page_locate(mapping, &rp_param.rp_off, &start, &end,
 			       rp_param.rp_hash64);
 	if (IS_ERR(page)) {
-		CERROR("%s: dir page locate: "DFID" at %llu: rc %ld\n",
+		CDEBUG(D_INFO, "%s: dir page locate: " DFID " at %llu: rc %ld\n",
 		       exp->exp_obd->obd_name, PFID(&op_data->op_fid1),
 		       rp_param.rp_off, PTR_ERR(page));
 		rc = PTR_ERR(page);
@@ -1843,7 +1842,7 @@ out:
 	return rc;
 }
 
-static struct kuc_hdr *changelog_kuc_hdr(char *buf, int len, int flags)
+static struct kuc_hdr *changelog_kuc_hdr(char *buf, size_t len, u32 flags)
 {
 	struct kuc_hdr *lh = (struct kuc_hdr *)buf;
 
@@ -1857,15 +1856,18 @@ static struct kuc_hdr *changelog_kuc_hdr(char *buf, int len, int flags)
 	return lh;
 }
 
-#define D_CHANGELOG 0
-
 struct changelog_show {
 	__u64		cs_startrec;
-	__u32		cs_flags;
+	enum changelog_send_flag	cs_flags;
 	struct file	*cs_fp;
 	char		*cs_buf;
 	struct obd_device *cs_obd;
 };
+
+static inline char *cs_obd_name(struct changelog_show *cs)
+{
+	return cs->cs_obd->obd_name;
+}
 
 static int changelog_kkuc_cb(const struct lu_env *env, struct llog_handle *llh,
 			     struct llog_rec_hdr *hdr, void *data)
@@ -1873,24 +1875,25 @@ static int changelog_kkuc_cb(const struct lu_env *env, struct llog_handle *llh,
 	struct changelog_show *cs = data;
 	struct llog_changelog_rec *rec = (struct llog_changelog_rec *)hdr;
 	struct kuc_hdr *lh;
-	int len, rc;
+	size_t len;
+	int rc;
 
 	if (rec->cr_hdr.lrh_type != CHANGELOG_REC) {
 		rc = -EINVAL;
 		CERROR("%s: not a changelog rec %x/%d: rc = %d\n",
-		       cs->cs_obd->obd_name, rec->cr_hdr.lrh_type,
+		       cs_obd_name(cs), rec->cr_hdr.lrh_type,
 		       rec->cr.cr_type, rc);
 		return rc;
 	}
 
 	if (rec->cr.cr_index < cs->cs_startrec) {
 		/* Skip entries earlier than what we are interested in */
-		CDEBUG(D_CHANGELOG, "rec=%llu start=%llu\n",
+		CDEBUG(D_HSM, "rec=%llu start=%llu\n",
 		       rec->cr.cr_index, cs->cs_startrec);
 		return 0;
 	}
 
-	CDEBUG(D_CHANGELOG, "%llu %02d%-5s %llu 0x%x t="DFID" p="DFID
+	CDEBUG(D_HSM, "%llu %02d%-5s %llu 0x%x t=" DFID " p=" DFID
 		" %.*s\n", rec->cr.cr_index, rec->cr.cr_type,
 		changelog_type2str(rec->cr.cr_type), rec->cr.cr_time,
 		rec->cr.cr_flags & CLF_FLAGMASK,
@@ -1904,20 +1907,21 @@ static int changelog_kkuc_cb(const struct lu_env *env, struct llog_handle *llh,
 	memcpy(lh + 1, &rec->cr, len - sizeof(*lh));
 
 	rc = libcfs_kkuc_msg_put(cs->cs_fp, lh);
-	CDEBUG(D_CHANGELOG, "kucmsg fp %p len %d rc %d\n", cs->cs_fp, len, rc);
+	CDEBUG(D_HSM, "kucmsg fp %p len %zu rc %d\n", cs->cs_fp, len, rc);
 
 	return rc;
 }
 
 static int mdc_changelog_send_thread(void *csdata)
 {
+	enum llog_flag flags = LLOG_F_IS_CAT;
 	struct changelog_show *cs = csdata;
 	struct llog_ctxt *ctxt = NULL;
 	struct llog_handle *llh = NULL;
 	struct kuc_hdr *kuch;
 	int rc;
 
-	CDEBUG(D_CHANGELOG, "changelog to fp=%p start %llu\n",
+	CDEBUG(D_HSM, "changelog to fp=%p start %llu\n",
 	       cs->cs_fp, cs->cs_startrec);
 
 	cs->cs_buf = kzalloc(KUC_CHANGELOG_MSG_MAXSIZE, GFP_NOFS);
@@ -1936,10 +1940,14 @@ static int mdc_changelog_send_thread(void *csdata)
 		       LLOG_OPEN_EXISTS);
 	if (rc) {
 		CERROR("%s: fail to open changelog catalog: rc = %d\n",
-		       cs->cs_obd->obd_name, rc);
+		       cs_obd_name(cs), rc);
 		goto out;
 	}
-	rc = llog_init_handle(NULL, llh, LLOG_F_IS_CAT, NULL);
+
+	if (cs->cs_flags & CHANGELOG_FLAG_JOBID)
+		flags |= LLOG_F_EXT_JOBID;
+
+	rc = llog_init_handle(NULL, llh, flags, NULL);
 	if (rc) {
 		CERROR("llog_init_handle failed %d\n", rc);
 		goto out;
@@ -1992,12 +2000,12 @@ static int mdc_ioc_changelog_send(struct obd_device *obd,
 	if (IS_ERR(task)) {
 		rc = PTR_ERR(task);
 		CERROR("%s: can't start changelog thread: rc = %d\n",
-		       obd->obd_name, rc);
+		       cs_obd_name(cs), rc);
 		kfree(cs);
 	} else {
 		rc = 0;
-		CDEBUG(D_CHANGELOG, "%s: started changelog thread\n",
-		       obd->obd_name);
+		CDEBUG(D_HSM, "%s: started changelog thread\n",
+		       cs_obd_name(cs));
 	}
 
 	CERROR("Failed to start changelog thread: %d\n", rc);
@@ -2361,7 +2369,7 @@ static void lustre_swab_hai(struct hsm_action_item *h)
 static void lustre_swab_hal(struct hsm_action_list *h)
 {
 	struct hsm_action_item	*hai;
-	int			 i;
+	u32 i;
 
 	__swab32s(&h->hal_version);
 	__swab32s(&h->hal_count);
@@ -2410,14 +2418,14 @@ static int mdc_ioc_hsm_ct_start(struct obd_export *exp,
  * @param val KUC message (kuc_hdr + hsm_action_list)
  * @param len total length of message
  */
-static int mdc_hsm_copytool_send(int len, void *val)
+static int mdc_hsm_copytool_send(size_t len, void *val)
 {
 	struct kuc_hdr		*lh = (struct kuc_hdr *)val;
 	struct hsm_action_list	*hal = (struct hsm_action_list *)(lh + 1);
 
 	if (len < sizeof(*lh) + sizeof(*hal)) {
-		CERROR("Short HSM message %d < %d\n", len,
-		       (int)(sizeof(*lh) + sizeof(*hal)));
+		CERROR("Short HSM message %zu < %zu\n", len,
+		       sizeof(*lh) + sizeof(*hal));
 		return -EPROTO;
 	}
 	if (lh->kuc_magic == __swab16(KUC_MAGIC)) {
@@ -2488,9 +2496,8 @@ static int mdc_set_info_async(const struct lu_env *env,
 		}
 		spin_unlock(&imp->imp_lock);
 
-		rc = do_set_info_async(imp, MDS_SET_INFO, LUSTRE_MDS_VERSION,
-				       keylen, key, vallen, val, set);
-		return rc;
+		return do_set_info_async(imp, MDS_SET_INFO, LUSTRE_MDS_VERSION,
+					 keylen, key, vallen, val, set);
 	}
 	if (KEY_IS(KEY_SPTLRPC_CONF)) {
 		sptlrpc_conf_client_adapt(exp->exp_obd);
@@ -2509,6 +2516,12 @@ static int mdc_set_info_async(const struct lu_env *env,
 		rc = mdc_hsm_copytool_send(vallen, val);
 		return rc;
 	}
+	if (KEY_IS(KEY_DEFAULT_EASIZE)) {
+		u32 *default_easize = val;
+
+		exp->exp_obd->u.cli.cl_default_mds_easize = *default_easize;
+		return 0;
+	}
 
 	CERROR("Unknown key %s\n", (char *)key);
 	return -EINVAL;
@@ -2521,18 +2534,18 @@ static int mdc_get_info(const struct lu_env *env, struct obd_export *exp,
 	int rc = -EINVAL;
 
 	if (KEY_IS(KEY_MAX_EASIZE)) {
-		int mdsize, *max_easize;
+		u32 mdsize, *max_easize;
 
 		if (*vallen != sizeof(int))
 			return -EINVAL;
-		mdsize = *(int *)val;
+		mdsize = *(u32 *)val;
 		if (mdsize > exp->exp_obd->u.cli.cl_max_mds_easize)
 			exp->exp_obd->u.cli.cl_max_mds_easize = mdsize;
 		max_easize = val;
 		*max_easize = exp->exp_obd->u.cli.cl_max_mds_easize;
 		return 0;
 	} else if (KEY_IS(KEY_DEFAULT_EASIZE)) {
-		int *default_easize;
+		u32 *default_easize;
 
 		if (*vallen != sizeof(int))
 			return -EINVAL;
@@ -2549,7 +2562,7 @@ static int mdc_get_info(const struct lu_env *env, struct obd_export *exp,
 		*data = imp->imp_connect_data;
 		return 0;
 	} else if (KEY_IS(KEY_TGT_COUNT)) {
-		*((int *)val) = 1;
+		*((u32 *)val) = 1;
 		return 0;
 	}
 
@@ -2777,8 +2790,8 @@ err_rpc_lock:
  * a large number of stripes is possible.  If a larger reply buffer is
  * required it will be reallocated in the ptlrpc layer due to overflow.
  */
-static int mdc_init_ea_size(struct obd_export *exp, int easize,
-			    int def_easize, int cookiesize, int def_cookiesize)
+static int mdc_init_ea_size(struct obd_export *exp, u32 easize, u32 def_easize,
+			    u32 cookiesize, u32 def_cookiesize)
 {
 	struct obd_device *obd = exp->exp_obd;
 	struct client_obd *cli = &obd->u.cli;

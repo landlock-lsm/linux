@@ -46,6 +46,8 @@ enum {
 	FAULT_BLOCK,
 	FAULT_DIR_DEPTH,
 	FAULT_EVICT_INODE,
+	FAULT_IO,
+	FAULT_CHECKPOINT,
 	FAULT_MAX,
 };
 
@@ -55,40 +57,8 @@ struct f2fs_fault_info {
 	unsigned int inject_type;
 };
 
-extern struct f2fs_fault_info f2fs_fault;
 extern char *fault_name[FAULT_MAX];
-#define IS_FAULT_SET(type) (f2fs_fault.inject_type & (1 << (type)))
-
-static inline bool time_to_inject(int type)
-{
-	if (!f2fs_fault.inject_rate)
-		return false;
-	if (type == FAULT_KMALLOC && !IS_FAULT_SET(type))
-		return false;
-	else if (type == FAULT_PAGE_ALLOC && !IS_FAULT_SET(type))
-		return false;
-	else if (type == FAULT_ALLOC_NID && !IS_FAULT_SET(type))
-		return false;
-	else if (type == FAULT_ORPHAN && !IS_FAULT_SET(type))
-		return false;
-	else if (type == FAULT_BLOCK && !IS_FAULT_SET(type))
-		return false;
-	else if (type == FAULT_DIR_DEPTH && !IS_FAULT_SET(type))
-		return false;
-	else if (type == FAULT_EVICT_INODE && !IS_FAULT_SET(type))
-		return false;
-
-	atomic_inc(&f2fs_fault.inject_ops);
-	if (atomic_read(&f2fs_fault.inject_ops) >= f2fs_fault.inject_rate) {
-		atomic_set(&f2fs_fault.inject_ops, 0);
-		printk("%sF2FS-fs : inject %s in %pF\n",
-				KERN_INFO,
-				fault_name[type],
-				__builtin_return_address(0));
-		return true;
-	}
-	return false;
-}
+#define IS_FAULT_SET(fi, type) (fi->inject_type & (1 << (type)))
 #endif
 
 /*
@@ -774,7 +744,7 @@ struct f2fs_sb_info {
 	struct proc_dir_entry *s_proc;		/* proc entry */
 	struct f2fs_super_block *raw_super;	/* raw super block pointer */
 	int valid_super_block;			/* valid super block no */
-	int s_flag;				/* flags for sbi */
+	unsigned long s_flag;				/* flags for sbi */
 
 #ifdef CONFIG_F2FS_FS_ENCRYPTION
 	u8 key_prefix[F2FS_KEY_DESC_PREFIX_SIZE];
@@ -794,6 +764,7 @@ struct f2fs_sb_info {
 
 	/* for checkpoint */
 	struct f2fs_checkpoint *ckpt;		/* raw checkpoint pointer */
+	spinlock_t cp_lock;			/* for flag in ckpt */
 	struct inode *meta_inode;		/* cache meta blocks */
 	struct mutex cp_mutex;			/* checkpoint procedure lock */
 	struct rw_semaphore cp_rwsem;		/* blocking FS operations */
@@ -901,7 +872,36 @@ struct f2fs_sb_info {
 
 	/* Reference to checksum algorithm driver via cryptoapi */
 	struct crypto_shash *s_chksum_driver;
+
+	/* For fault injection */
+#ifdef CONFIG_F2FS_FAULT_INJECTION
+	struct f2fs_fault_info fault_info;
+#endif
 };
+
+#ifdef CONFIG_F2FS_FAULT_INJECTION
+static inline bool time_to_inject(struct f2fs_sb_info *sbi, int type)
+{
+	struct f2fs_fault_info *ffi = &sbi->fault_info;
+
+	if (!ffi->inject_rate)
+		return false;
+
+	if (!IS_FAULT_SET(ffi, type))
+		return false;
+
+	atomic_inc(&ffi->inject_ops);
+	if (atomic_read(&ffi->inject_ops) >= ffi->inject_rate) {
+		atomic_set(&ffi->inject_ops, 0);
+		printk("%sF2FS-fs : inject %s in %pF\n",
+				KERN_INFO,
+				fault_name[type],
+				__builtin_return_address(0));
+		return true;
+	}
+	return false;
+}
+#endif
 
 /* For write statistics. Suppose sector size is 512 bytes,
  * and the return value is in kbytes. s is of struct f2fs_sb_info.
@@ -1043,17 +1043,17 @@ static inline struct address_space *NODE_MAPPING(struct f2fs_sb_info *sbi)
 
 static inline bool is_sbi_flag_set(struct f2fs_sb_info *sbi, unsigned int type)
 {
-	return sbi->s_flag & (0x01 << type);
+	return test_bit(type, &sbi->s_flag);
 }
 
 static inline void set_sbi_flag(struct f2fs_sb_info *sbi, unsigned int type)
 {
-	sbi->s_flag |= (0x01 << type);
+	set_bit(type, &sbi->s_flag);
 }
 
 static inline void clear_sbi_flag(struct f2fs_sb_info *sbi, unsigned int type)
 {
-	sbi->s_flag &= ~(0x01 << type);
+	clear_bit(type, &sbi->s_flag);
 }
 
 static inline unsigned long long cur_cp_version(struct f2fs_checkpoint *cp)
@@ -1061,24 +1061,48 @@ static inline unsigned long long cur_cp_version(struct f2fs_checkpoint *cp)
 	return le64_to_cpu(cp->checkpoint_ver);
 }
 
-static inline bool is_set_ckpt_flags(struct f2fs_checkpoint *cp, unsigned int f)
+static inline bool __is_set_ckpt_flags(struct f2fs_checkpoint *cp, unsigned int f)
 {
 	unsigned int ckpt_flags = le32_to_cpu(cp->ckpt_flags);
+
 	return ckpt_flags & f;
 }
 
-static inline void set_ckpt_flags(struct f2fs_checkpoint *cp, unsigned int f)
+static inline bool is_set_ckpt_flags(struct f2fs_sb_info *sbi, unsigned int f)
 {
-	unsigned int ckpt_flags = le32_to_cpu(cp->ckpt_flags);
+	return __is_set_ckpt_flags(F2FS_CKPT(sbi), f);
+}
+
+static inline void __set_ckpt_flags(struct f2fs_checkpoint *cp, unsigned int f)
+{
+	unsigned int ckpt_flags;
+
+	ckpt_flags = le32_to_cpu(cp->ckpt_flags);
 	ckpt_flags |= f;
 	cp->ckpt_flags = cpu_to_le32(ckpt_flags);
 }
 
-static inline void clear_ckpt_flags(struct f2fs_checkpoint *cp, unsigned int f)
+static inline void set_ckpt_flags(struct f2fs_sb_info *sbi, unsigned int f)
 {
-	unsigned int ckpt_flags = le32_to_cpu(cp->ckpt_flags);
+	spin_lock(&sbi->cp_lock);
+	__set_ckpt_flags(F2FS_CKPT(sbi), f);
+	spin_unlock(&sbi->cp_lock);
+}
+
+static inline void __clear_ckpt_flags(struct f2fs_checkpoint *cp, unsigned int f)
+{
+	unsigned int ckpt_flags;
+
+	ckpt_flags = le32_to_cpu(cp->ckpt_flags);
 	ckpt_flags &= (~f);
 	cp->ckpt_flags = cpu_to_le32(ckpt_flags);
+}
+
+static inline void clear_ckpt_flags(struct f2fs_sb_info *sbi, unsigned int f)
+{
+	spin_lock(&sbi->cp_lock);
+	__clear_ckpt_flags(F2FS_CKPT(sbi), f);
+	spin_unlock(&sbi->cp_lock);
 }
 
 static inline bool f2fs_discard_en(struct f2fs_sb_info *sbi)
@@ -1126,8 +1150,8 @@ static inline bool __remain_node_summaries(int reason)
 
 static inline bool __exist_node_summaries(struct f2fs_sb_info *sbi)
 {
-	return (is_set_ckpt_flags(F2FS_CKPT(sbi), CP_UMOUNT_FLAG) ||
-			is_set_ckpt_flags(F2FS_CKPT(sbi), CP_FASTBOOT_FLAG));
+	return (is_set_ckpt_flags(sbi, CP_UMOUNT_FLAG) ||
+			is_set_ckpt_flags(sbi, CP_FASTBOOT_FLAG));
 }
 
 /*
@@ -1167,7 +1191,7 @@ static inline bool inc_valid_block_count(struct f2fs_sb_info *sbi,
 	blkcnt_t diff;
 
 #ifdef CONFIG_F2FS_FAULT_INJECTION
-	if (time_to_inject(FAULT_BLOCK))
+	if (time_to_inject(sbi, FAULT_BLOCK))
 		return false;
 #endif
 	/*
@@ -1401,7 +1425,7 @@ static inline struct page *f2fs_grab_cache_page(struct address_space *mapping,
 	if (page)
 		return page;
 
-	if (time_to_inject(FAULT_PAGE_ALLOC))
+	if (time_to_inject(F2FS_M_SB(mapping), FAULT_PAGE_ALLOC))
 		return NULL;
 #endif
 	if (!for_write)
@@ -1829,7 +1853,7 @@ static inline int f2fs_readonly(struct super_block *sb)
 
 static inline bool f2fs_cp_error(struct f2fs_sb_info *sbi)
 {
-	return is_set_ckpt_flags(sbi->ckpt, CP_ERROR_FLAG);
+	return is_set_ckpt_flags(sbi, CP_ERROR_FLAG);
 }
 
 static inline bool is_dot_dotdot(const struct qstr *str)
@@ -1852,10 +1876,11 @@ static inline bool f2fs_may_extent_tree(struct inode *inode)
 	return S_ISREG(inode->i_mode);
 }
 
-static inline void *f2fs_kmalloc(size_t size, gfp_t flags)
+static inline void *f2fs_kmalloc(struct f2fs_sb_info *sbi,
+					size_t size, gfp_t flags)
 {
 #ifdef CONFIG_F2FS_FAULT_INJECTION
-	if (time_to_inject(FAULT_KMALLOC))
+	if (time_to_inject(sbi, FAULT_KMALLOC))
 		return NULL;
 #endif
 	return kmalloc(size, flags);
@@ -1910,6 +1935,7 @@ long f2fs_compat_ioctl(struct file *, unsigned int, unsigned long);
  */
 void f2fs_set_inode_flags(struct inode *);
 struct inode *f2fs_iget(struct super_block *, unsigned long);
+struct inode *f2fs_iget_retry(struct super_block *, unsigned long);
 int try_to_free_nats(struct f2fs_sb_info *, int);
 int update_inode(struct inode *, struct page *);
 int update_inode_page(struct inode *);
@@ -1925,7 +1951,6 @@ struct dentry *f2fs_get_parent(struct dentry *child);
 /*
  * dir.c
  */
-extern unsigned char f2fs_filetype_table[F2FS_FT_MAX];
 void set_de_type(struct f2fs_dir_entry *, umode_t);
 unsigned char get_de_type(struct f2fs_dir_entry *);
 struct f2fs_dir_entry *find_target_dentry(struct fscrypt_name *,
@@ -2042,7 +2067,6 @@ void refresh_sit_entry(struct f2fs_sb_info *, block_t, block_t);
 void f2fs_wait_all_discard_bio(struct f2fs_sb_info *);
 void clear_prefree_segments(struct f2fs_sb_info *, struct cp_control *);
 void release_discard_addrs(struct f2fs_sb_info *);
-bool discard_next_dnode(struct f2fs_sb_info *, block_t);
 int npages_for_summary_flush(struct f2fs_sb_info *, bool);
 void allocate_new_segments(struct f2fs_sb_info *);
 int f2fs_trim_fs(struct f2fs_sb_info *, struct fstrim_range *);
@@ -2125,6 +2149,10 @@ int f2fs_fiemap(struct inode *inode, struct fiemap_extent_info *, u64, u64);
 void f2fs_set_page_dirty_nobuffers(struct page *);
 void f2fs_invalidate_page(struct page *, unsigned int, unsigned int);
 int f2fs_release_page(struct page *, gfp_t);
+#ifdef CONFIG_MIGRATION
+int f2fs_migrate_page(struct address_space *, struct page *, struct page *,
+				enum migrate_mode);
+#endif
 
 /*
  * gc.c
@@ -2153,7 +2181,8 @@ struct f2fs_stat_info {
 	unsigned long long hit_largest, hit_cached, hit_rbtree;
 	unsigned long long hit_total, total_ext;
 	int ext_tree, zombie_tree, ext_node;
-	s64 ndirty_node, ndirty_dent, ndirty_meta, ndirty_data, inmem_pages;
+	s64 ndirty_node, ndirty_dent, ndirty_meta, ndirty_data, ndirty_imeta;
+	s64 inmem_pages;
 	unsigned int ndirty_dirs, ndirty_files, ndirty_all;
 	int nats, dirty_nats, sits, dirty_sits, fnids;
 	int total_count, utilization;

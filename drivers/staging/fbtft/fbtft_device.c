@@ -1401,7 +1401,7 @@ static int __init fbtft_device_init(void)
 	long val;
 	int ret = 0;
 
-	if (name == NULL) {
+	if (!name) {
 #ifdef MODULE
 		pr_err("missing module parameter: 'name'\n");
 		return -EINVAL;
@@ -1418,14 +1418,14 @@ static int __init fbtft_device_init(void)
 
 	/* parse module parameter: gpios */
 	while ((p_gpio = strsep(&gpios, ","))) {
-		if (strchr(p_gpio, ':') == NULL) {
+		if (!strchr(p_gpio, ':')) {
 			pr_err("error: missing ':' in gpios parameter: %s\n",
 			       p_gpio);
 			return -EINVAL;
 		}
 		p_num = p_gpio;
 		p_name = strsep(&p_num, ":");
-		if (p_name == NULL || p_num == NULL) {
+		if (!p_name || !p_num) {
 			pr_err("something bad happened parsing gpios parameter: %s\n",
 			       p_gpio);
 			return -EINVAL;

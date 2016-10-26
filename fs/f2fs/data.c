@@ -34,6 +34,11 @@ static void f2fs_read_end_io(struct bio *bio)
 	struct bio_vec *bvec;
 	int i;
 
+#ifdef CONFIG_F2FS_FAULT_INJECTION
+	if (time_to_inject(F2FS_P_SB(bio->bi_io_vec->bv_page), FAULT_IO))
+		bio->bi_error = -EIO;
+#endif
+
 	if (f2fs_bio_encrypted(bio)) {
 		if (bio->bi_error) {
 			fscrypt_release_ctx(bio->bi_private);
@@ -70,7 +75,7 @@ static void f2fs_write_end_io(struct bio *bio)
 		fscrypt_pullback_bio_page(&page, true);
 
 		if (unlikely(bio->bi_error)) {
-			set_bit(AS_EIO, &page->mapping->flags);
+			mapping_set_error(page->mapping, -EIO);
 			f2fs_stop_checkpoint(sbi, true);
 		}
 		end_page_writeback(page);
@@ -633,9 +638,6 @@ ssize_t f2fs_preallocate_blocks(struct kiocb *iocb, struct iov_iter *from)
 		map.m_len = 0;
 
 	map.m_next_pgofs = NULL;
-
-	if (f2fs_encrypted_inode(inode))
-		return 0;
 
 	if (iocb->ki_flags & IOCB_DIRECT) {
 		ret = f2fs_convert_inline_inode(inode);
@@ -1353,6 +1355,7 @@ static int f2fs_write_cache_pages(struct address_space *mapping,
 	int cycled;
 	int range_whole = 0;
 	int tag;
+	int nwritten = 0;
 
 	pagevec_init(&pvec, 0);
 
@@ -1427,6 +1430,8 @@ continue_unlock:
 				done_index = page->index + 1;
 				done = 1;
 				break;
+			} else {
+				nwritten++;
 			}
 
 			if (--wbc->nr_to_write <= 0 &&
@@ -1447,6 +1452,10 @@ continue_unlock:
 	}
 	if (wbc->range_cyclic || (range_whole && wbc->nr_to_write > 0))
 		mapping->writeback_index = done_index;
+
+	if (nwritten)
+		f2fs_submit_merged_bio_cond(F2FS_M_SB(mapping), mapping->host,
+							NULL, 0, DATA, WRITE);
 
 	return ret;
 }
@@ -1489,7 +1498,6 @@ static int f2fs_write_data_pages(struct address_space *mapping,
 	 * if some pages were truncated, we cannot guarantee its mapping->host
 	 * to detect pending bios.
 	 */
-	f2fs_submit_merged_bio(sbi, DATA, WRITE);
 
 	remove_dirty_inode(inode);
 	return ret;
@@ -1527,8 +1535,7 @@ static int prepare_write_begin(struct f2fs_sb_info *sbi,
 	 * we already allocated all the blocks, so we don't need to get
 	 * the block addresses when there is no need to fill the page.
 	 */
-	if (!f2fs_has_inline_data(inode) && !f2fs_encrypted_inode(inode) &&
-					len == PAGE_SIZE)
+	if (!f2fs_has_inline_data(inode) && len == PAGE_SIZE)
 		return 0;
 
 	if (f2fs_has_inline_data(inode) ||
@@ -1647,6 +1654,7 @@ repeat:
 
 	if (blkaddr == NEW_ADDR) {
 		zero_user_segment(page, 0, PAGE_SIZE);
+		SetPageUptodate(page);
 	} else {
 		struct bio *bio;
 
@@ -1674,8 +1682,6 @@ repeat:
 			goto fail;
 		}
 	}
-	if (!PageUptodate(page))
-		SetPageUptodate(page);
 	return 0;
 
 fail:
@@ -1693,21 +1699,19 @@ static int f2fs_write_end(struct file *file,
 
 	trace_f2fs_write_end(inode, pos, len, copied);
 
-	if (!copied)
-		goto unlock_out;
-
 	/*
-	 * This should be come from len == PAGE_SIZE, so we need to fill out
-	 * zeros in the unwritten remaining space.
-	 * The flow was copied from fuse_write_end().
+	 * This should be come from len == PAGE_SIZE, and we expect copied
+	 * should be PAGE_SIZE. Otherwise, we treat it with zero copied and
+	 * let generic_perform_write() try to copy data again through copied=0.
 	 */
 	if (!PageUptodate(page)) {
-		size_t endoff = (pos + copied) & ~PAGE_MASK;
-
-		if (endoff)
-			zero_user_segment(page, endoff, PAGE_SIZE);
-		SetPageUptodate(page);
+		if (unlikely(copied != PAGE_SIZE))
+			copied = 0;
+		else
+			SetPageUptodate(page);
 	}
+	if (!copied)
+		goto unlock_out;
 
 	set_page_dirty(page);
 	clear_cold_data(page);
@@ -1885,6 +1889,58 @@ static sector_t f2fs_bmap(struct address_space *mapping, sector_t block)
 	return generic_block_bmap(mapping, block, get_data_block_bmap);
 }
 
+#ifdef CONFIG_MIGRATION
+#include <linux/migrate.h>
+
+int f2fs_migrate_page(struct address_space *mapping,
+		struct page *newpage, struct page *page, enum migrate_mode mode)
+{
+	int rc, extra_count;
+	struct f2fs_inode_info *fi = F2FS_I(mapping->host);
+	bool atomic_written = IS_ATOMIC_WRITTEN_PAGE(page);
+
+	BUG_ON(PageWriteback(page));
+
+	/* migrating an atomic written page is safe with the inmem_lock hold */
+	if (atomic_written && !mutex_trylock(&fi->inmem_lock))
+		return -EAGAIN;
+
+	/*
+	 * A reference is expected if PagePrivate set when move mapping,
+	 * however F2FS breaks this for maintaining dirty page counts when
+	 * truncating pages. So here adjusting the 'extra_count' make it work.
+	 */
+	extra_count = (atomic_written ? 1 : 0) - page_has_private(page);
+	rc = migrate_page_move_mapping(mapping, newpage,
+				page, NULL, mode, extra_count);
+	if (rc != MIGRATEPAGE_SUCCESS) {
+		if (atomic_written)
+			mutex_unlock(&fi->inmem_lock);
+		return rc;
+	}
+
+	if (atomic_written) {
+		struct inmem_pages *cur;
+		list_for_each_entry(cur, &fi->inmem_pages, list)
+			if (cur->page == page) {
+				cur->page = newpage;
+				break;
+			}
+		mutex_unlock(&fi->inmem_lock);
+		put_page(page);
+		get_page(newpage);
+	}
+
+	if (PagePrivate(page))
+		SetPagePrivate(newpage);
+	set_page_private(newpage, page_private(page));
+
+	migrate_page_copy(newpage, page);
+
+	return MIGRATEPAGE_SUCCESS;
+}
+#endif
+
 const struct address_space_operations f2fs_dblock_aops = {
 	.readpage	= f2fs_read_data_page,
 	.readpages	= f2fs_read_data_pages,
@@ -1897,4 +1953,7 @@ const struct address_space_operations f2fs_dblock_aops = {
 	.releasepage	= f2fs_release_page,
 	.direct_IO	= f2fs_direct_IO,
 	.bmap		= f2fs_bmap,
+#ifdef CONFIG_MIGRATION
+	.migratepage    = f2fs_migrate_page,
+#endif
 };

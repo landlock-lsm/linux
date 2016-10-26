@@ -23,6 +23,7 @@
 #include <linux/of_gpio.h>
 #include <linux/delay.h>
 #include <linux/spi/spi.h>
+#include <linux/input.h>
 #include <sound/core.h>
 #include <sound/jack.h>
 #include <sound/pcm.h>
@@ -36,6 +37,8 @@
 #define DRV_NAME "rk3399-gru-sound"
 
 #define SOUND_FS	256
+
+unsigned int rt5514_dmic_delay;
 
 static struct snd_soc_jack rockchip_sound_jack;
 
@@ -121,6 +124,9 @@ static int rockchip_sound_rt5514_hw_params(struct snd_pcm_substream *substream,
 				__func__, params_rate(params) * 512, ret);
 		return ret;
 	}
+
+	/* Wait for DMIC stable */
+	msleep(rt5514_dmic_delay);
 
 	return 0;
 }
@@ -208,6 +214,14 @@ static int rockchip_sound_da7219_init(struct snd_soc_pcm_runtime *rtd)
 		dev_err(rtd->card->dev, "New Headset Jack failed! (%d)\n", ret);
 		return ret;
 	}
+
+	snd_jack_set_key(rockchip_sound_jack.jack, SND_JACK_BTN_0, KEY_MEDIA);
+	snd_jack_set_key(
+		rockchip_sound_jack.jack, SND_JACK_BTN_1, KEY_VOLUMEUP);
+	snd_jack_set_key(
+		rockchip_sound_jack.jack, SND_JACK_BTN_2, KEY_VOLUMEDOWN);
+	snd_jack_set_key(
+		rockchip_sound_jack.jack, SND_JACK_BTN_3, KEY_VOICECOMMAND);
 
 	da7219_aad_jack_det(codec, &rockchip_sound_jack);
 
@@ -332,6 +346,15 @@ static int rockchip_sound_probe(struct platform_device *pdev)
 	if (!dev) {
 		dev_err(&pdev->dev, "Can not find the rt5514 device\n");
 		return -ENODEV;
+	}
+
+	/* Set DMIC delay */
+	ret = device_property_read_u32(&pdev->dev, "dmic-delay",
+					&rt5514_dmic_delay);
+	if (ret) {
+		rt5514_dmic_delay = 0;
+		dev_dbg(&pdev->dev,
+			"no optional property 'dmic-delay' found, default: no delay\n");
 	}
 
 	rockchip_dailinks[DAILINK_RT5514_DSP].cpu_name = kstrdup_const(dev_name(dev), GFP_KERNEL);

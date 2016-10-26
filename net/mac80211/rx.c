@@ -1323,9 +1323,7 @@ static void sta_ps_start(struct sta_info *sta)
 		return;
 
 	for (tid = 0; tid < ARRAY_SIZE(sta->sta.txq); tid++) {
-		struct txq_info *txqi = to_txq_info(sta->sta.txq[tid]);
-
-		if (txqi->tin.backlog_packets)
+		if (txq_has_queue(sta->sta.txq[tid]))
 			set_bit(tid, &sta->txq_buffered_tids);
 		else
 			clear_bit(tid, &sta->txq_buffered_tids);
@@ -3586,6 +3584,9 @@ static bool ieee80211_accept_frame(struct ieee80211_rx_data *rx)
 		       ieee80211_is_probe_req(hdr->frame_control) ||
 		       ieee80211_is_probe_resp(hdr->frame_control) ||
 		       ieee80211_is_beacon(hdr->frame_control);
+	case NL80211_IFTYPE_NAN:
+		/* Currently no frames on NAN interface are allowed */
+		return false;
 	default:
 		break;
 	}
@@ -4003,7 +4004,7 @@ static void __ieee80211_rx_handle_packet(struct ieee80211_hw *hw,
 	__le16 fc;
 	struct ieee80211_rx_data rx;
 	struct ieee80211_sub_if_data *prev;
-	struct rhash_head *tmp;
+	struct rhlist_head *tmp;
 	int err = 0;
 
 	fc = ((struct ieee80211_hdr *)skb->data)->frame_control;
@@ -4046,13 +4047,10 @@ static void __ieee80211_rx_handle_packet(struct ieee80211_hw *hw,
 		goto out;
 	} else if (ieee80211_is_data(fc)) {
 		struct sta_info *sta, *prev_sta;
-		const struct bucket_table *tbl;
 
 		prev_sta = NULL;
 
-		tbl = rht_dereference_rcu(local->sta_hash.tbl, &local->sta_hash);
-
-		for_each_sta_info(local, tbl, hdr->addr2, sta, tmp) {
+		for_each_sta_info(local, hdr->addr2, sta, tmp) {
 			if (!prev_sta) {
 				prev_sta = sta;
 				continue;

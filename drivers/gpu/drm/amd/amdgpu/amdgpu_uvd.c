@@ -249,22 +249,13 @@ int amdgpu_uvd_sw_init(struct amdgpu_device *adev)
 
 int amdgpu_uvd_sw_fini(struct amdgpu_device *adev)
 {
-	int r;
-
 	kfree(adev->uvd.saved_bo);
 
 	amd_sched_entity_fini(&adev->uvd.ring.sched, &adev->uvd.entity);
 
-	if (adev->uvd.vcpu_bo) {
-		r = amdgpu_bo_reserve(adev->uvd.vcpu_bo, false);
-		if (!r) {
-			amdgpu_bo_kunmap(adev->uvd.vcpu_bo);
-			amdgpu_bo_unpin(adev->uvd.vcpu_bo);
-			amdgpu_bo_unreserve(adev->uvd.vcpu_bo);
-		}
-
-		amdgpu_bo_unref(&adev->uvd.vcpu_bo);
-	}
+	amdgpu_bo_free_kernel(&adev->uvd.vcpu_bo,
+			      &adev->uvd.gpu_addr,
+			      (void **)&adev->uvd.cpu_addr);
 
 	amdgpu_ring_fini(&adev->uvd.ring);
 
@@ -360,12 +351,12 @@ void amdgpu_uvd_free_handles(struct amdgpu_device *adev, struct drm_file *filp)
 	}
 }
 
-static void amdgpu_uvd_force_into_uvd_segment(struct amdgpu_bo *rbo)
+static void amdgpu_uvd_force_into_uvd_segment(struct amdgpu_bo *abo)
 {
 	int i;
-	for (i = 0; i < rbo->placement.num_placement; ++i) {
-		rbo->placements[i].fpfn = 0 >> PAGE_SHIFT;
-		rbo->placements[i].lpfn = (256 * 1024 * 1024) >> PAGE_SHIFT;
+	for (i = 0; i < abo->placement.num_placement; ++i) {
+		abo->placements[i].fpfn = 0 >> PAGE_SHIFT;
+		abo->placements[i].lpfn = (256 * 1024 * 1024) >> PAGE_SHIFT;
 	}
 }
 
@@ -890,6 +881,10 @@ int amdgpu_uvd_ring_parse_cs(struct amdgpu_cs_parser *parser, uint32_t ib_idx)
 			  ib->length_dw);
 		return -EINVAL;
 	}
+
+	r = amdgpu_cs_sysvm_access_required(parser);
+	if (r)
+		return r;
 
 	ctx.parser = parser;
 	ctx.buf_sizes = buf_sizes;

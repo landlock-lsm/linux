@@ -305,7 +305,7 @@ config DEBUG_SECTION_MISMATCH
 	    a larger kernel).
 	  - Run the section mismatch analysis for each module/built-in.o file.
 	    When we run the section mismatch analysis on vmlinux.o, we
-	    lose valueble information about where the mismatch was
+	    lose valuable information about where the mismatch was
 	    introduced.
 	    Running the analysis for each module/built-in.o file
 	    tells where the mismatch happens much closer to the
@@ -821,7 +821,7 @@ config DETECT_HUNG_TASK
 	help
 	  Say Y here to enable the kernel to detect "hung tasks",
 	  which are bugs that cause the task to be stuck in
-	  uninterruptible "D" state indefinitiley.
+	  uninterruptible "D" state indefinitely.
 
 	  When a hung task is detected, the kernel will print the
 	  current stack trace (which you should report), but the
@@ -1214,7 +1214,7 @@ config DEBUG_BUGVERBOSE
 
 config DEBUG_LIST
 	bool "Debug linked list manipulation"
-	depends on DEBUG_KERNEL || BUG_ON_DATA_CORRUPTION
+	depends on DEBUG_KERNEL
 	help
 	  Enable this to turn on extended checks in the linked-list
 	  walking routines.
@@ -1307,7 +1307,6 @@ config TORTURE_TEST
 config RCU_PERF_TEST
 	tristate "performance tests for RCU"
 	depends on DEBUG_KERNEL
-	depends on !UML
 	select TORTURE_TEST
 	select SRCU
 	select TASKS_RCU
@@ -1325,7 +1324,6 @@ config RCU_PERF_TEST
 config RCU_TORTURE_TEST
 	tristate "torture tests for RCU"
 	depends on DEBUG_KERNEL
-	depends on !UML
 	select TORTURE_TEST
 	select SRCU
 	select TASKS_RCU
@@ -1414,24 +1412,6 @@ config RCU_TORTURE_TEST_SLOW_CLEANUP_DELAY
 	help
 	  This option specifies the number of jiffies to wait between
 	  each rcu_node structure cleanup operation.
-
-config WAKE_TORTURE_TEST
-	tristate "Torture test for wakeups and CPU hotplug"
-	depends on DEBUG_KERNEL
-	depends on 64BIT
-	depends on TRACE_CLOCK
-	select TORTURE_TEST
-	default n
-	help
-	  This option provides a kernel module that runs torture tests
-	  on wakeups from timed waits in the presence of CPU hotplug.
-	  The kernel module may be built after the fact on the running
-	  kernel to be tested, if desired.
-
-	  Say Y here if you want wakeup torture tests to be built into
-	  the kernel.
-	  Say M if you want the wakeup torture tests to build as a module.
-	  Say N if you are unsure.
 
 config RCU_CPU_STALL_TIMEOUT
 	int "RCU CPU stall timeout in seconds"
@@ -1877,15 +1857,6 @@ config PROVIDE_OHCI1394_DMA_INIT
 
 	  See Documentation/debugging-via-ohci1394.txt for more information.
 
-config BUILD_DOCSRC
-	bool "Build targets in Documentation/ tree"
-	depends on HEADERS_CHECK
-	help
-	  This option attempts to build objects from the source files in the
-	  kernel Documentation/ tree.
-
-	  Say N if you are unsure.
-
 config DMA_API_DEBUG
 	bool "Enable debugging of DMA-API usage"
 	depends on HAVE_DMA_API_DEBUG
@@ -1986,16 +1957,6 @@ config TEST_STATIC_KEYS
 	depends on m
 	help
 	  Test the static key interfaces.
-
-	  If unsure, say N.
-
-config BUG_ON_DATA_CORRUPTION
-	bool "Trigger a BUG when data corruption is detected"
-	select DEBUG_LIST
-	help
-	  Select this option if the kernel should BUG when it encounters
-	  data corruption in kernel memory structures when they get checked
-	  for validity.
 
 	  If unsure, say N.
 

@@ -6,8 +6,6 @@
  * Copyright (C) 2012 Google, Inc.
  * Will Drewry <wad@chromium.org>
  *
- * Copyright (C) 2016  Mickaël Salaün <mic@digikod.net>
- *
  * This defines a simple but solid secure-computing facility.
  *
  * Mode 1 uses a fixed list of allowed system calls.
@@ -36,8 +34,37 @@
 #include <linux/uaccess.h>
 #include <linux/landlock.h>
 
+/**
+ * struct seccomp_filter - container for seccomp BPF programs
+ *
+ * @usage: reference count to manage the object lifetime.
+ *         get/put helpers should be used when accessing an instance
+ *         outside of a lifetime-guarded section.  In general, this
+ *         is only needed for handling filters shared across tasks.
+ * @prev: points to a previously installed, or inherited, filter
+ * @len: the number of instructions in the program
+ * @insnsi: the BPF program instructions to evaluate
+ *
+ * seccomp_filter objects are organized in a tree linked via the @prev
+ * pointer.  For any task, it appears to be a singly-linked list starting
+ * with current->seccomp.filter, the most recently attached or inherited filter.
+ * However, multiple filters may share a @prev node, by way of fork(), which
+ * results in a unidirectional tree existing in memory.  This is similar to
+ * how namespaces work.
+ *
+ * seccomp_filter objects should never be modified after being attached
+ * to a task_struct (other than @usage).
+ */
+struct seccomp_filter {
+	atomic_t usage;
+	struct seccomp_filter *prev;
+	struct bpf_prog *prog;
+};
+
 /* Limit any path through the tree to 256KB worth of instructions. */
 #define MAX_INSNS_PER_PATH ((1 << 18) / sizeof(struct sock_filter))
+
+static void put_seccomp_filter(struct seccomp_filter *filter);
 
 /*
  * Endianness is explicitly ignored and left for BPF program authors to manage
@@ -153,10 +180,6 @@ static u32 seccomp_run_filters(const struct seccomp_data *sd)
 {
 	struct seccomp_data sd_local;
 	u32 ret = SECCOMP_RET_ALLOW;
-#ifdef CONFIG_SECURITY_LANDLOCK
-	struct landlock_seccomp_ret *landlock_ret, *init_landlock_ret =
-		current->seccomp.landlock_ret;
-#endif /* CONFIG_SECURITY_LANDLOCK */
 	/* Make sure cross-thread synced filter points somewhere sane. */
 	struct seccomp_filter *f =
 			lockless_dereference(current->seccomp.filter);
@@ -176,46 +199,8 @@ static u32 seccomp_run_filters(const struct seccomp_data *sd)
 	 */
 	for (; f; f = f->prev) {
 		u32 cur_ret = BPF_PROG_RUN(f->prog, (void *)sd);
-		u32 action = cur_ret & SECCOMP_RET_ACTION;
-#ifdef CONFIG_SECURITY_LANDLOCK
-		u32 data = cur_ret & SECCOMP_RET_DATA;
 
-		if (action == SECCOMP_RET_LANDLOCK &&
-				current->seccomp.landlock_hooks) {
-			bool found_ret = false;
-
-			/*
-			 * Keep track of filters from the current task that
-			 * trigger a RET_LANDLOCK.
-			 */
-			for (landlock_ret = init_landlock_ret;
-					landlock_ret;
-					landlock_ret = landlock_ret->prev) {
-				if (landlock_ret->filter == f) {
-					landlock_ret->triggered = true;
-					landlock_ret->cookie = data;
-					found_ret = true;
-					break;
-				}
-			}
-			if (!found_ret) {
-				/*
-				 * Lazy allocation of landlock_ret; it will be
-				 * freed when the thread will exit.
-				 */
-				landlock_ret = kzalloc(sizeof(*landlock_ret),
-						GFP_KERNEL);
-				if (!landlock_ret)
-					return SECCOMP_RET_KILL;
-				atomic_inc(&f->usage);
-				landlock_ret->filter = f;
-				landlock_ret->prev = current->seccomp.landlock_ret;
-				current->seccomp.landlock_ret = landlock_ret;
-			}
-		}
-#endif /* CONFIG_SECURITY_LANDLOCK */
-
-		if (action < (ret & SECCOMP_RET_ACTION))
+		if ((cur_ret & SECCOMP_RET_ACTION) < (ret & SECCOMP_RET_ACTION))
 			ret = cur_ret;
 	}
 	return ret;
@@ -467,11 +452,6 @@ static long seccomp_attach_filter(unsigned int flags,
 	 */
 	filter->prev = current->seccomp.filter;
 	current->seccomp.filter = filter;
-#ifdef CONFIG_SECURITY_LANDLOCK
-	/* Chain the filters from the same thread, if any. */
-	filter->thread_prev = current->seccomp.thread_filter;
-	current->seccomp.thread_filter = filter;
-#endif /* CONFIG_SECURITY_LANDLOCK */
 
 	/* Now that the new filter is in place, synchronize to all threads. */
 	if (flags & SECCOMP_FILTER_FLAG_TSYNC)
@@ -499,16 +479,14 @@ static inline void seccomp_filter_free(struct seccomp_filter *filter)
 }
 
 /* put_seccomp_filter - decrements the ref count of a filter */
-void put_seccomp_filter(struct seccomp_filter *filter)
+static void put_seccomp_filter(struct seccomp_filter *filter)
 {
 	struct seccomp_filter *orig = filter;
 
 	/* Clean up single-reference branches iteratively. */
 	while (orig && atomic_dec_and_test(&orig->usage)) {
 		struct seccomp_filter *freeme = orig;
-
 		orig = orig->prev;
-		/* must not put orig->thread_prev */
 		seccomp_filter_free(freeme);
 	}
 }
@@ -518,7 +496,6 @@ void put_seccomp(struct task_struct *tsk)
 	put_seccomp_filter(tsk->seccomp.filter);
 #ifdef CONFIG_SECURITY_LANDLOCK
 	put_landlock_hooks(tsk->seccomp.landlock_hooks);
-	put_landlock_ret(tsk->seccomp.landlock_ret);
 #endif /* CONFIG_SECURITY_LANDLOCK */
 }
 
@@ -666,8 +643,6 @@ static int __seccomp_filter(int this_syscall, const struct seccomp_data *sd,
 
 		return 0;
 
-	case SECCOMP_RET_LANDLOCK:
-		/* fall through */
 	case SECCOMP_RET_ALLOW:
 		return 0;
 
@@ -827,8 +802,8 @@ static long do_seccomp(unsigned int op, unsigned int flags,
 	case SECCOMP_SET_MODE_FILTER:
 		return seccomp_set_mode_filter(flags, uargs);
 #if defined(CONFIG_SECCOMP_FILTER) && defined(CONFIG_SECURITY_LANDLOCK)
-	case SECCOMP_SET_LANDLOCK_HOOK:
-		return landlock_seccomp_set_hook(flags, uargs);
+	case SECCOMP_ADD_LANDLOCK_RULE:
+		return landlock_seccomp_append_prog(flags, uargs);
 #endif /* CONFIG_SECCOMP_FILTER && CONFIG_SECURITY_LANDLOCK */
 	default:
 		return -EINVAL;

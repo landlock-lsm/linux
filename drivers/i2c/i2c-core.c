@@ -168,6 +168,7 @@ static int i2c_acpi_do_lookup(struct acpi_device *adev,
 
 static int i2c_acpi_get_info(struct acpi_device *adev,
 			     struct i2c_board_info *info,
+			     struct i2c_adapter *adapter,
 			     acpi_handle *adapter_handle)
 {
 	struct list_head resource_list;
@@ -182,8 +183,24 @@ static int i2c_acpi_get_info(struct acpi_device *adev,
 	if (ret)
 		return ret;
 
+	if (adapter) {
+		/* The adapter must match the one in I2cSerialBus() connector */
+		if (ACPI_HANDLE(&adapter->dev) != lookup.adapter_handle)
+			return -ENODEV;
+	} else {
+		struct acpi_device *adapter_adev;
+
+		/* The adapter must be present */
+		if (acpi_bus_get_device(lookup.adapter_handle, &adapter_adev))
+			return -ENODEV;
+		if (acpi_bus_get_status(adapter_adev) ||
+		    !adapter_adev->status.present)
+			return -ENODEV;
+	}
+
 	info->fwnode = acpi_fwnode_handle(adev);
-	*adapter_handle = lookup.adapter_handle;
+	if (adapter_handle)
+		*adapter_handle = lookup.adapter_handle;
 
 	/* Then fill IRQ number if any */
 	INIT_LIST_HEAD(&resource_list);
@@ -225,16 +242,12 @@ static acpi_status i2c_acpi_add_device(acpi_handle handle, u32 level,
 {
 	struct i2c_adapter *adapter = data;
 	struct acpi_device *adev;
-	acpi_handle adapter_handle;
 	struct i2c_board_info info;
 
 	if (acpi_bus_get_device(handle, &adev))
 		return AE_OK;
 
-	if (i2c_acpi_get_info(adev, &info, &adapter_handle))
-		return AE_OK;
-
-	if (adapter_handle != ACPI_HANDLE(&adapter->dev))
+	if (i2c_acpi_get_info(adev, &info, adapter, NULL))
 		return AE_OK;
 
 	i2c_acpi_register_device(adapter, adev, &info);
@@ -368,7 +381,7 @@ static int i2c_acpi_notify(struct notifier_block *nb, unsigned long value,
 
 	switch (value) {
 	case ACPI_RECONFIG_DEVICE_ADD:
-		if (i2c_acpi_get_info(adev, &info, &adapter_handle))
+		if (i2c_acpi_get_info(adev, &info, NULL, &adapter_handle))
 			break;
 
 		adapter = i2c_acpi_find_adapter_by_handle(adapter_handle);
@@ -1413,21 +1426,19 @@ static void i2c_adapter_dev_release(struct device *dev)
 	complete(&adap->dev_released);
 }
 
-/*
- * This function is only needed for mutex_lock_nested, so it is never
- * called unless locking correctness checking is enabled. Thus we
- * make it inline to avoid a compiler warning. That's what gcc ends up
- * doing anyway.
- */
-static inline unsigned int i2c_adapter_depth(struct i2c_adapter *adapter)
+unsigned int i2c_adapter_depth(struct i2c_adapter *adapter)
 {
 	unsigned int depth = 0;
 
 	while ((adapter = i2c_parent_is_i2c_adapter(adapter)))
 		depth++;
 
+	WARN_ONCE(depth >= MAX_LOCKDEP_SUBCLASSES,
+		  "adapter depth exceeds lockdep subclass limit\n");
+
 	return depth;
 }
+EXPORT_SYMBOL_GPL(i2c_adapter_depth);
 
 /*
  * Let users instantiate I2C devices through sysfs. This can be used when
@@ -1669,7 +1680,7 @@ static struct i2c_client *of_i2c_register_device(struct i2c_adapter *adap,
 
 static void of_i2c_register_devices(struct i2c_adapter *adap)
 {
-	struct device_node *node;
+	struct device_node *bus, *node;
 
 	/* Only register child devices if the adapter has a node pointer set */
 	if (!adap->dev.of_node)
@@ -1677,11 +1688,17 @@ static void of_i2c_register_devices(struct i2c_adapter *adap)
 
 	dev_dbg(&adap->dev, "of_i2c: walking child nodes\n");
 
-	for_each_available_child_of_node(adap->dev.of_node, node) {
+	bus = of_get_child_by_name(adap->dev.of_node, "i2c-bus");
+	if (!bus)
+		bus = of_node_get(adap->dev.of_node);
+
+	for_each_available_child_of_node(bus, node) {
 		if (of_node_test_and_set_flag(node, OF_POPULATED))
 			continue;
 		of_i2c_register_device(adap, node);
 	}
+
+	of_node_put(bus);
 }
 
 static int of_dev_node_match(struct device *dev, void *data)

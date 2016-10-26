@@ -38,12 +38,9 @@ MODULE_PARM_DESC(nr_dax, "max number of device-dax instances");
  * @id: kernel-wide unique region for a memory range
  * @base: linear address corresponding to @res
  * @kref: to pin while other agents have a need to do lookups
- * @lock: synchronize changes / consistent-access to the resource tree (@res)
  * @dev: parent device backing this region
- * @seed: next device for dynamic allocation / configuration
  * @align: allocation and mapping alignment for child dax devices
  * @res: physical address range of the region
- * @child_count: number of registered dax device instances
  * @pfn_flags: identify whether the pfns are paged back or not
  */
 struct dax_region {
@@ -51,12 +48,9 @@ struct dax_region {
 	struct ida ida;
 	void *base;
 	struct kref kref;
-	struct mutex lock;
 	struct device *dev;
-	struct device *seed;
 	unsigned int align;
 	struct resource res;
-	atomic_t child_count;
 	unsigned long pfn_flags;
 };
 
@@ -78,77 +72,7 @@ struct dax_dev {
 	bool alive;
 	int id;
 	int num_resources;
-	struct resource **res;
-};
-
-#define for_each_dax_region_resource(dax_region, res) \
-	for (res = (dax_region)->res.child; res; res = res->sibling)
-
-static unsigned long long dax_region_avail_size(
-		struct dax_region *dax_region)
-{
-	unsigned long long size;
-	struct resource *res;
-
-	mutex_lock(&dax_region->lock);
-	size = resource_size(&dax_region->res);
-	for_each_dax_region_resource(dax_region, res)
-		size -= resource_size(res);
-	mutex_unlock(&dax_region->lock);
-
-	return size;
-}
-
-static ssize_t available_size_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	struct dax_region *dax_region;
-	ssize_t rc = -ENXIO;
-
-	device_lock(dev);
-	dax_region = dev_get_drvdata(dev);
-	if (dax_region)
-		rc = sprintf(buf, "%llu\n", dax_region_avail_size(dax_region));
-	device_unlock(dev);
-
-	return rc;
-}
-static DEVICE_ATTR_RO(available_size);
-
-static ssize_t seed_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	struct dax_region *dax_region;
-	ssize_t rc = -ENXIO;
-
-	device_lock(dev);
-	dax_region = dev_get_drvdata(dev);
-	if (dax_region) {
-		mutex_lock(&dax_region->lock);
-		if (dax_region->seed)
-			rc = sprintf(buf, "%s\n", dev_name(dax_region->seed));
-		mutex_unlock(&dax_region->lock);
-	}
-	device_unlock(dev);
-
-	return rc;
-}
-static DEVICE_ATTR_RO(seed);
-
-static struct attribute *dax_region_attributes[] = {
-	&dev_attr_available_size.attr,
-	&dev_attr_seed.attr,
-	NULL,
-};
-
-static const struct attribute_group dax_region_attribute_group = {
-	.name = "dax_region",
-	.attrs = dax_region_attributes,
-};
-
-static const struct attribute_group *dax_region_attribute_groups[] = {
-	&dax_region_attribute_group,
-	NULL,
+	struct resource res[0];
 };
 
 static struct inode *dax_alloc_inode(struct super_block *sb)
@@ -267,9 +191,6 @@ static void dax_region_free(struct kref *kref)
 	struct dax_region *dax_region;
 
 	dax_region = container_of(kref, struct dax_region, kref);
-	WARN(atomic_read(&dax_region->child_count),
-			"%s: child count not zero\n",
-			dev_name(dax_region->dev));
 	kfree(dax_region);
 }
 
@@ -279,26 +200,11 @@ void dax_region_put(struct dax_region *dax_region)
 }
 EXPORT_SYMBOL_GPL(dax_region_put);
 
-
-static void dax_region_unregister(void *region)
-{
-	struct dax_region *dax_region = region;
-
-	sysfs_remove_groups(&dax_region->dev->kobj,
-			dax_region_attribute_groups);
-	dax_region_put(dax_region);
-}
-
 struct dax_region *alloc_dax_region(struct device *parent, int region_id,
 		struct resource *res, unsigned int align, void *addr,
 		unsigned long pfn_flags)
 {
 	struct dax_region *dax_region;
-
-	if (dev_get_drvdata(parent)) {
-		dev_WARN(parent, "dax core found drvdata already in use\n");
-		return NULL;
-	}
 
 	if (!IS_ALIGNED(res->start, align)
 			|| !IS_ALIGNED(resource_size(res), align))
@@ -307,26 +213,16 @@ struct dax_region *alloc_dax_region(struct device *parent, int region_id,
 	dax_region = kzalloc(sizeof(*dax_region), GFP_KERNEL);
 	if (!dax_region)
 		return NULL;
-	dev_set_drvdata(parent, dax_region);
-	dax_region->res.name = dev_name(parent);
-	dax_region->res.start = res->start;
-	dax_region->res.end = res->end;
+
+	memcpy(&dax_region->res, res, sizeof(*res));
 	dax_region->pfn_flags = pfn_flags;
-	mutex_init(&dax_region->lock);
 	kref_init(&dax_region->kref);
 	dax_region->id = region_id;
 	ida_init(&dax_region->ida);
 	dax_region->align = align;
 	dax_region->dev = parent;
 	dax_region->base = addr;
-	if (sysfs_create_groups(&parent->kobj, dax_region_attribute_groups)) {
-		kfree(dax_region);
-		return NULL;;
-	}
 
-	kref_get(&dax_region->kref);
-	if (devm_add_action_or_reset(parent, dax_region_unregister, dax_region))
-		return NULL;
 	return dax_region;
 }
 EXPORT_SYMBOL_GPL(alloc_dax_region);
@@ -344,7 +240,7 @@ static ssize_t size_show(struct device *dev,
 	int i;
 
 	for (i = 0; i < dax_dev->num_resources; i++)
-		size += resource_size(dax_dev->res[i]);
+		size += resource_size(&dax_dev->res[i]);
 
 	return sprintf(buf, "%llu\n", size);
 }
@@ -413,7 +309,7 @@ static phys_addr_t pgoff_to_phys(struct dax_dev *dax_dev, pgoff_t pgoff,
 	int i;
 
 	for (i = 0; i < dax_dev->num_resources; i++) {
-		res = dax_dev->res[i];
+		res = &dax_dev->res[i];
 		phys = pgoff * PAGE_SIZE + res->start;
 		if (phys >= res->start && phys <= res->end)
 			break;
@@ -421,7 +317,7 @@ static phys_addr_t pgoff_to_phys(struct dax_dev *dax_dev, pgoff_t pgoff,
 	}
 
 	if (i < dax_dev->num_resources) {
-		res = dax_dev->res[i];
+		res = &dax_dev->res[i];
 		if (phys + size - 1 <= res->end)
 			return phys;
 	}
@@ -638,16 +534,13 @@ static void dax_dev_release(struct device *dev)
 	ida_simple_remove(&dax_minor_ida, MINOR(dev->devt));
 	dax_region_put(dax_region);
 	iput(dax_dev->inode);
-	kfree(dax_dev->res);
 	kfree(dax_dev);
 }
 
 static void unregister_dax_dev(void *dev)
 {
 	struct dax_dev *dax_dev = to_dax_dev(dev);
-	struct dax_region *dax_region = dax_dev->region;
 	struct cdev *cdev = &dax_dev->cdev;
-	int i;
 
 	dev_dbg(dev, "%s\n", __func__);
 
@@ -661,16 +554,6 @@ static void unregister_dax_dev(void *dev)
 	dax_dev->alive = false;
 	synchronize_rcu();
 	unmap_mapping_range(dax_dev->inode->i_mapping, 0, 0, 1);
-
-	mutex_lock(&dax_region->lock);
-	for (i = 0; i < dax_dev->num_resources; i++)
-		__release_region(&dax_region->res, dax_dev->res[i]->start,
-				resource_size(dax_dev->res[i]));
-	if (dax_region->seed == dev)
-		dax_region->seed = NULL;
-	mutex_unlock(&dax_region->lock);
-	atomic_dec(&dax_region->child_count);
-
 	cdev_del(cdev);
 	device_unregister(dev);
 }
@@ -685,42 +568,28 @@ struct dax_dev *devm_create_dax_dev(struct dax_region *dax_region,
 	struct cdev *cdev;
 	dev_t dev_t;
 
-	dax_dev = kzalloc(sizeof(*dax_dev), GFP_KERNEL);
+	dax_dev = kzalloc(sizeof(*dax_dev) + sizeof(*res) * count, GFP_KERNEL);
 	if (!dax_dev)
 		return ERR_PTR(-ENOMEM);
 
-	dax_dev->res = kzalloc(sizeof(res) * count, GFP_KERNEL);
-	if (!dax_dev->res)
-		goto err_res;
-
 	for (i = 0; i < count; i++) {
-		struct resource *dax_res;
-
 		if (!IS_ALIGNED(res[i].start, dax_region->align)
 				|| !IS_ALIGNED(resource_size(&res[i]),
 					dax_region->align)) {
 			rc = -EINVAL;
 			break;
 		}
-
-		mutex_lock(&dax_region->lock);
-		dax_res = __request_region(&dax_region->res, res[i].start,
-				resource_size(&res[i]), NULL, 0);
-		mutex_unlock(&dax_region->lock);
-		if (!dax_res) {
-			rc = -EBUSY;
-			break;
-		}
-		dax_dev->res[i] = dax_res;
+		dax_dev->res[i].start = res[i].start;
+		dax_dev->res[i].end = res[i].end;
 	}
 
 	if (i < count)
-		goto err_request_region;
+		goto err_id;
 
 	dax_dev->id = ida_simple_get(&dax_region->ida, 0, 0, GFP_KERNEL);
 	if (dax_dev->id < 0) {
 		rc = dax_dev->id;
-		goto err_request_region;
+		goto err_id;
 	}
 
 	minor = ida_simple_get(&dax_minor_ida, 0, 0, GFP_KERNEL);
@@ -760,10 +629,6 @@ struct dax_dev *devm_create_dax_dev(struct dax_region *dax_region,
 	dev->groups = dax_attribute_groups;
 	dev->release = dax_dev_release;
 	dev_set_name(dev, "dax%d.%d", dax_region->id, dax_dev->id);
-	/* update resource names now that the owner device is named */
-	for (i = 0; i < dax_dev->num_resources; i++)
-		dax_dev->res[i]->name = dev_name(dev);
-
 	rc = device_add(dev);
 	if (rc) {
 		put_device(dev);
@@ -774,16 +639,6 @@ struct dax_dev *devm_create_dax_dev(struct dax_region *dax_region,
 	if (rc)
 		return ERR_PTR(rc);
 
-	if (atomic_inc_return(&dax_region->child_count) == 1) {
-		struct dax_dev *seed;
-
-		seed = devm_create_dax_dev(dax_region, NULL, 0);
-		if (IS_ERR(seed))
-			dev_warn(parent, "failed to create region seed\n");
-		else
-			dax_region->seed = &seed->dev;
-	}
-
 	return dax_dev;
 
  err_cdev:
@@ -792,14 +647,7 @@ struct dax_dev *devm_create_dax_dev(struct dax_region *dax_region,
 	ida_simple_remove(&dax_minor_ida, minor);
  err_minor:
 	ida_simple_remove(&dax_region->ida, dax_dev->id);
- err_request_region:
-	mutex_lock(&dax_region->lock);
-	for (i--; i >= 0; i--)
-		__release_region(&dax_region->res, dax_dev->res[i]->start,
-				resource_size(dax_dev->res[i]));
-	mutex_unlock(&dax_region->lock);
-	kfree(dax_dev->res);
- err_res:
+ err_id:
 	kfree(dax_dev);
 
 	return ERR_PTR(rc);

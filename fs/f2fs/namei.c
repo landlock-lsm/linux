@@ -46,7 +46,7 @@ static struct inode *f2fs_new_inode(struct inode *dir, umode_t mode)
 
 	inode->i_ino = ino;
 	inode->i_blocks = 0;
-	inode->i_mtime = inode->i_atime = inode->i_ctime = CURRENT_TIME;
+	inode->i_mtime = inode->i_atime = inode->i_ctime = current_time(inode);
 	inode->i_generation = sbi->s_next_generation++;
 
 	err = insert_inode_locked(inode);
@@ -182,7 +182,7 @@ static int f2fs_link(struct dentry *old_dentry, struct inode *dir,
 
 	f2fs_balance_fs(sbi, true);
 
-	inode->i_ctime = CURRENT_TIME;
+	inode->i_ctime = current_time(inode);
 	ihold(inode);
 
 	set_inode_flag(inode, FI_INC_LINK);
@@ -454,7 +454,7 @@ static int f2fs_symlink(struct inode *dir, struct dentry *dentry,
 		ostr.name = sd->encrypted_path;
 		ostr.len = disk_link.len;
 		err = fscrypt_fname_usr_to_disk(inode, &istr, &ostr);
-		if (err < 0)
+		if (err)
 			goto err_out;
 
 		sd->len = cpu_to_le16(ostr.len);
@@ -723,7 +723,7 @@ static int f2fs_rename(struct inode *old_dir, struct dentry *old_dentry,
 
 		f2fs_set_link(new_dir, new_entry, new_page, old_inode);
 
-		new_inode->i_ctime = CURRENT_TIME;
+		new_inode->i_ctime = current_time(new_inode);
 		down_write(&F2FS_I(new_inode)->i_sem);
 		if (old_dir_entry)
 			f2fs_i_links_write(new_inode, false);
@@ -777,7 +777,7 @@ static int f2fs_rename(struct inode *old_dir, struct dentry *old_dentry,
 		file_set_enc_name(old_inode);
 	up_write(&F2FS_I(old_inode)->i_sem);
 
-	old_inode->i_ctime = CURRENT_TIME;
+	old_inode->i_ctime = current_time(old_inode);
 	f2fs_mark_inode_dirty_sync(old_inode);
 
 	f2fs_delete_entry(old_entry, old_page, old_dir, NULL);
@@ -932,7 +932,7 @@ static int f2fs_cross_rename(struct inode *old_dir, struct dentry *old_dentry,
 	file_lost_pino(old_inode);
 	up_write(&F2FS_I(old_inode)->i_sem);
 
-	old_dir->i_ctime = CURRENT_TIME;
+	old_dir->i_ctime = current_time(old_dir);
 	if (old_nlink) {
 		down_write(&F2FS_I(old_dir)->i_sem);
 		f2fs_i_links_write(old_dir, old_nlink > 0);
@@ -947,7 +947,7 @@ static int f2fs_cross_rename(struct inode *old_dir, struct dentry *old_dentry,
 	file_lost_pino(new_inode);
 	up_write(&F2FS_I(new_inode)->i_sem);
 
-	new_dir->i_ctime = CURRENT_TIME;
+	new_dir->i_ctime = current_time(new_dir);
 	if (new_nlink) {
 		down_write(&F2FS_I(new_dir)->i_sem);
 		f2fs_i_links_write(new_dir, new_nlink > 0);
@@ -1015,7 +1015,6 @@ static const char *f2fs_encrypted_get_link(struct dentry *dentry,
 	struct fscrypt_str cstr = FSTR_INIT(NULL, 0);
 	struct fscrypt_str pstr = FSTR_INIT(NULL, 0);
 	struct fscrypt_symlink_data *sd;
-	loff_t size = min_t(loff_t, i_size_read(inode), PAGE_SIZE - 1);
 	u32 max_size = inode->i_sb->s_blocksize;
 	int res;
 
@@ -1030,7 +1029,6 @@ static const char *f2fs_encrypted_get_link(struct dentry *dentry,
 	if (IS_ERR(cpage))
 		return ERR_CAST(cpage);
 	caddr = page_address(cpage);
-	caddr[size] = 0;
 
 	/* Symlink is encrypted */
 	sd = (struct fscrypt_symlink_data *)caddr;
@@ -1053,7 +1051,7 @@ static const char *f2fs_encrypted_get_link(struct dentry *dentry,
 		goto errout;
 
 	res = fscrypt_fname_disk_to_usr(inode, 0, 0, &cstr, &pstr);
-	if (res < 0)
+	if (res)
 		goto errout;
 
 	/* this is broken symlink case */
@@ -1065,7 +1063,7 @@ static const char *f2fs_encrypted_get_link(struct dentry *dentry,
 	paddr = pstr.name;
 
 	/* Null-terminate the name */
-	paddr[res] = '\0';
+	paddr[pstr.len] = '\0';
 
 	put_page(cpage);
 	set_delayed_call(done, kfree_link, paddr);
@@ -1082,10 +1080,7 @@ const struct inode_operations f2fs_encrypted_symlink_inode_operations = {
 	.getattr	= f2fs_getattr,
 	.setattr	= f2fs_setattr,
 #ifdef CONFIG_F2FS_FS_XATTR
-	.setxattr	= generic_setxattr,
-	.getxattr	= generic_getxattr,
 	.listxattr	= f2fs_listxattr,
-	.removexattr	= generic_removexattr,
 #endif
 };
 
@@ -1105,10 +1100,7 @@ const struct inode_operations f2fs_dir_inode_operations = {
 	.get_acl	= f2fs_get_acl,
 	.set_acl	= f2fs_set_acl,
 #ifdef CONFIG_F2FS_FS_XATTR
-	.setxattr	= generic_setxattr,
-	.getxattr	= generic_getxattr,
 	.listxattr	= f2fs_listxattr,
-	.removexattr	= generic_removexattr,
 #endif
 };
 
@@ -1118,10 +1110,7 @@ const struct inode_operations f2fs_symlink_inode_operations = {
 	.getattr	= f2fs_getattr,
 	.setattr	= f2fs_setattr,
 #ifdef CONFIG_F2FS_FS_XATTR
-	.setxattr	= generic_setxattr,
-	.getxattr	= generic_getxattr,
 	.listxattr	= f2fs_listxattr,
-	.removexattr	= generic_removexattr,
 #endif
 };
 
@@ -1131,9 +1120,6 @@ const struct inode_operations f2fs_special_inode_operations = {
 	.get_acl	= f2fs_get_acl,
 	.set_acl	= f2fs_set_acl,
 #ifdef CONFIG_F2FS_FS_XATTR
-	.setxattr       = generic_setxattr,
-	.getxattr       = generic_getxattr,
 	.listxattr	= f2fs_listxattr,
-	.removexattr    = generic_removexattr,
 #endif
 };

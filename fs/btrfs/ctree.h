@@ -252,7 +252,8 @@ struct btrfs_super_block {
 #define BTRFS_FEATURE_COMPAT_SAFE_CLEAR		0ULL
 
 #define BTRFS_FEATURE_COMPAT_RO_SUPP			\
-	(BTRFS_FEATURE_COMPAT_RO_FREE_SPACE_TREE)
+	(BTRFS_FEATURE_COMPAT_RO_FREE_SPACE_TREE |	\
+	 BTRFS_FEATURE_COMPAT_RO_FREE_SPACE_TREE_VALID)
 
 #define BTRFS_FEATURE_COMPAT_RO_SAFE_SET	0ULL
 #define BTRFS_FEATURE_COMPAT_RO_SAFE_CLEAR	0ULL
@@ -806,7 +807,6 @@ struct btrfs_fs_info {
 	struct mutex cleaner_mutex;
 	struct mutex chunk_mutex;
 	struct mutex volume_mutex;
-	struct rw_semaphore bg_delete_sem;
 
 	/*
 	 * this is taken to make sure we don't set block groups ro after
@@ -1071,6 +1071,7 @@ struct btrfs_fs_info {
 	spinlock_t unused_bgs_lock;
 	struct list_head unused_bgs;
 	struct mutex unused_bg_unpin_mutex;
+	struct mutex delete_unused_bgs_mutex;
 
 	/* For btrfs to record security options */
 	struct security_mnt_opts security_opts;
@@ -1435,13 +1436,13 @@ static inline void btrfs_init_map_token (struct btrfs_map_token *token)
 #define cpu_to_le8(v) (v)
 #define __le8 u8
 
-#define read_eb_member(eb, ptr, type, member, result) (			\
+#define read_eb_member(eb, ptr, type, member, result) (\
 	read_extent_buffer(eb, (char *)(result),			\
 			   ((unsigned long)(ptr)) +			\
 			    offsetof(type, member),			\
 			   sizeof(((type *)0)->member)))
 
-#define write_eb_member(eb, ptr, type, member, result) (		\
+#define write_eb_member(eb, ptr, type, member, result) (\
 	write_extent_buffer(eb, (char *)(result),			\
 			   ((unsigned long)(ptr)) +			\
 			    offsetof(type, member),			\
@@ -2291,6 +2292,21 @@ static inline int btrfs_super_csum_size(struct btrfs_super_block *s)
 static inline unsigned long btrfs_leaf_data(struct extent_buffer *l)
 {
 	return offsetof(struct btrfs_leaf, items);
+}
+
+/*
+ * The leaf data grows from end-to-front in the node.
+ * this returns the address of the start of the last item,
+ * which is the stop of the leaf data stack
+ */
+static inline unsigned int leaf_data_end(struct btrfs_root *root,
+					 struct extent_buffer *leaf)
+{
+	u32 nr = btrfs_header_nritems(leaf);
+
+	if (nr == 0)
+		return BTRFS_LEAF_DATA_SIZE(root);
+	return btrfs_item_offset_nr(leaf, nr - 1);
 }
 
 /* struct btrfs_file_extent_item */
@@ -3165,7 +3181,6 @@ int btrfs_prealloc_file_range_trans(struct inode *inode,
 				    struct btrfs_trans_handle *trans, int mode,
 				    u64 start, u64 num_bytes, u64 min_size,
 				    loff_t actual_len, u64 *alloc_hint);
-int btrfs_inode_check_errors(struct inode *inode);
 extern const struct dentry_operations btrfs_dentry_operations;
 #ifdef CONFIG_BTRFS_FS_RUN_SANITY_TESTS
 void btrfs_test_inode_set_ops(struct inode *inode);
@@ -3241,14 +3256,17 @@ int btrfs_parse_options(struct btrfs_root *root, char *options,
 			unsigned long new_flags);
 int btrfs_sync_fs(struct super_block *sb, int wait);
 
+static inline __printf(2, 3)
+void btrfs_no_printk(const struct btrfs_fs_info *fs_info, const char *fmt, ...)
+{
+}
+
 #ifdef CONFIG_PRINTK
 __printf(2, 3)
 void btrfs_printk(const struct btrfs_fs_info *fs_info, const char *fmt, ...);
 #else
-static inline __printf(2, 3)
-void btrfs_printk(const struct btrfs_fs_info *fs_info, const char *fmt, ...)
-{
-}
+#define btrfs_printk(fs_info, fmt, args...) \
+	btrfs_no_printk(fs_info, fmt, ##args)
 #endif
 
 #define btrfs_emerg(fs_info, fmt, args...) \
@@ -3358,13 +3376,13 @@ do {									\
 	btrfs_printk_ratelimited(fs_info, KERN_DEBUG fmt, ##args)
 #else
 #define btrfs_debug(fs_info, fmt, args...) \
-    no_printk(KERN_DEBUG fmt, ##args)
+	btrfs_no_printk(fs_info, KERN_DEBUG fmt, ##args)
 #define btrfs_debug_in_rcu(fs_info, fmt, args...) \
-	no_printk(KERN_DEBUG fmt, ##args)
+	btrfs_no_printk(fs_info, KERN_DEBUG fmt, ##args)
 #define btrfs_debug_rl_in_rcu(fs_info, fmt, args...) \
-	no_printk(KERN_DEBUG fmt, ##args)
+	btrfs_no_printk(fs_info, KERN_DEBUG fmt, ##args)
 #define btrfs_debug_rl(fs_info, fmt, args...) \
-	no_printk(KERN_DEBUG fmt, ##args)
+	btrfs_no_printk(fs_info, KERN_DEBUG fmt, ##args)
 #endif
 
 #define btrfs_printk_in_rcu(fs_info, fmt, args...)	\
@@ -3395,7 +3413,7 @@ do {								\
 __cold
 static inline void assfail(char *expr, char *file, int line)
 {
-	pr_err("BTRFS: assertion failed: %s, file: %s, line: %d",
+	pr_err("assertion failed: %s, file: %s, line: %d\n",
 	       expr, file, line);
 	BUG();
 }

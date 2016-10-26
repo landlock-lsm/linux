@@ -2728,6 +2728,26 @@ static int be_flash(struct be_adapter *adapter, const u8 *img,
 	return 0;
 }
 
+#define NCSI_UPDATE_LOG	"NCSI section update is not supported in FW ver %s\n"
+static bool be_fw_ncsi_supported(char *ver)
+{
+	int v1[4] = {3, 102, 148, 0}; /* Min ver that supports NCSI FW */
+	int v2[4];
+	int i;
+
+	if (sscanf(ver, "%d.%d.%d.%d", &v2[0], &v2[1], &v2[2], &v2[3]) != 4)
+		return false;
+
+	for (i = 0; i < 4; i++) {
+		if (v1[i] < v2[i])
+			return true;
+		else if (v1[i] > v2[i])
+			return false;
+	}
+
+	return true;
+}
+
 /* For BE2, BE3 and BE3-R */
 static int be_flash_BEx(struct be_adapter *adapter,
 			const struct firmware *fw,
@@ -2805,8 +2825,10 @@ static int be_flash_BEx(struct be_adapter *adapter,
 			continue;
 
 		if ((pflashcomp[i].optype == OPTYPE_NCSI_FW) &&
-		    memcmp(adapter->fw_ver, "3.102.148.0", 11) < 0)
+		    !be_fw_ncsi_supported(adapter->fw_ver)) {
+			dev_info(dev, NCSI_UPDATE_LOG, adapter->fw_ver);
 			continue;
+		}
 
 		if (pflashcomp[i].optype == OPTYPE_PHY_FW  &&
 		    !phy_flashing_required(adapter))
@@ -3527,6 +3549,11 @@ int be_cmd_get_cntl_attributes(struct be_adapter *adapter)
 		for (i = 0; i < CNTL_SERIAL_NUM_WORDS; i++)
 			adapter->serial_num[i] = le32_to_cpu(serial_num[i]) &
 				(BIT_MASK(16) - 1);
+		/* For BEx, since GET_FUNC_CONFIG command is not
+		 * supported, we read funcnum here as a workaround.
+		 */
+		if (BEx_chip(adapter))
+			adapter->pf_num = attribs->hba_attribs.pci_funcnum;
 	}
 
 err:
@@ -4382,7 +4409,7 @@ err:
 }
 
 /* This routine returns a list of all the NIC PF_nums in the adapter */
-u16 be_get_nic_pf_num_list(u8 *buf, u32 desc_count, u16 *nic_pf_nums)
+static u16 be_get_nic_pf_num_list(u8 *buf, u32 desc_count, u16 *nic_pf_nums)
 {
 	struct be_res_desc_hdr *hdr = (struct be_res_desc_hdr *)buf;
 	struct be_pcie_res_desc *pcie = NULL;
@@ -4534,7 +4561,7 @@ static int be_cmd_set_profile_config(struct be_adapter *adapter, void *desc,
 }
 
 /* Mark all fields invalid */
-void be_reset_nic_desc(struct be_nic_res_desc *nic)
+static void be_reset_nic_desc(struct be_nic_res_desc *nic)
 {
 	memset(nic, 0, sizeof(*nic));
 	nic->unicast_mac_count = 0xFFFF;
@@ -4907,8 +4934,9 @@ err:
 	return status;
 }
 
-int __be_cmd_set_logical_link_config(struct be_adapter *adapter,
-				     int link_state, int version, u8 domain)
+static int
+__be_cmd_set_logical_link_config(struct be_adapter *adapter,
+				 int link_state, int version, u8 domain)
 {
 	struct be_mcc_wrb *wrb;
 	struct be_cmd_req_set_ll_link *req;
@@ -4949,7 +4977,7 @@ int be_cmd_set_logical_link_config(struct be_adapter *adapter,
 {
 	int status;
 
-	if (BEx_chip(adapter))
+	if (BE2_chip(adapter))
 		return -EOPNOTSUPP;
 
 	status = __be_cmd_set_logical_link_config(adapter, link_state,

@@ -1198,9 +1198,6 @@ int do_huge_pmd_numa_page(struct fault_env *fe, pmd_t pmd)
 	bool was_writable;
 	int flags = 0;
 
-	/* A PROT_NONE fault should not end up here */
-	BUG_ON(!(vma->vm_flags & (VM_READ | VM_EXEC | VM_WRITE)));
-
 	fe->ptl = pmd_lock(vma->vm_mm, fe->pmd);
 	if (unlikely(!pmd_same(pmd, *fe->pmd)))
 		goto out_unlock;
@@ -1228,7 +1225,7 @@ int do_huge_pmd_numa_page(struct fault_env *fe, pmd_t pmd)
 	}
 
 	/* See similar comment in do_numa_page for explanation */
-	if (!(vma->vm_flags & VM_WRITE))
+	if (!pmd_write(pmd))
 		flags |= TNF_NO_GROUP;
 
 	/*
@@ -1623,7 +1620,7 @@ static void __split_huge_pmd_locked(struct vm_area_struct *vma, pmd_t *pmd,
 			if (soft_dirty)
 				entry = pte_swp_mksoft_dirty(entry);
 		} else {
-			entry = mk_pte(page + i, vma->vm_page_prot);
+			entry = mk_pte(page + i, READ_ONCE(vma->vm_page_prot));
 			entry = maybe_mkwrite(entry, vma);
 			if (!write)
 				entry = pte_wrprotect(entry);

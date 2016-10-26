@@ -63,12 +63,12 @@ static int ms_transfer_tpc(struct rtsx_chip *chip, u8 trans_mode,
 	rtsx_add_cmd(chip, WRITE_REG_CMD, MS_BYTE_CNT, 0xFF, cnt);
 	rtsx_add_cmd(chip, WRITE_REG_CMD, MS_TRANS_CFG, 0xFF, cfg);
 	rtsx_add_cmd(chip, WRITE_REG_CMD, CARD_DATA_SOURCE,
-		0x01, PINGPONG_BUFFER);
+		     0x01, PINGPONG_BUFFER);
 
 	rtsx_add_cmd(chip, WRITE_REG_CMD, MS_TRANSFER,
-		0xFF, MS_TRANSFER_START | trans_mode);
+		     0xFF, MS_TRANSFER_START | trans_mode);
 	rtsx_add_cmd(chip, CHECK_REG_CMD, MS_TRANSFER,
-		MS_TRANSFER_END, MS_TRANSFER_END);
+		     MS_TRANSFER_END, MS_TRANSFER_END);
 
 	rtsx_add_cmd(chip, READ_REG_CMD, MS_TRANS_CFG, 0, 0);
 
@@ -109,8 +109,8 @@ static int ms_transfer_tpc(struct rtsx_chip *chip, u8 trans_mode,
 }
 
 static int ms_transfer_data(struct rtsx_chip *chip, u8 trans_mode,
-			u8 tpc, u16 sec_cnt, u8 cfg, bool mode_2k,
-			int use_sg, void *buf, int buf_len)
+			    u8 tpc, u16 sec_cnt, u8 cfg, bool mode_2k,
+			    int use_sg, void *buf, int buf_len)
 {
 	int retval;
 	u8 val, err_code = 0;
@@ -206,7 +206,7 @@ static int ms_write_bytes(struct rtsx_chip *chip,
 	rtsx_add_cmd(chip, WRITE_REG_CMD, MS_BYTE_CNT, 0xFF, cnt);
 	rtsx_add_cmd(chip, WRITE_REG_CMD, MS_TRANS_CFG, 0xFF, cfg);
 	rtsx_add_cmd(chip, WRITE_REG_CMD, CARD_DATA_SOURCE,
-		0x01, PINGPONG_BUFFER);
+		     0x01, PINGPONG_BUFFER);
 
 	rtsx_add_cmd(chip, WRITE_REG_CMD,
 		     MS_TRANSFER, 0xFF, MS_TRANSFER_START | MS_TM_WRITE_BYTES);
@@ -253,7 +253,7 @@ static int ms_write_bytes(struct rtsx_chip *chip,
 }
 
 static int ms_read_bytes(struct rtsx_chip *chip,
-			u8 tpc, u8 cnt, u8 cfg, u8 *data, int data_len)
+			 u8 tpc, u8 cnt, u8 cfg, u8 *data, int data_len)
 {
 	struct ms_info *ms_card = &chip->ms_card;
 	int retval, i;
@@ -270,12 +270,12 @@ static int ms_read_bytes(struct rtsx_chip *chip,
 	rtsx_add_cmd(chip, WRITE_REG_CMD, MS_BYTE_CNT, 0xFF, cnt);
 	rtsx_add_cmd(chip, WRITE_REG_CMD, MS_TRANS_CFG, 0xFF, cfg);
 	rtsx_add_cmd(chip, WRITE_REG_CMD, CARD_DATA_SOURCE,
-		0x01, PINGPONG_BUFFER);
+		     0x01, PINGPONG_BUFFER);
 
 	rtsx_add_cmd(chip, WRITE_REG_CMD, MS_TRANSFER, 0xFF,
-		MS_TRANSFER_START | MS_TM_READ_BYTES);
+		     MS_TRANSFER_START | MS_TM_READ_BYTES);
 	rtsx_add_cmd(chip, CHECK_REG_CMD, MS_TRANSFER,
-		MS_TRANSFER_END, MS_TRANSFER_END);
+		     MS_TRANSFER_END, MS_TRANSFER_END);
 
 	for (i = 0; i < data_len - 1; i++)
 		rtsx_add_cmd(chip, READ_REG_CMD, PPBUF_BASE2 + i, 0, 0);
@@ -284,7 +284,7 @@ static int ms_read_bytes(struct rtsx_chip *chip,
 		rtsx_add_cmd(chip, READ_REG_CMD, PPBUF_BASE2 + data_len, 0, 0);
 	else
 		rtsx_add_cmd(chip, READ_REG_CMD, PPBUF_BASE2 + data_len - 1,
-			0, 0);
+			     0, 0);
 
 	retval = rtsx_send_cmd(chip, MS_CARD, 5000);
 	if (retval < 0) {
@@ -334,8 +334,8 @@ static int ms_read_bytes(struct rtsx_chip *chip,
 	return STATUS_SUCCESS;
 }
 
-static int ms_set_rw_reg_addr(struct rtsx_chip *chip,
-		u8 read_start, u8 read_cnt, u8 write_start, u8 write_cnt)
+static int ms_set_rw_reg_addr(struct rtsx_chip *chip, u8 read_start,
+			      u8 read_cnt, u8 write_start, u8 write_cnt)
 {
 	int retval, i;
 	u8 data[4];
@@ -2465,7 +2465,7 @@ static u16 ms_get_l2p_tbl(struct rtsx_chip *chip, int seg_no, u16 log_off)
 	if (!ms_card->segment)
 		return 0xFFFF;
 
-	segment = &(ms_card->segment[seg_no]);
+	segment = &ms_card->segment[seg_no];
 
 	if (segment->l2p_table)
 		return segment->l2p_table[log_off];
@@ -2482,7 +2482,7 @@ static void ms_set_l2p_tbl(struct rtsx_chip *chip,
 	if (!ms_card->segment)
 		return;
 
-	segment = &(ms_card->segment[seg_no]);
+	segment = &ms_card->segment[seg_no];
 	if (segment->l2p_table)
 		segment->l2p_table[log_off] = phy_blk;
 }
@@ -2494,7 +2494,7 @@ static void ms_set_unused_block(struct rtsx_chip *chip, u16 phy_blk)
 	int seg_no;
 
 	seg_no = (int)phy_blk >> 9;
-	segment = &(ms_card->segment[seg_no]);
+	segment = &ms_card->segment[seg_no];
 
 	segment->free_table[segment->set_index++] = phy_blk;
 	if (segment->set_index >= MS_FREE_TABLE_CNT)
@@ -2509,7 +2509,7 @@ static u16 ms_get_unused_block(struct rtsx_chip *chip, int seg_no)
 	struct zone_entry *segment;
 	u16 phy_blk;
 
-	segment = &(ms_card->segment[seg_no]);
+	segment = &ms_card->segment[seg_no];
 
 	if (segment->unused_blk_cnt <= 0)
 		return 0xFFFF;
@@ -2538,7 +2538,7 @@ static int ms_arbitrate_l2p(struct rtsx_chip *chip, u16 phy_blk,
 	u16 tmp_blk;
 
 	seg_no = (int)phy_blk >> 9;
-	segment = &(ms_card->segment[seg_no]);
+	segment = &ms_card->segment[seg_no];
 	tmp_blk = segment->l2p_table[log_off];
 
 	if (us1 != us2) {
@@ -2602,7 +2602,7 @@ static int ms_build_l2p_tbl(struct rtsx_chip *chip, int seg_no)
 	else
 		table_size = 496;
 
-	segment = &(ms_card->segment[seg_no]);
+	segment = &ms_card->segment[seg_no];
 
 	if (!segment->l2p_table) {
 		segment->l2p_table = vmalloc(table_size * 2);
@@ -2711,7 +2711,7 @@ static int ms_build_l2p_tbl(struct rtsx_chip *chip, int seg_no)
 		us2 = extra[0] & 0x10;
 
 		(void)ms_arbitrate_l2p(chip, phy_blk,
-				log_blk-ms_start_idx[seg_no], us1, us2);
+				log_blk - ms_start_idx[seg_no], us1, us2);
 		continue;
 	}
 
@@ -3760,7 +3760,7 @@ static int ms_prepare_write(struct rtsx_chip *chip, u16 old_blk, u16 new_blk,
 int ms_delay_write(struct rtsx_chip *chip)
 {
 	struct ms_info *ms_card = &chip->ms_card;
-	struct ms_delay_write_tag *delay_write = &(ms_card->delay_write);
+	struct ms_delay_write_tag *delay_write = &ms_card->delay_write;
 	int retval;
 
 	if (delay_write->delay_write_flag) {
@@ -3806,7 +3806,7 @@ static int ms_rw_multi_sector(struct scsi_cmnd *srb, struct rtsx_chip *chip,
 	u8 start_page, end_page = 0, page_cnt;
 	u8 *ptr;
 #ifdef MS_DELAY_WRITE
-	struct ms_delay_write_tag *delay_write = &(ms_card->delay_write);
+	struct ms_delay_write_tag *delay_write = &ms_card->delay_write;
 #endif
 
 	ms_set_err_code(chip, MS_NO_ERROR);
@@ -3986,7 +3986,7 @@ static int ms_rw_multi_sector(struct scsi_cmnd *srb, struct rtsx_chip *chip,
 
 		for (seg_no = 0; seg_no < ARRAY_SIZE(ms_start_idx) - 1;
 				seg_no++) {
-			if (log_blk < ms_start_idx[seg_no+1])
+			if (log_blk < ms_start_idx[seg_no + 1])
 				break;
 		}
 
@@ -4077,7 +4077,7 @@ void ms_free_l2p_tbl(struct rtsx_chip *chip)
 	struct ms_info *ms_card = &chip->ms_card;
 	int i = 0;
 
-	if (ms_card->segment != NULL) {
+	if (ms_card->segment) {
 		for (i = 0; i < ms_card->segment_cnt; i++) {
 			vfree(ms_card->segment[i].l2p_table);
 			ms_card->segment[i].l2p_table = NULL;
@@ -4648,8 +4648,8 @@ int mg_set_ICV(struct scsi_cmnd *srb, struct rtsx_chip *chip)
 
 		rtsx_send_cmd_no_wait(chip);
 
-		retval = rtsx_transfer_data(chip, MS_CARD, buf + 4 + i*512,
-					512, 0, DMA_TO_DEVICE, 3000);
+		retval = rtsx_transfer_data(chip, MS_CARD, buf + 4 + i * 512,
+					    512, 0, DMA_TO_DEVICE, 3000);
 		if ((retval < 0) || check_ms_err(chip)) {
 			rtsx_clear_ms_error(chip);
 			if (ms_card->mg_auth == 0) {
@@ -4696,7 +4696,7 @@ SetICVFinish:
 
 void ms_cleanup_work(struct rtsx_chip *chip)
 {
-	struct ms_info *ms_card = &(chip->ms_card);
+	struct ms_info *ms_card = &chip->ms_card;
 
 	if (CHK_MSPRO(ms_card)) {
 		if (ms_card->seq_mode) {
@@ -4761,7 +4761,7 @@ int ms_power_off_card3v3(struct rtsx_chip *chip)
 
 int release_ms_card(struct rtsx_chip *chip)
 {
-	struct ms_info *ms_card = &(chip->ms_card);
+	struct ms_info *ms_card = &chip->ms_card;
 	int retval;
 
 #ifdef MS_DELAY_WRITE

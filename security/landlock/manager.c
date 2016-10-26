@@ -8,10 +8,8 @@
  * published by the Free Software Foundation.
  */
 
-#include <asm/atomic.h> /* atomic_*() */
 #include <asm/page.h> /* PAGE_SIZE */
-#include <asm/uaccess.h> /* copy_from_user() */
-#include <linux/bitops.h> /* BIT_ULL() */
+#include <linux/atomic.h> /* atomic_*(), smp_store_release() */
 #include <linux/bpf.h> /* bpf_prog_put() */
 #include <linux/filter.h> /* struct bpf_prog */
 #include <linux/kernel.h> /* round_up() */
@@ -20,10 +18,7 @@
 #include <linux/security.h> /* security_capable_noaudit() */
 #include <linux/slab.h> /* alloc(), kfree() */
 #include <linux/types.h> /* atomic_t */
-
-#ifdef CONFIG_SECCOMP_FILTER
-#include <linux/seccomp.h> /* struct seccomp_filter */
-#endif /* CONFIG_SECCOMP_FILTER */
+#include <linux/uaccess.h> /* copy_from_user() */
 
 #ifdef CONFIG_CGROUP_BPF
 #include <linux/bpf-cgroup.h> /* struct cgroup_bpf */
@@ -36,14 +31,25 @@ static void put_landlock_rule(struct landlock_rule *rule)
 {
 	struct landlock_rule *orig = rule;
 
-	/* Clean up single-reference branches iteratively. */
+	/* clean up single-reference branches iteratively */
 	while (orig && atomic_dec_and_test(&orig->usage)) {
 		struct landlock_rule *freeme = orig;
 
-#ifdef CONFIG_SECCOMP_FILTER
-		put_seccomp_filter(orig->thread_filter);
-#endif /* CONFIG_SECCOMP_FILTER */
 		bpf_prog_put(orig->prog);
+		orig = orig->prev;
+		kfree(freeme);
+	}
+}
+
+static void put_landlock_node(struct landlock_node *node)
+{
+	struct landlock_node *orig = node;
+
+	/* clean up single-reference branches iteratively */
+	while (orig && atomic_dec_and_test(&orig->usage)) {
+		struct landlock_node *freeme = orig;
+
+		put_landlock_rule(orig->rule);
 		orig = orig->prev;
 		kfree(freeme);
 	}
@@ -51,34 +57,29 @@ static void put_landlock_rule(struct landlock_rule *rule)
 
 void put_landlock_hooks(struct landlock_hooks *hooks)
 {
-	if (!hooks)
-		return;
+	if (hooks && atomic_dec_and_test(&hooks->usage)) {
+		size_t i;
 
-	if (atomic_dec_and_test(&hooks->usage)) {
-		int i;
-
-		for (i = 0; i < ARRAY_SIZE(hooks->rules); i++)
-			put_landlock_rule(hooks->rules[i]);
+		/* XXX: Do we need to use lockless_dereference() here? */
+		for (i = 0; i < ARRAY_SIZE(hooks->nodes); i++) {
+			if (!hooks->nodes[i])
+				continue;
+			/* Are we the owner of this node? */
+			if (hooks->nodes[i]->owner == &hooks->nodes[i])
+				hooks->nodes[i]->owner = NULL;
+			put_landlock_node(hooks->nodes[i]);
+		}
 		kfree(hooks);
 	}
 }
 
-#ifdef CONFIG_SECCOMP_FILTER
-void put_landlock_ret(struct landlock_seccomp_ret *landlock_ret)
+void get_landlock_hooks(struct landlock_hooks *hooks)
 {
-	struct landlock_seccomp_ret *orig = landlock_ret;
-
-	while (orig) {
-		struct landlock_seccomp_ret *freeme = orig;
-
-		put_seccomp_filter(orig->filter);
-		orig = orig->prev;
-		kfree(freeme);
-	}
+	if (hooks)
+		atomic_inc(&hooks->usage);
 }
-#endif /* CONFIG_SECCOMP_FILTER */
 
-struct landlock_hooks *new_landlock_hooks(void)
+static struct landlock_hooks *new_raw_landlock_hooks(void)
 {
 	struct landlock_hooks *ret;
 
@@ -90,31 +91,67 @@ struct landlock_hooks *new_landlock_hooks(void)
 	return ret;
 }
 
-inline void get_landlock_hooks(struct landlock_hooks *hooks)
+static struct landlock_hooks *new_filled_landlock_hooks(void)
 {
-	if (hooks)
-		atomic_inc(&hooks->usage);
+	size_t i;
+	struct landlock_hooks *ret;
+
+	ret = new_raw_landlock_hooks();
+	if (IS_ERR(ret))
+		return ret;
+	/*
+	 * We need to initially allocate every nodes to be able to update the
+	 * rules they are pointing to, across every (future) children of the
+	 * current task.
+	 */
+	for (i = 0; i < ARRAY_SIZE(ret->nodes); i++) {
+		struct landlock_node *node;
+
+		node = kzalloc(sizeof(*node), GFP_KERNEL);
+		if (!node)
+			goto put_hooks;
+		atomic_set(&node->usage, 1);
+		/* We are the owner of this node. */
+		node->owner = &ret->nodes[i];
+		ret->nodes[i] = node;
+	}
+	return ret;
+
+put_hooks:
+	put_landlock_hooks(ret);
+	return ERR_PTR(-ENOMEM);
+}
+
+static void add_landlock_rule(struct landlock_hooks *hooks,
+		struct landlock_rule *rule)
+{
+	/* subtype.landlock_rule.hook > 0 for loaded programs */
+	u32 hook_idx = get_index(rule->prog->subtype.landlock_rule.hook);
+
+	rule->prev = hooks->nodes[hook_idx]->rule;
+	WARN_ON(atomic_read(&rule->usage));
+	atomic_set(&rule->usage, 1);
+	/* do not increment the previous rule usage */
+	smp_store_release(&hooks->nodes[hook_idx]->rule, rule);
 }
 
 /* Limit Landlock hooks to 256KB. */
 #define LANDLOCK_HOOKS_MAX_PAGES (1 << 6)
 
 /**
- * landlock_set_hook - attach a Landlock program to @current_hooks
+ * landlock_append_prog - attach a Landlock program to @current_hooks
  *
  * @current_hooks: landlock_hooks pointer, must be locked (if needed) to
  *                 prevent a concurrent put/free. This pointer must not be
  *                 freed after the call.
  * @prog: non-NULL Landlock program to append to @current_hooks. @prog will be
- *        owned by landlock_set_hook() and freed if an error happened.
- * @thread_filter: pointer to the seccomp filter of the current thread, if any
+ *        owned by landlock_append_prog() and freed if an error happened.
  *
  * Return @current_hooks or a new pointer when OK. Return a pointer error
  * otherwise.
  */
-static struct landlock_hooks *landlock_set_hook(
-		struct landlock_hooks *current_hooks, struct bpf_prog *prog,
-		struct seccomp_filter *thread_filter)
+static struct landlock_hooks *landlock_append_prog(
+		struct landlock_hooks *current_hooks, struct bpf_prog *prog)
 {
 	struct landlock_hooks *new_hooks = current_hooks;
 	unsigned long pages;
@@ -126,20 +163,26 @@ static struct landlock_hooks *landlock_set_hook(
 		goto put_prog;
 	}
 
-	/* validate allocated memory */
+	/* validate memory size allocation */
 	pages = prog->pages;
 	if (current_hooks) {
-		int i;
-		struct landlock_rule *walker;
+		size_t i;
 
-		for (i = 0; i < ARRAY_SIZE(current_hooks->rules); i++) {
-			for (walker = current_hooks->rules[i]; walker;
-					walker = walker->prev) {
-				/* TODO: add penalty for each prog? */
-				pages += walker->prog->pages;
+		for (i = 0; i < ARRAY_SIZE(current_hooks->nodes); i++) {
+			struct landlock_node *walker_n;
+
+			for (walker_n = current_hooks->nodes[i];
+					walker_n;
+					walker_n = walker_n->prev) {
+				struct landlock_rule *walker_r;
+
+				for (walker_r = walker_n->rule;
+						walker_r;
+						walker_r = walker_r->prev)
+					pages += walker_r->prog->pages;
 			}
 		}
-		/* count landlock_hooks if we will allocate it */
+		/* count a struct landlock_hooks if we need to allocate one */
 		if (atomic_read(&current_hooks->usage) != 1)
 			pages += round_up(sizeof(*current_hooks), PAGE_SIZE) /
 				PAGE_SIZE;
@@ -149,50 +192,81 @@ static struct landlock_hooks *landlock_set_hook(
 		goto put_prog;
 	}
 
-	rule = kmalloc(sizeof(*rule), GFP_KERNEL);
+	rule = kzalloc(sizeof(*rule), GFP_KERNEL);
 	if (!rule) {
 		new_hooks = ERR_PTR(-ENOMEM);
 		goto put_prog;
 	}
-	rule->prev = NULL;
 	rule->prog = prog;
-	/* attach the filters from the same thread, if any */
-	rule->thread_filter = thread_filter;
-	if (rule->thread_filter)
-		atomic_inc(&rule->thread_filter->usage);
-	atomic_set(&rule->usage, 1);
+
+	/* subtype.landlock_rule.hook > 0 for loaded programs */
+	hook_idx = get_index(rule->prog->subtype.landlock_rule.hook);
 
 	if (!current_hooks) {
 		/* add a new landlock_hooks, if needed */
-		new_hooks = new_landlock_hooks();
+		new_hooks = new_filled_landlock_hooks();
 		if (IS_ERR(new_hooks))
 			goto put_rule;
-	} else if (atomic_read(&current_hooks->usage) > 1) {
-		int i;
+		add_landlock_rule(new_hooks, rule);
+	} else {
+		if (new_hooks->nodes[hook_idx]->owner == &new_hooks->nodes[hook_idx]) {
+			/* We are the owner, we can then update the node. */
+			add_landlock_rule(new_hooks, rule);
+		} else if (atomic_read(&current_hooks->usage) == 1) {
+			WARN_ON(new_hooks->nodes[hook_idx]->owner);
+			/*
+			 * We can become the new owner if no other task use it.
+			 * This avoid an unnecessary allocation.
+			 */
+			new_hooks->nodes[hook_idx]->owner =
+				&new_hooks->nodes[hook_idx];
+			add_landlock_rule(new_hooks, rule);
+		} else {
+			/*
+			 * We are not the owner, we need to fork current_hooks
+			 * and then add a new node.
+			 */
+			struct landlock_node *node;
+			size_t i;
 
-		/* copy landlock_hooks, if shared */
-		new_hooks = new_landlock_hooks();
-		if (IS_ERR(new_hooks))
-			goto put_rule;
-		for (i = 0; i < ARRAY_SIZE(new_hooks->rules); i++) {
-			new_hooks->rules[i] =
-				current_hooks->rules[i];
-			if (new_hooks->rules[i])
-				atomic_inc(&new_hooks->rules[i]->usage);
+			node = kmalloc(sizeof(*node), GFP_KERNEL);
+			if (!node) {
+				new_hooks = ERR_PTR(-ENOMEM);
+				goto put_rule;
+			}
+			atomic_set(&node->usage, 1);
+			/* set the previous node after the new_hooks allocation */
+			node->prev = NULL;
+			/* do not increment the previous node usage */
+			node->owner = &new_hooks->nodes[hook_idx];
+			/* rule->prev is already NULL */
+			atomic_set(&rule->usage, 1);
+			node->rule = rule;
+
+			new_hooks = new_raw_landlock_hooks();
+			if (IS_ERR(new_hooks)) {
+				/* put the rule as well */
+				put_landlock_node(node);
+				return ERR_PTR(-ENOMEM);
+			}
+			for (i = 0; i < ARRAY_SIZE(new_hooks->nodes); i++) {
+				new_hooks->nodes[i] = lockless_dereference(current_hooks->nodes[i]);
+				if (i == hook_idx)
+					node->prev = new_hooks->nodes[i];
+				if (!WARN_ON(!new_hooks->nodes[i]))
+					atomic_inc(&new_hooks->nodes[i]->usage);
+			}
+			new_hooks->nodes[hook_idx] = node;
+
+			/*
+			 * @current_hooks will not be freed here because it's usage
+			 * field is > 1. It is only prevented to be freed by another
+			 * subject thanks to the caller of landlock_append_prog() which
+			 * should be locked if needed.
+			 */
+			put_landlock_hooks(current_hooks);
 		}
-		/*
-		 * @current_hooks will not be freed here because it's usage
-		 * field is > 1. It is only prevented to be freed by another
-		 * subject thanks to the caller of landlock_set_hook() which
-		 * should be locked if needed.
-		 */
-		put_landlock_hooks(current_hooks);
 	}
-
-	/* subtype.landlock_hook.id > 0 for loaded programs */
-	hook_idx = get_index(rule->prog->subtype.landlock_hook.id);
-	rule->prev = new_hooks->rules[hook_idx];
-	new_hooks->rules[hook_idx] = rule;
 	return new_hooks;
 
 put_prog:
@@ -205,7 +279,7 @@ put_rule:
 }
 
 /**
- * landlock_set_hook - attach a Landlock program to the current process
+ * landlock_seccomp_append_prog - attach a Landlock program to the current process
  *
  * current->seccomp.landlock_hooks is lazily allocated. When a process fork,
  * only a pointer is copied. When a new hook is added by a process, if there is
@@ -219,7 +293,7 @@ put_rule:
  *               dedicated to Landlock
  */
 #ifdef CONFIG_SECCOMP_FILTER
-int landlock_seccomp_set_hook(unsigned int flags, const char __user *user_bpf_fd)
+int landlock_seccomp_append_prog(unsigned int flags, const char __user *user_bpf_fd)
 {
 	struct landlock_hooks *new_hooks;
 	struct bpf_prog *prog;
@@ -243,9 +317,8 @@ int landlock_seccomp_set_hook(unsigned int flags, const char __user *user_bpf_fd
 	 * We don't need to lock anything for the current process hierarchy,
 	 * everything is guarded by the atomic counters.
 	 */
-	new_hooks = landlock_set_hook(current->seccomp.landlock_hooks, prog,
-			current->seccomp.thread_filter);
-	/* @prog is managed/freed by landlock_set_hook() */
+	new_hooks = landlock_append_prog(current->seccomp.landlock_hooks, prog);
+	/* @prog is managed/freed by landlock_append_prog() */
 	if (IS_ERR(new_hooks))
 		return PTR_ERR(new_hooks);
 	current->seccomp.landlock_hooks = new_hooks;
@@ -262,20 +335,45 @@ int landlock_seccomp_set_hook(unsigned int flags, const char __user *user_bpf_fd
  * @prog: Landlock program pointer
  */
 #ifdef CONFIG_CGROUP_BPF
-struct landlock_hooks *landlock_cgroup_set_hook(struct cgroup *cgrp,
+struct landlock_hooks *landlock_cgroup_append_prog(struct cgroup *cgrp,
 		struct bpf_prog *prog)
 {
 	if (!prog)
 		return ERR_PTR(-EINVAL);
 
-	/* check no_new_privs for tasks in the cgroup */
-	if (!(cgrp->flags & BIT_ULL(CGRP_NO_NEW_PRIVS)) &&
-			security_capable_noaudit(current_cred(),
-				current_user_ns(), CAP_SYS_ADMIN) != 0)
-		return ERR_PTR(-EPERM);
-
 	/* copy the inherited hooks and append a new one */
-	return landlock_set_hook(cgrp->bpf.effective[BPF_CGROUP_LANDLOCK].hooks,
-			prog, NULL);
+	return landlock_append_prog(cgrp->bpf.effective[BPF_CGROUP_LANDLOCK].hooks,
+			prog);
+}
+
+/**
+ * landlock_insert_node - insert a Landlock node in an existing hook
+ *
+ * This is useful to keep a consistent hierarchy tree whenever a branch add
+ * its one rules. However, this must be called at every new rule addition to
+ * keep it consistent.
+ *
+ * @dst: Landlock hooks to update. They must not have more than one
+ *       missing/desynchronized node to keep the same hierarchy than @src.
+ * @hook: hook to synchronize.
+ * @src: Landlock hooks reference.
+ */
+void landlock_insert_node(struct landlock_hooks *dst,
+		enum landlock_hook hook, struct landlock_hooks *src)
+{
+	struct landlock_node **walker;
+	u32 hook_idx = get_index(hook);
+
+	for (walker = &dst->nodes[hook_idx]; *walker;
+			walker = &(*walker)->prev) {
+		if (*walker == src->nodes[hook_idx])
+			return;
+		/* assume that the parent node was inherited */
+		if (*walker == src->nodes[hook_idx]->prev)
+			break;
+	}
+	atomic_inc(&src->nodes[hook_idx]->usage);
+	put_landlock_node(*walker);
+	smp_store_release(walker, src->nodes[hook_idx]);
 }
 #endif /* CONFIG_CGROUP_BPF */

@@ -64,7 +64,7 @@ struct osc_io {
 	/** true if this io is lockless. */
 	unsigned int		oi_lockless;
 	/** how many LRU pages are reserved for this IO */
-	int oi_lru_reserved;
+	unsigned long		oi_lru_reserved;
 
 	/** active extents, we know how many bytes is going to be written,
 	 * so having an active extent will prevent it from being fragmented
@@ -608,7 +608,7 @@ struct osc_extent {
 	/** link list of osc_object's oo_{hp|urgent|locking}_exts. */
 	struct list_head	 oe_link;
 	/** state of this extent */
-	unsigned int       oe_state;
+	enum osc_extent_state	oe_state;
 	/** flags for this extent. */
 	unsigned int       oe_intree:1,
 	/** 0 is write, 1 is read */

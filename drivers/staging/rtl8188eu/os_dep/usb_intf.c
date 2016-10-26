@@ -25,8 +25,9 @@
 #include <osdep_intf.h>
 
 #include <usb_ops_linux.h>
-#include <usb_hal.h>
 #include <rtw_ioctl.h>
+
+#include "rtl8188e_hal.h"
 
 #define USB_VENDER_ID_REALTEK		0x0bda
 
@@ -293,8 +294,10 @@ static int rtw_resume_process(struct adapter *padapter)
 	pwrpriv->bkeepfwalive = false;
 
 	pr_debug("bkeepfwalive(%x)\n", pwrpriv->bkeepfwalive);
-	if (pm_netdev_open(pnetdev, true) != 0)
+	if (pm_netdev_open(pnetdev, true) != 0) {
+		mutex_unlock(&pwrpriv->mutex_lock);
 		goto exit;
+	}
 
 	netif_device_attach(pnetdev);
 	netif_carrier_on(pnetdev);
@@ -305,10 +308,8 @@ static int rtw_resume_process(struct adapter *padapter)
 
 	ret = 0;
 exit:
-	if (pwrpriv) {
+	if (pwrpriv)
 		pwrpriv->bInSuspend = false;
-		mutex_unlock(&pwrpriv->mutex_lock);
-	}
 	pr_debug("<===  %s return %d.............. in %dms\n", __func__,
 		ret, jiffies_to_msecs(jiffies - start_time));
 
@@ -361,8 +362,9 @@ static struct adapter *rtw_usb_if1_init(struct dvobj_priv *dvobj,
 		padapter->pmondev = pmondev;
 	}
 
-	/* step 2. hook HalFunc, allocate HalData */
-	rtl8188eu_set_hal_ops(padapter);
+	padapter->HalData = kzalloc(sizeof(struct hal_data_8188e), GFP_KERNEL);
+	if (!padapter->HalData)
+		DBG_88E("cant not alloc memory for HAL DATA\n");
 
 	padapter->intf_start = &usb_intf_start;
 	padapter->intf_stop = &usb_intf_stop;

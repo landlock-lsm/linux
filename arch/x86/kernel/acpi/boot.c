@@ -176,15 +176,10 @@ static int acpi_register_lapic(int id, u32 acpiid, u8 enabled)
 		return -EINVAL;
 	}
 
-	if (!enabled) {
-		++disabled_cpus;
-		return -EINVAL;
-	}
-
 	if (boot_cpu_physical_apicid != -1U)
-		ver = apic_version[boot_cpu_physical_apicid];
+		ver = boot_cpu_apic_version;
 
-	cpu = generic_processor_info(id, ver);
+	cpu = __generic_processor_info(id, ver, enabled);
 	if (cpu >= 0)
 		early_per_cpu(x86_cpu_to_acpiid, cpu) = acpiid;
 
@@ -237,6 +232,10 @@ acpi_parse_lapic(struct acpi_subtable_header * header, const unsigned long end)
 		return -EINVAL;
 
 	acpi_table_print_madt_entry(header);
+
+	/* Ignore invalid ID */
+	if (processor->id == 0xff)
+		return 0;
 
 	/*
 	 * We need to register disabled CPU as well to permit
@@ -707,7 +706,7 @@ static void __init acpi_set_irq_model_ioapic(void)
 #ifdef CONFIG_ACPI_HOTPLUG_CPU
 #include <acpi/processor.h>
 
-static void acpi_map_cpu2node(acpi_handle handle, int cpu, int physid)
+int acpi_map_cpu2node(acpi_handle handle, int cpu, int physid)
 {
 #ifdef CONFIG_ACPI_NUMA
 	int nid;
@@ -718,6 +717,7 @@ static void acpi_map_cpu2node(acpi_handle handle, int cpu, int physid)
 		numa_set_node(cpu, nid);
 	}
 #endif
+	return 0;
 }
 
 int acpi_map_cpu(acpi_handle handle, phys_cpuid_t physid, int *pcpu)
@@ -1500,7 +1500,7 @@ void __init acpi_boot_table_init(void)
 	 * If acpi_disabled, bail out
 	 */
 	if (acpi_disabled)
-		return; 
+		return;
 
 	/*
 	 * Initialize the ACPI boot-time table parser.

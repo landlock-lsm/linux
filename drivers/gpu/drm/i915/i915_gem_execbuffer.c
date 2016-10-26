@@ -451,8 +451,8 @@ static void *reloc_iomap(struct drm_i915_gem_object *obj,
 				 0, ggtt->mappable_end,
 				 DRM_MM_SEARCH_DEFAULT,
 				 DRM_MM_CREATE_DEFAULT);
-			if (ret)
-				return ERR_PTR(ret);
+			if (ret) /* no inactive aperture space, use cpu reloc */
+				return NULL;
 		} else {
 			ret = i915_vma_put_fence(vma);
 			if (ret) {
@@ -1253,7 +1253,7 @@ validate_exec_list(struct drm_device *dev,
 			return -EFAULT;
 
 		if (likely(!i915.prefault_disable)) {
-			if (fault_in_multipages_readable(ptr, length))
+			if (fault_in_pages_readable(ptr, length))
 				return -EFAULT;
 		}
 	}

@@ -70,7 +70,7 @@
 
 #define DRIVER_NAME		"i915"
 #define DRIVER_DESC		"Intel Graphics"
-#define DRIVER_DATE		"20160902"
+#define DRIVER_DATE		"20160919"
 
 #undef WARN_ON
 /* Many gcc seem to no see through this and fall over :( */
@@ -710,6 +710,7 @@ struct intel_device_info {
 	u8 ring_mask; /* Rings supported by the HW */
 	u8 num_rings;
 	DEV_INFO_FOR_EACH_FLAG(DEFINE_FLAG, SEP_SEMICOLON);
+	u16 ddb_size; /* in blocks */
 	/* Register offsets for the various display pipes and transcoders */
 	int pipe_offsets[I915_MAX_TRANSCODERS];
 	int trans_offsets[I915_MAX_TRANSCODERS];
@@ -1184,6 +1185,7 @@ struct intel_gen6_power_mgmt {
 	bool interrupts_enabled;
 	u32 pm_iir;
 
+	/* PM interrupt bits that should never be masked */
 	u32 pm_intr_keep;
 
 	/* Frequencies are stored in potentially platform dependent multiples.
@@ -1982,11 +1984,11 @@ struct drm_i915_private {
 	struct vlv_s0ix_state vlv_s0ix_state;
 
 	enum {
-		I915_SKL_SAGV_UNKNOWN = 0,
-		I915_SKL_SAGV_DISABLED,
-		I915_SKL_SAGV_ENABLED,
-		I915_SKL_SAGV_NOT_CONTROLLED
-	} skl_sagv_status;
+		I915_SAGV_UNKNOWN = 0,
+		I915_SAGV_DISABLED,
+		I915_SAGV_ENABLED,
+		I915_SAGV_NOT_CONTROLLED
+	} sagv_status;
 
 	struct {
 		/*
@@ -2274,21 +2276,19 @@ struct drm_i915_gem_object {
 	/** Record of address bit 17 of each page at last unbind. */
 	unsigned long *bit_17;
 
-	union {
-		/** for phy allocated objects */
-		struct drm_dma_handle *phys_handle;
-
-		struct i915_gem_userptr {
-			uintptr_t ptr;
-			unsigned read_only :1;
-			unsigned workers :4;
+	struct i915_gem_userptr {
+		uintptr_t ptr;
+		unsigned read_only :1;
+		unsigned workers :4;
 #define I915_GEM_USERPTR_MAX_WORKERS 15
 
-			struct i915_mm_struct *mm;
-			struct i915_mmu_object *mmu_object;
-			struct work_struct *work;
-		} userptr;
-	};
+		struct i915_mm_struct *mm;
+		struct i915_mmu_object *mmu_object;
+		struct work_struct *work;
+	} userptr;
+
+	/** for phys allocated objects */
+	struct drm_dma_handle *phys_handle;
 };
 
 static inline struct drm_i915_gem_object *
@@ -3074,6 +3074,7 @@ int i915_gem_wait_ioctl(struct drm_device *dev, void *data,
 void i915_gem_load_init(struct drm_device *dev);
 void i915_gem_load_cleanup(struct drm_device *dev);
 void i915_gem_load_init_fences(struct drm_i915_private *dev_priv);
+int i915_gem_freeze(struct drm_i915_private *dev_priv);
 int i915_gem_freeze_late(struct drm_i915_private *dev_priv);
 
 void *i915_gem_object_alloc(struct drm_device *dev);

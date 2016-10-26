@@ -103,8 +103,13 @@ dtb-$(CONFIG_ARCH_BCM_MOBILE) += \
 	bcm21664-garnet.dtb \
 	bcm23550-sparrow.dtb
 dtb-$(CONFIG_ARCH_BCM_NSP) += \
+	bcm958522er.dtb \
+	bcm958525er.dtb \
 	bcm958525xmc.dtb \
+	bcm958622hr.dtb \
+	bcm958623hr.dtb \
 	bcm958625hr.dtb \
+	bcm988312hr.dtb \
 	bcm958625k.dtb
 dtb-$(CONFIG_ARCH_BERLIN) += \
 	berlin2-sony-nsz-gs7.dtb \
@@ -115,6 +120,7 @@ dtb-$(CONFIG_ARCH_BRCMSTB) += \
 dtb-$(CONFIG_ARCH_CLPS711X) += \
 	ep7211-edb7211.dtb
 dtb-$(CONFIG_ARCH_DAVINCI) += \
+	da850-lcdk.dtb \
 	da850-enbw-cmc.dtb \
 	da850-evm.dtb
 dtb-$(CONFIG_ARCH_DIGICOLOR) += \
@@ -578,6 +584,7 @@ dtb-$(CONFIG_SOC_OMAP5) += \
 	omap5-uevm.dtb
 dtb-$(CONFIG_SOC_DRA7XX) += \
 	am57xx-beagle-x15.dtb \
+	am57xx-beagle-x15-revb1.dtb \
 	am57xx-cl-som-am57x.dtb \
 	am57xx-sbc-am57x.dtb \
 	am572x-idk.dtb \
@@ -592,6 +599,7 @@ dtb-$(CONFIG_ARCH_ORION5X) += \
 	orion5x-linkstation-lswtgl.dtb \
 	orion5x-lswsgl.dtb \
 	orion5x-maxtor-shared-storage-2.dtb \
+	orion5x-netgear-wnr854t.dtb \
 	orion5x-rd88f5182-nas.dtb
 dtb-$(CONFIG_ARCH_PRIMA2) += \
 	prima2-evb.dtb
@@ -617,9 +625,13 @@ dtb-$(CONFIG_ARCH_REALVIEW) += \
 	arm-realview-pb1176.dtb \
 	arm-realview-pb11mp.dtb \
 	arm-realview-eb.dtb \
+	arm-realview-eb-bbrevd.dtb \
 	arm-realview-eb-11mp.dtb \
-	arm-realview-eb-11mp-revb.dtb \
+	arm-realview-eb-11mp-bbrevd.dtb \
+	arm-realview-eb-11mp-ctrevb.dtb \
+	arm-realview-eb-11mp-bbrevd-ctrevb.dtb \
 	arm-realview-eb-a9mp.dtb \
+	arm-realview-eb-a9mp-bbrevd.dtb \
 	arm-realview-pba8.dtb \
 	arm-realview-pbx-a9.dtb
 dtb-$(CONFIG_ARCH_ROCKCHIP) += \
@@ -699,6 +711,7 @@ dtb-$(CONFIG_ARCH_SPEAR6XX) += \
 dtb-$(CONFIG_ARCH_STI) += \
 	stih407-b2120.dtb \
 	stih410-b2120.dtb \
+	stih410-b2260.dtb \
 	stih415-b2000.dtb \
 	stih415-b2020.dtb \
 	stih416-b2000.dtb \
@@ -858,15 +871,15 @@ dtb-$(CONFIG_ARCH_U8500) += \
 	ste-ccu8540.dtb \
 	ste-ccu9540.dtb
 dtb-$(CONFIG_ARCH_UNIPHIER) += \
-	uniphier-ph1-ld4-ref.dtb \
-	uniphier-ph1-ld6b-ref.dtb \
-	uniphier-ph1-pro4-ace.dtb \
-	uniphier-ph1-pro4-ref.dtb \
-	uniphier-ph1-pro4-sanji.dtb \
-	uniphier-ph1-sld3-ref.dtb \
-	uniphier-ph1-sld8-ref.dtb \
-	uniphier-proxstream2-gentil.dtb \
-	uniphier-proxstream2-vodka.dtb
+	uniphier-ld4-ref.dtb \
+	uniphier-ld6b-ref.dtb \
+	uniphier-pro4-ace.dtb \
+	uniphier-pro4-ref.dtb \
+	uniphier-pro4-sanji.dtb \
+	uniphier-pxs2-gentil.dtb \
+	uniphier-pxs2-vodka.dtb \
+	uniphier-sld3-ref.dtb \
+	uniphier-sld8-ref.dtb
 dtb-$(CONFIG_ARCH_VERSATILE) += \
 	versatile-ab.dtb \
 	versatile-pb.dtb

@@ -93,8 +93,8 @@
  * super-class definitions.
  */
 #include "lu_object.h"
+#include "lustre_compat.h"
 #include <linux/atomic.h>
-#include "linux/lustre_compat25.h"
 #include <linux/mutex.h>
 #include <linux/radix-tree.h>
 #include <linux/spinlock.h>
@@ -369,8 +369,8 @@ struct cl_object_operations {
 	 * \return the same convention as for
 	 * cl_object_operations::coo_attr_get() is used.
 	 */
-	int (*coo_attr_set)(const struct lu_env *env, struct cl_object *obj,
-			    const struct cl_attr *attr, unsigned valid);
+	int (*coo_attr_update)(const struct lu_env *env, struct cl_object *obj,
+			       const struct cl_attr *attr, unsigned int valid);
 	/**
 	 * Update object configuration. Called top-to-bottom to modify object
 	 * configuration.
@@ -395,6 +395,11 @@ struct cl_object_operations {
 	 * mainly pages and locks.
 	 */
 	int (*coo_prune)(const struct lu_env *env, struct cl_object *obj);
+	/**
+	 * Object getstripe method.
+	 */
+	int (*coo_getstripe)(const struct lu_env *env, struct cl_object *obj,
+			     struct lov_user_md __user *lum);
 };
 
 /**
@@ -1761,12 +1766,14 @@ struct cl_io {
 		struct cl_setattr_io {
 			struct ost_lvb   sa_attr;
 			unsigned int     sa_valid;
+			int		sa_stripe_index;
+			struct lu_fid  *sa_parent_fid;
 		} ci_setattr;
 		struct cl_fault_io {
 			/** page index within file. */
 			pgoff_t	 ft_index;
 			/** bytes valid byte on a faulted page. */
-			int	     ft_nob;
+			size_t	     ft_nob;
 			/** writable page? for nopage() only */
 			int	     ft_writable;
 			/** page of an executable? */
@@ -1899,7 +1906,7 @@ struct cl_req_attr {
 	/** Generic attributes for the server consumption. */
 	struct obdo	*cra_oa;
 	/** Jobid */
-	char		 cra_jobid[JOBSTATS_JOBID_SIZE];
+	char		 cra_jobid[LUSTRE_JOBID_SIZE];
 };
 
 /**
@@ -2166,14 +2173,16 @@ void cl_object_attr_lock(struct cl_object *o);
 void cl_object_attr_unlock(struct cl_object *o);
 int  cl_object_attr_get(const struct lu_env *env, struct cl_object *obj,
 			struct cl_attr *attr);
-int  cl_object_attr_set(const struct lu_env *env, struct cl_object *obj,
-			const struct cl_attr *attr, unsigned valid);
+int  cl_object_attr_update(const struct lu_env *env, struct cl_object *obj,
+			   const struct cl_attr *attr, unsigned int valid);
 int  cl_object_glimpse(const struct lu_env *env, struct cl_object *obj,
 		       struct ost_lvb *lvb);
 int  cl_conf_set(const struct lu_env *env, struct cl_object *obj,
 		 const struct cl_object_conf *conf);
 int cl_object_prune(const struct lu_env *env, struct cl_object *obj);
 void cl_object_kill(const struct lu_env *env, struct cl_object *obj);
+int  cl_object_getstripe(const struct lu_env *env, struct cl_object *obj,
+			 struct lov_user_md __user *lum);
 
 /**
  * Returns true, iff \a o0 and \a o1 are slices of the same object.
@@ -2254,6 +2263,8 @@ void cl_page_unassume(const struct lu_env *env,
 		      struct cl_io *io, struct cl_page *pg);
 void cl_page_disown(const struct lu_env *env,
 		    struct cl_io *io, struct cl_page *page);
+void cl_page_disown0(const struct lu_env *env,
+		     struct cl_io *io, struct cl_page *pg);
 int cl_page_is_owned(const struct cl_page *pg, const struct cl_io *io);
 
 /** @} ownership */
@@ -2295,7 +2306,7 @@ int cl_page_is_under_lock(const struct lu_env *env, struct cl_io *io,
 			  struct cl_page *page, pgoff_t *max_index);
 loff_t cl_offset(const struct cl_object *obj, pgoff_t idx);
 pgoff_t cl_index(const struct cl_object *obj, loff_t offset);
-int cl_page_size(const struct cl_object *obj);
+size_t cl_page_size(const struct cl_object *obj);
 int cl_pages_prune(const struct lu_env *env, struct cl_object *obj);
 
 void cl_lock_print(const struct lu_env *env, void *cookie,
@@ -2324,7 +2335,7 @@ struct cl_client_cache {
 	/**
 	 * # of LRU entries available
 	 */
-	atomic_t		ccc_lru_left;
+	atomic_long_t		ccc_lru_left;
 	/**
 	 * List of entities(OSCs) for this LRU cache
 	 */
@@ -2344,7 +2355,7 @@ struct cl_client_cache {
 	/**
 	 * # of unstable pages for this mount point
 	 */
-	atomic_t		ccc_unstable_nr;
+	atomic_long_t		ccc_unstable_nr;
 	/**
 	 * Waitq for awaiting unstable pages to reach zero.
 	 * Used at umounting time and signaled on BRW commit

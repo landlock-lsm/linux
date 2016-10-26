@@ -293,6 +293,13 @@ static void print_mce(struct mce *m)
 	if (m->misc)
 		pr_cont("MISC %llx ", m->misc);
 
+	if (mce_flags.smca) {
+		if (m->synd)
+			pr_cont("SYND %llx ", m->synd);
+		if (m->ipid)
+			pr_cont("IPID %llx ", m->ipid);
+	}
+
 	pr_cont("\n");
 	/*
 	 * Note this output is parsed by external tools and old fields
@@ -569,6 +576,7 @@ static void mce_read_aux(struct mce *m, int i)
 {
 	if (m->status & MCI_STATUS_MISCV)
 		m->misc = mce_rdmsrl(msr_ops.misc(i));
+
 	if (m->status & MCI_STATUS_ADDRV) {
 		m->addr = mce_rdmsrl(msr_ops.addr(i));
 
@@ -580,6 +588,23 @@ static void mce_read_aux(struct mce *m, int i)
 			m->addr >>= shift;
 			m->addr <<= shift;
 		}
+
+		/*
+		 * Extract [55:<lsb>] where lsb is the least significant
+		 * *valid* bit of the address bits.
+		 */
+		if (mce_flags.smca) {
+			u8 lsb = (m->addr >> 56) & 0x3f;
+
+			m->addr &= GENMASK_ULL(55, lsb);
+		}
+	}
+
+	if (mce_flags.smca) {
+		m->ipid = mce_rdmsrl(MSR_AMD64_SMCA_MCx_IPID(i));
+
+		if (m->status & MCI_STATUS_SYNDV)
+			m->synd = mce_rdmsrl(MSR_AMD64_SMCA_MCx_SYND(i));
 	}
 }
 

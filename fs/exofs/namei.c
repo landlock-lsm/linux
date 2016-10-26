@@ -142,7 +142,7 @@ static int exofs_link(struct dentry *old_dentry, struct inode *dir,
 {
 	struct inode *inode = d_inode(old_dentry);
 
-	inode->i_ctime = CURRENT_TIME;
+	inode->i_ctime = current_time(inode);
 	inode_inc_link_count(inode);
 	ihold(inode);
 
@@ -238,7 +238,7 @@ static int exofs_rename(struct inode *old_dir, struct dentry *old_dentry,
 	struct exofs_dir_entry *old_de;
 	int err = -ENOENT;
 
-	if (flags)
+	if (flags & ~RENAME_NOREPLACE)
 		return -EINVAL;
 
 	old_de = exofs_find_entry(old_dir, old_dentry, &old_page);
@@ -265,7 +265,7 @@ static int exofs_rename(struct inode *old_dir, struct dentry *old_dentry,
 		if (!new_de)
 			goto out_dir;
 		err = exofs_set_link(new_dir, new_de, new_page, old_inode);
-		new_inode->i_ctime = CURRENT_TIME;
+		new_inode->i_ctime = current_time(new_inode);
 		if (dir_de)
 			drop_nlink(new_inode);
 		inode_dec_link_count(new_inode);
@@ -279,7 +279,7 @@ static int exofs_rename(struct inode *old_dir, struct dentry *old_dentry,
 			inode_inc_link_count(new_dir);
 	}
 
-	old_inode->i_ctime = CURRENT_TIME;
+	old_inode->i_ctime = current_time(old_inode);
 
 	exofs_delete_entry(old_de, old_page);
 	mark_inode_dirty(old_inode);

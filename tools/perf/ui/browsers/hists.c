@@ -601,7 +601,8 @@ int hist_browser__run(struct hist_browser *browser, const char *help)
 			u64 nr_entries;
 			hbt->timer(hbt->arg);
 
-			if (hist_browser__has_filter(browser))
+			if (hist_browser__has_filter(browser) ||
+			    symbol_conf.report_hierarchy)
 				hist_browser__update_nr_entries(browser);
 
 			nr_entries = hist_browser__nr_entries(browser);
@@ -1080,7 +1081,7 @@ struct hpp_arg {
 	bool current_entry;
 };
 
-static int __hpp__slsmg_color_printf(struct perf_hpp *hpp, const char *fmt, ...)
+int __hpp__slsmg_color_printf(struct perf_hpp *hpp, const char *fmt, ...)
 {
 	struct hpp_arg *arg = hpp->ptr;
 	int ret, len;
@@ -1097,7 +1098,6 @@ static int __hpp__slsmg_color_printf(struct perf_hpp *hpp, const char *fmt, ...)
 	ret = scnprintf(hpp->buf, hpp->size, fmt, len, percent);
 	ui_browser__printf(arg->b, "%s", hpp->buf);
 
-	advance_hpp(hpp, ret);
 	return ret;
 }
 
@@ -2076,10 +2076,10 @@ void hist_browser__init(struct hist_browser *browser,
 	browser->b.use_navkeypressed	= true;
 	browser->show_headers		= symbol_conf.show_hist_headers;
 
-	hists__for_each_format(hists, fmt) {
-		perf_hpp__reset_width(fmt, hists);
+	hists__for_each_format(hists, fmt)
 		++browser->b.columns;
-	}
+
+	hists__reset_column_width(hists);
 }
 
 struct hist_browser *hist_browser__new(struct hists *hists)

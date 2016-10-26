@@ -38,20 +38,11 @@
 #define DEBUG_SUBSYSTEM S_LLITE
 
 #include "../include/obd_support.h"
-#include "../include/lustre_lite.h"
 #include "../include/lustre_dlm.h"
 #include "../include/lustre_ver.h"
 #include "../include/lustre_eacl.h"
 
 #include "llite_internal.h"
-
-#define XATTR_USER_T	    (1)
-#define XATTR_TRUSTED_T	 (2)
-#define XATTR_SECURITY_T	(3)
-#define XATTR_ACL_ACCESS_T      (4)
-#define XATTR_ACL_DEFAULT_T     (5)
-#define XATTR_LUSTRE_T	  (6)
-#define XATTR_OTHER_T	   (7)
 
 static
 int get_xattr_type(const char *name)
@@ -198,12 +189,15 @@ static int ll_xattr_set(const struct xattr_handler *handler,
 
 		if (lump && S_ISREG(inode->i_mode)) {
 			__u64 it_flags = FMODE_WRITE;
-			int lum_size = (lump->lmm_magic == LOV_USER_MAGIC_V1) ?
-				sizeof(*lump) : sizeof(struct lov_user_md_v3);
+			int lum_size;
+
+			lum_size = ll_lov_user_md_size(lump);
+			if (lum_size < 0 || size < lum_size)
+				return 0; /* b=10667: ignore error */
 
 			rc = ll_lov_setstripe_ea_info(inode, dentry, it_flags,
 						      lump, lum_size);
-			/* b10667: rc always be 0 here for now */
+			/* b=10667: rc always be 0 here for now */
 			rc = 0;
 		} else if (S_ISDIR(inode->i_mode)) {
 			rc = ll_dir_setstripe(inode, lump, 0);
@@ -220,7 +214,7 @@ static int ll_xattr_set(const struct xattr_handler *handler,
 				   flags);
 }
 
-static int
+int
 ll_xattr_list(struct inode *inode, const char *name, int type, void *buffer,
 	      size_t size, __u64 valid)
 {

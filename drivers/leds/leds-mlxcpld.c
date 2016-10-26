@@ -43,7 +43,6 @@
 #include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
-#include <linux/version.h>
 
 #define MLXPLAT_CPLD_LPC_REG_BASE_ADRR     0x2500 /* LPC bus access */
 
@@ -402,9 +401,9 @@ static int __init mlxcpld_led_init(void)
 	int err;
 
 	pdev = platform_device_register_simple(KBUILD_MODNAME, -1, NULL, 0);
-	if (!pdev) {
+	if (IS_ERR(pdev)) {
 		pr_err("Device allocation failed\n");
-		return -ENOMEM;
+		return PTR_ERR(pdev);
 	}
 
 	err = platform_driver_probe(&mlxcpld_led_driver, mlxcpld_led_probe);

@@ -2545,7 +2545,7 @@ static void s5p_jpeg_stop_streaming(struct vb2_queue *q)
 	pm_runtime_put(ctx->jpeg->dev);
 }
 
-static struct vb2_ops s5p_jpeg_qops = {
+static const struct vb2_ops s5p_jpeg_qops = {
 	.queue_setup		= s5p_jpeg_queue_setup,
 	.buf_prepare		= s5p_jpeg_buf_prepare,
 	.buf_queue		= s5p_jpeg_buf_queue,
@@ -3003,26 +3003,9 @@ static int s5p_jpeg_runtime_resume(struct device *dev)
 }
 #endif /* CONFIG_PM */
 
-#ifdef CONFIG_PM_SLEEP
-static int s5p_jpeg_suspend(struct device *dev)
-{
-	if (pm_runtime_suspended(dev))
-		return 0;
-
-	return s5p_jpeg_runtime_suspend(dev);
-}
-
-static int s5p_jpeg_resume(struct device *dev)
-{
-	if (pm_runtime_suspended(dev))
-		return 0;
-
-	return s5p_jpeg_runtime_resume(dev);
-}
-#endif
-
 static const struct dev_pm_ops s5p_jpeg_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(s5p_jpeg_suspend, s5p_jpeg_resume)
+	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
+				pm_runtime_force_resume)
 	SET_RUNTIME_PM_OPS(s5p_jpeg_runtime_suspend, s5p_jpeg_runtime_resume,
 			   NULL)
 };

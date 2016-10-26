@@ -237,7 +237,7 @@ static int hpp__header_fn(struct perf_hpp_fmt *fmt, struct perf_hpp *hpp,
 	return scnprintf(hpp->buf, hpp->size, "%*s", len, fmt->name);
 }
 
-static int hpp_color_scnprintf(struct perf_hpp *hpp, const char *fmt, ...)
+int hpp_color_scnprintf(struct perf_hpp *hpp, const char *fmt, ...)
 {
 	va_list args;
 	ssize_t ssize = hpp->size;
@@ -696,6 +696,21 @@ void perf_hpp__reset_width(struct perf_hpp_fmt *fmt, struct hists *hists)
 
 	default:
 		break;
+	}
+}
+
+void hists__reset_column_width(struct hists *hists)
+{
+	struct perf_hpp_fmt *fmt;
+	struct perf_hpp_list_node *node;
+
+	hists__for_each_format(hists, fmt)
+		perf_hpp__reset_width(fmt, hists);
+
+	/* hierarchy entries have their own hpp list */
+	list_for_each_entry(node, &hists->hpp_formats, list) {
+		perf_hpp_list__for_each_format(&node->hpp, fmt)
+			perf_hpp__reset_width(fmt, hists);
 	}
 }
 

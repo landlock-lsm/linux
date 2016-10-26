@@ -43,28 +43,29 @@ void *module_alloc(unsigned long size)
 	int npages;
 
 	npages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
-	pages = kmalloc_array(npages, sizeof(*pages), GFP_KERNEL);
+	pages = kmalloc(npages * sizeof(struct page *), GFP_KERNEL);
 	if (pages == NULL)
 		return NULL;
 	for (; i < npages; ++i) {
 		pages[i] = alloc_page(GFP_KERNEL | __GFP_HIGHMEM);
 		if (!pages[i])
-			goto free_pages;
+			goto error;
 	}
 
 	area = __get_vm_area(size, VM_ALLOC, MEM_MODULE_START, MEM_MODULE_END);
 	if (!area)
-		goto free_pages;
+		goto error;
 	area->nr_pages = npages;
 	area->pages = pages;
 
 	if (map_vm_area(area, prot_rwx, pages)) {
 		vunmap(area->addr);
-		goto free_pages;
+		goto error;
 	}
 
 	return area->addr;
- free_pages:
+
+error:
 	while (--i >= 0)
 		__free_page(pages[i]);
 	kfree(pages);

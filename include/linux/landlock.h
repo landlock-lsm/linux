@@ -23,26 +23,35 @@
 #include <linux/cgroup-defs.h> /* struct cgroup */
 #endif /* CONFIG_CGROUP_BPF */
 
-#ifdef CONFIG_SECCOMP_FILTER
-struct landlock_seccomp_ret {
-	struct landlock_seccomp_ret *prev;
-	struct seccomp_filter *filter;
-	u16 cookie;
-	bool triggered;
+struct landlock_rule;
+
+/**
+ * struct landlock_node - node in the rule hierarchy
+ *
+ * This is created when a task insert its first rule in the Landlock rule
+ * hierarchy. The set of Landlock rules referenced by this node is then
+ * enforced for all the task that inherit this node. However, if a task is
+ * cloned before inserting new rules, it doesn't get a dedicated node and its
+ * children will not inherit this new rules.
+ *
+ * @usage: reference count to manage the node lifetime.
+ * @rule: list of Landlock rules managed by this node.
+ * @prev: reference the parent node.
+ * @owner: reference the address of the node in the struct landlock_hooks. This
+ *         is needed to know if we need to append a rule to the current node or
+ *         create a new node.
+ */
+struct landlock_node {
+	atomic_t usage;
+	struct landlock_rule *rule;
+	struct landlock_node *prev;
+	struct landlock_node **owner;
 };
-#endif /* CONFIG_SECCOMP_FILTER */
 
 struct landlock_rule {
 	atomic_t usage;
 	struct landlock_rule *prev;
-	/*
-	 * List of filters (through filter->thread_prev) allowed to trigger
-	 * this Landlock program.
-	 */
 	struct bpf_prog *prog;
-#ifdef CONFIG_SECCOMP_FILTER
-	struct seccomp_filter *thread_filter;
-#endif /* CONFIG_SECCOMP_FILTER */
 };
 
 /**
@@ -59,27 +68,27 @@ struct landlock_rule {
  * @usage: reference count to manage the object lifetime. When a thread need to
  *         add Landlock programs and if @usage is greater than 1, then the
  *         thread must duplicate struct landlock_hooks to not change the
- *         children' rules as well.
+ *         children' rules as well. FIXME
+ * @nodes: array of non-NULL struct landlock_node pointers.
  */
 struct landlock_hooks {
 	atomic_t usage;
-	struct landlock_rule *rules[_LANDLOCK_HOOK_LAST];
+	struct landlock_node *nodes[_LANDLOCK_HOOK_LAST];
 };
 
-
-struct landlock_hooks *new_landlock_hooks(void);
-void get_landlock_hooks(struct landlock_hooks *hooks);
 void put_landlock_hooks(struct landlock_hooks *hooks);
+void get_landlock_hooks(struct landlock_hooks *hooks);
 
 #ifdef CONFIG_SECCOMP_FILTER
-void put_landlock_ret(struct landlock_seccomp_ret *landlock_ret);
-int landlock_seccomp_set_hook(unsigned int flags,
+int landlock_seccomp_append_prog(unsigned int flags,
 		const char __user *user_bpf_fd);
 #endif /* CONFIG_SECCOMP_FILTER */
 
 #ifdef CONFIG_CGROUP_BPF
-struct landlock_hooks *landlock_cgroup_set_hook(struct cgroup *cgrp,
+struct landlock_hooks *landlock_cgroup_append_prog(struct cgroup *cgrp,
 		struct bpf_prog *prog);
+void landlock_insert_node(struct landlock_hooks *dst,
+		enum landlock_hook hook, struct landlock_hooks *src);
 #endif /* CONFIG_CGROUP_BPF */
 
 #endif /* CONFIG_SECURITY_LANDLOCK */

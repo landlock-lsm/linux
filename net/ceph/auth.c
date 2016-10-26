@@ -114,7 +114,7 @@ int ceph_auth_build_hello(struct ceph_auth_client *ac, void *buf, size_t len)
 	monhdr->session_mon = cpu_to_le16(-1);
 	monhdr->session_mon_tid = 0;
 
-	ceph_encode_32(&p, 0);  /* no protocol, yet */
+	ceph_encode_32(&p, CEPH_AUTH_UNKNOWN);  /* no protocol, yet */
 
 	lenp = p;
 	p += sizeof(u32);
@@ -262,9 +262,7 @@ int ceph_build_auth(struct ceph_auth_client *ac,
 	int ret = 0;
 
 	mutex_lock(&ac->mutex);
-	if (!ac->protocol)
-		ret = ceph_auth_build_hello(ac, msg_buf, msg_len);
-	else if (ac->ops->should_authenticate(ac))
+	if (ac->ops->should_authenticate(ac))
 		ret = ceph_build_auth_request(ac, msg_buf, msg_len);
 	mutex_unlock(&ac->mutex);
 	return ret;

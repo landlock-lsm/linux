@@ -59,7 +59,6 @@
 #include <linux/pid_namespace.h>
 #include <linux/device.h>
 #include <linux/kthread.h>
-#include <linux/pagemap.h>
 #include <linux/sched.h>
 #include <linux/signal.h>
 #include <linux/idr.h>
@@ -464,9 +463,6 @@ void __init __weak thread_stack_cache_init(void)
  */
 static void __init mm_init(void)
 {
-	/* Does address_space.flags still fit into a 32-bit ulong? */
-	BUILD_BUG_ON(AS_LAST_FLAG > 32);
-
 	/*
 	 * page_ext requires contiguous pages,
 	 * bigger than MAX_ORDER unless SPARSEMEM.

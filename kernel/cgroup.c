@@ -62,7 +62,6 @@
 #include <linux/proc_ns.h>
 #include <linux/nsproxy.h>
 #include <linux/file.h>
-#include <linux/bitops.h>
 #include <net/sock.h>
 
 #define CREATE_TRACE_POINTS
@@ -1986,7 +1985,6 @@ static void init_cgroup_root(struct cgroup_root *root,
 		strcpy(root->name, opts->name);
 	if (opts->cpuset_clone_children)
 		set_bit(CGRP_CPUSET_CLONE_CHILDREN, &root->cgrp.flags);
-	/* no CGRP_NO_NEW_PRIVS flag for the root */
 }
 
 static int cgroup_setup_root(struct cgroup_root *root, u16 ss_mask)
@@ -2814,35 +2812,14 @@ static int cgroup_attach_task(struct cgroup *dst_cgrp,
 	LIST_HEAD(preloaded_csets);
 	struct task_struct *task;
 	int ret;
-#if defined(CONFIG_CGROUP_BPF) && defined(CONFIG_SECURITY_LANDLOCK)
-	bool no_new_privs;
-#endif /* CONFIG_CGROUP_BPF && CONFIG_SECURITY_LANDLOCK */
 
 	if (!cgroup_may_migrate_to(dst_cgrp))
 		return -EBUSY;
 
-	task = leader;
-#if defined(CONFIG_CGROUP_BPF) && defined(CONFIG_SECURITY_LANDLOCK)
-	no_new_privs = !!(dst_cgrp->flags & BIT_ULL(CGRP_NO_NEW_PRIVS));
-	do {
-		no_new_privs = no_new_privs && task_no_new_privs(task);
-		if (!no_new_privs) {
-			if (dst_cgrp->bpf.pinned[BPF_CGROUP_LANDLOCK].hooks &&
-					security_capable_noaudit(current_cred(),
-						current_user_ns(),
-						CAP_SYS_ADMIN) != 0)
-				return -EPERM;
-			clear_bit(CGRP_NO_NEW_PRIVS, &dst_cgrp->flags);
-			break;
-		}
-		if (!threadgroup)
-			break;
-	} while_each_thread(leader, task);
-#endif /* CONFIG_CGROUP_BPF && CONFIG_SECURITY_LANDLOCK */
-
 	/* look up all src csets */
 	spin_lock_irq(&css_set_lock);
 	rcu_read_lock();
+	task = leader;
 	do {
 		cgroup_migrate_add_src(task_css_set(task), dst_cgrp,
 				       &preloaded_csets);
@@ -3478,9 +3455,28 @@ static ssize_t cgroup_subtree_control_write(struct kernfs_open_file *of,
 	 * Except for the root, subtree_control must be zero for a cgroup
 	 * with tasks so that child cgroups don't compete against tasks.
 	 */
-	if (enable && cgroup_parent(cgrp) && !list_empty(&cgrp->cset_links)) {
-		ret = -EBUSY;
-		goto out_unlock;
+	if (enable && cgroup_parent(cgrp)) {
+		struct cgrp_cset_link *link;
+
+		/*
+		 * Because namespaces pin csets too, @cgrp->cset_links
+		 * might not be empty even when @cgrp is empty.  Walk and
+		 * verify each cset.
+		 */
+		spin_lock_irq(&css_set_lock);
+
+		ret = 0;
+		list_for_each_entry(link, &cgrp->cset_links, cset_link) {
+			if (css_set_populated(link->cset)) {
+				ret = -EBUSY;
+				break;
+			}
+		}
+
+		spin_unlock_irq(&css_set_lock);
+
+		if (ret)
+			goto out_unlock;
 	}
 
 	/* save and update control masks and prepare csses */
@@ -3933,7 +3929,9 @@ void cgroup_file_notify(struct cgroup_file *cfile)
  * cgroup_task_count - count the number of tasks in a cgroup.
  * @cgrp: the cgroup in question
  *
- * Return the number of tasks in the cgroup.
+ * Return the number of tasks in the cgroup.  The returned number can be
+ * higher than the actual number of tasks due to css_set references from
+ * namespace roots and temporary usages.
  */
 static int cgroup_task_count(const struct cgroup *cgrp)
 {
@@ -4368,21 +4366,8 @@ int cgroup_transfer_tasks(struct cgroup *to, struct cgroup *from)
 		return -EBUSY;
 
 	mutex_lock(&cgroup_mutex);
-	percpu_down_write(&cgroup_threadgroup_rwsem);
 
-#if defined(CONFIG_CGROUP_BPF) && defined(CONFIG_SECURITY_LANDLOCK)
-	if (!(from->flags & BIT_ULL(CGRP_NO_NEW_PRIVS))) {
-		if (to->bpf.pinned[BPF_CGROUP_LANDLOCK].hooks &&
-				security_capable_noaudit(current_cred(),
-					current_user_ns(), CAP_SYS_ADMIN) != 0) {
-			pr_warn("%s: EPERM\n", __func__);
-			ret = -EPERM;
-			goto out_unlock;
-		}
-		pr_warn("%s: no EPERM\n", __func__);
-		clear_bit(CGRP_NO_NEW_PRIVS, &to->flags);
-	}
-#endif /* CONFIG_CGROUP_BPF && CONFIG_SECURITY_LANDLOCK */
+	percpu_down_write(&cgroup_threadgroup_rwsem);
 
 	/* all tasks in @from are being moved, all csets are source */
 	spin_lock_irq(&css_set_lock);
@@ -4414,7 +4399,6 @@ int cgroup_transfer_tasks(struct cgroup *to, struct cgroup *from)
 	} while (task && !ret);
 out_err:
 	cgroup_migrate_finish(&preloaded_csets);
-out_unlock:
 	percpu_up_write(&cgroup_threadgroup_rwsem);
 	mutex_unlock(&cgroup_mutex);
 	return ret;
@@ -5278,9 +5262,6 @@ static struct cgroup *cgroup_create(struct cgroup *parent)
 
 	if (test_bit(CGRP_CPUSET_CLONE_CHILDREN, &parent->flags))
 		set_bit(CGRP_CPUSET_CLONE_CHILDREN, &cgrp->flags);
-#if defined(CONFIG_CGROUP_BPF) && defined(CONFIG_SECURITY_LANDLOCK)
-	set_bit(CGRP_NO_NEW_PRIVS, &cgrp->flags);
-#endif /* CONFIG_CGROUP_BPF && CONFIG_SECURITY_LANDLOCK */
 
 	cgrp->self.serial_nr = css_serial_nr_next++;
 
@@ -5832,10 +5813,10 @@ int proc_cgroup_show(struct seq_file *m, struct pid_namespace *ns,
 		if (cgroup_on_dfl(cgrp) || !(tsk->flags & PF_EXITING)) {
 			retval = cgroup_path_ns_locked(cgrp, buf, PATH_MAX,
 						current->nsproxy->cgroup_ns);
-			if (retval >= PATH_MAX) {
+			if (retval >= PATH_MAX)
 				retval = -ENAMETOOLONG;
+			if (retval < 0)
 				goto out_unlock;
-			}
 
 			seq_puts(m, buf);
 		} else {
@@ -6120,7 +6101,7 @@ static void cgroup_release_agent(struct work_struct *work)
 	spin_lock_irq(&css_set_lock);
 	ret = cgroup_path_ns_locked(cgrp, pathbuf, PATH_MAX, &init_cgroup_ns);
 	spin_unlock_irq(&css_set_lock);
-	if (ret >= PATH_MAX)
+	if (ret < 0 || ret >= PATH_MAX)
 		goto out;
 
 	argv[0] = agentbuf;
@@ -6281,20 +6262,17 @@ EXPORT_SYMBOL_GPL(cgroup_get_from_path);
 /**
  * cgroup_get_from_fd - get a cgroup pointer from a fd
  * @fd: fd obtained by open(cgroup2_dir)
- * @access_mask: contains the permission mask
  *
  * Find the cgroup from a fd which should be obtained
  * by opening a cgroup directory.  Returns a pointer to the
  * cgroup on success. ERR_PTR is returned if the cgroup
  * cannot be found.
  */
-struct cgroup *cgroup_get_from_fd(int fd, int access_mask)
+struct cgroup *cgroup_get_from_fd(int fd)
 {
 	struct cgroup_subsys_state *css;
 	struct cgroup *cgrp;
 	struct file *f;
-	struct inode *inode;
-	int ret;
 
 	f = fget_raw(fd);
 	if (!f)
@@ -6309,17 +6287,6 @@ struct cgroup *cgroup_get_from_fd(int fd, int access_mask)
 	if (!cgroup_on_dfl(cgrp)) {
 		cgroup_put(cgrp);
 		return ERR_PTR(-EBADF);
-	}
-
-	ret = -ENOMEM;
-	inode = kernfs_get_inode(f->f_path.dentry->d_sb, cgrp->procs_file.kn);
-	if (inode) {
-		ret = inode_permission(inode, access_mask);
-		iput(inode);
-	}
-	if (ret) {
-		cgroup_put(cgrp);
-		return ERR_PTR(ret);
 	}
 
 	return cgrp;
@@ -6356,6 +6323,12 @@ void cgroup_sk_alloc(struct sock_cgroup_data *skcd)
 	if (cgroup_sk_alloc_disabled)
 		return;
 
+	/* Socket clone path */
+	if (skcd->val) {
+		cgroup_get(sock_cgroup_ptr(skcd));
+		return;
+	}
+
 	rcu_read_lock();
 
 	while (true) {
@@ -6381,6 +6354,16 @@ void cgroup_sk_free(struct sock_cgroup_data *skcd)
 
 /* cgroup namespaces */
 
+static struct ucounts *inc_cgroup_namespaces(struct user_namespace *ns)
+{
+	return inc_ucount(ns, current_euid(), UCOUNT_CGROUP_NAMESPACES);
+}
+
+static void dec_cgroup_namespaces(struct ucounts *ucounts)
+{
+	dec_ucount(ucounts, UCOUNT_CGROUP_NAMESPACES);
+}
+
 static struct cgroup_namespace *alloc_cgroup_ns(void)
 {
 	struct cgroup_namespace *new_ns;
@@ -6402,6 +6385,7 @@ static struct cgroup_namespace *alloc_cgroup_ns(void)
 void free_cgroup_ns(struct cgroup_namespace *ns)
 {
 	put_css_set(ns->root_cset);
+	dec_cgroup_namespaces(ns->ucounts);
 	put_user_ns(ns->user_ns);
 	ns_free_inum(&ns->ns);
 	kfree(ns);
@@ -6413,6 +6397,7 @@ struct cgroup_namespace *copy_cgroup_ns(unsigned long flags,
 					struct cgroup_namespace *old_ns)
 {
 	struct cgroup_namespace *new_ns;
+	struct ucounts *ucounts;
 	struct css_set *cset;
 
 	BUG_ON(!old_ns);
@@ -6426,6 +6411,10 @@ struct cgroup_namespace *copy_cgroup_ns(unsigned long flags,
 	if (!ns_capable(user_ns, CAP_SYS_ADMIN))
 		return ERR_PTR(-EPERM);
 
+	ucounts = inc_cgroup_namespaces(user_ns);
+	if (!ucounts)
+		return ERR_PTR(-ENOSPC);
+
 	/* It is not safe to take cgroup_mutex here */
 	spin_lock_irq(&css_set_lock);
 	cset = task_css_set(current);
@@ -6435,10 +6424,12 @@ struct cgroup_namespace *copy_cgroup_ns(unsigned long flags,
 	new_ns = alloc_cgroup_ns();
 	if (IS_ERR(new_ns)) {
 		put_css_set(cset);
+		dec_cgroup_namespaces(ucounts);
 		return new_ns;
 	}
 
 	new_ns->user_ns = get_user_ns(user_ns);
+	new_ns->ucounts = ucounts;
 	new_ns->root_cset = cset;
 
 	return new_ns;
@@ -6489,12 +6480,18 @@ static void cgroupns_put(struct ns_common *ns)
 	put_cgroup_ns(to_cg_ns(ns));
 }
 
+static struct user_namespace *cgroupns_owner(struct ns_common *ns)
+{
+	return to_cg_ns(ns)->user_ns;
+}
+
 const struct proc_ns_operations cgroupns_operations = {
 	.name		= "cgroup",
 	.type		= CLONE_NEWCGROUP,
 	.get		= cgroupns_get,
 	.put		= cgroupns_put,
 	.install	= cgroupns_install,
+	.owner		= cgroupns_owner,
 };
 
 static __init int cgroup_namespaces_init(void)

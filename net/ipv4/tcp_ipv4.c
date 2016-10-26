@@ -1196,7 +1196,6 @@ static void tcp_v4_init_req(struct request_sock *req,
 
 	sk_rcv_saddr_set(req_to_sk(req), ip_hdr(skb)->daddr);
 	sk_daddr_set(req_to_sk(req), ip_hdr(skb)->saddr);
-	ireq->no_srccheck = inet_sk(sk_listener)->transparent;
 	ireq->opt = tcp_v4_save_options(skb);
 }
 
@@ -1872,9 +1871,6 @@ void tcp_v4_destroy_sock(struct sock *sk)
 	local_bh_disable();
 	sk_sockets_allocated_dec(sk);
 	local_bh_enable();
-
-	if (mem_cgroup_sockets_enabled && sk->sk_memcg)
-		sock_release_memcg(sk);
 }
 EXPORT_SYMBOL(tcp_v4_destroy_sock);
 

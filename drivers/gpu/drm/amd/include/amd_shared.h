@@ -29,7 +29,12 @@
  * Supported ASIC types
  */
 enum amd_asic_type {
-	CHIP_BONAIRE = 0,
+	CHIP_TAHITI = 0,
+	CHIP_PITCAIRN,
+	CHIP_VERDE,
+	CHIP_OLAND,
+	CHIP_HAINAN,
+	CHIP_BONAIRE,
 	CHIP_KAVERI,
 	CHIP_KABINI,
 	CHIP_HAWAII,
@@ -160,7 +165,7 @@ struct amd_ip_funcs {
 	/* poll for idle */
 	int (*wait_for_idle)(void *handle);
 	/* check soft reset the IP block */
-	int (*check_soft_reset)(void *handle);
+	bool (*check_soft_reset)(void *handle);
 	/* pre soft reset the IP block */
 	int (*pre_soft_reset)(void *handle);
 	/* soft reset the IP block */

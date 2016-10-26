@@ -847,14 +847,14 @@ static int rproc_fw_boot(struct rproc *rproc, const struct firmware *fw)
 	ret = rproc_handle_resources(rproc, tablesz, rproc_loading_handlers);
 	if (ret) {
 		dev_err(dev, "Failed to process resources: %d\n", ret);
-		goto clean_up;
+		goto clean_up_resources;
 	}
 
 	/* load the ELF segments to memory */
 	ret = rproc_load_segments(rproc, fw);
 	if (ret) {
 		dev_err(dev, "Failed to load program segments: %d\n", ret);
-		goto clean_up;
+		goto clean_up_resources;
 	}
 
 	/*
@@ -875,7 +875,7 @@ static int rproc_fw_boot(struct rproc *rproc, const struct firmware *fw)
 	ret = rproc->ops->start(rproc);
 	if (ret) {
 		dev_err(dev, "can't start rproc %s: %d\n", rproc->name, ret);
-		goto clean_up;
+		goto clean_up_resources;
 	}
 
 	rproc->state = RPROC_RUNNING;
@@ -884,12 +884,13 @@ static int rproc_fw_boot(struct rproc *rproc, const struct firmware *fw)
 
 	return 0;
 
+clean_up_resources:
+	rproc_resource_cleanup(rproc);
 clean_up:
 	kfree(rproc->cached_table);
 	rproc->cached_table = NULL;
 	rproc->table_ptr = NULL;
 
-	rproc_resource_cleanup(rproc);
 	rproc_disable_iommu(rproc);
 	return ret;
 }
@@ -1034,20 +1035,6 @@ static int __rproc_boot(struct rproc *rproc, bool wait)
 		return ret;
 	}
 
-	/* loading a firmware is required */
-	if (!rproc->firmware) {
-		dev_err(dev, "%s: no firmware to load\n", __func__);
-		ret = -EINVAL;
-		goto unlock_mutex;
-	}
-
-	/* prevent underlying implementation from being removed */
-	if (!try_module_get(dev->parent->driver->owner)) {
-		dev_err(dev, "%s: can't get owner\n", __func__);
-		ret = -EINVAL;
-		goto unlock_mutex;
-	}
-
 	/* skip the boot process if rproc is already powered up */
 	if (atomic_inc_return(&rproc->power) > 1) {
 		ret = 0;
@@ -1072,10 +1059,8 @@ static int __rproc_boot(struct rproc *rproc, bool wait)
 	release_firmware(firmware_p);
 
 downref_rproc:
-	if (ret) {
-		module_put(dev->parent->driver->owner);
+	if (ret)
 		atomic_dec(&rproc->power);
-	}
 unlock_mutex:
 	mutex_unlock(&rproc->lock);
 	return ret;
@@ -1164,8 +1149,6 @@ void rproc_shutdown(struct rproc *rproc)
 
 out:
 	mutex_unlock(&rproc->lock);
-	if (!ret)
-		module_put(dev->parent->driver->owner);
 }
 EXPORT_SYMBOL(rproc_shutdown);
 
@@ -1194,6 +1177,12 @@ struct rproc *rproc_get_by_phandle(phandle phandle)
 	mutex_lock(&rproc_list_mutex);
 	list_for_each_entry(r, &rproc_list, node) {
 		if (r->dev.parent && r->dev.parent->of_node == np) {
+			/* prevent underlying implementation from being removed */
+			if (!try_module_get(r->dev.parent->driver->owner)) {
+				dev_err(&r->dev, "can't get owner\n");
+				break;
+			}
+
 			rproc = r;
 			get_device(&rproc->dev);
 			break;
@@ -1313,7 +1302,7 @@ static struct device_type rproc_type = {
  * On success the new rproc is returned, and on failure, NULL.
  *
  * Note: _never_ directly deallocate @rproc, even if it was not registered
- * yet. Instead, when you need to unroll rproc_alloc(), use rproc_put().
+ * yet. Instead, when you need to unroll rproc_alloc(), use rproc_free().
  */
 struct rproc *rproc_alloc(struct device *dev, const char *name,
 			  const struct rproc_ops *ops,
@@ -1392,7 +1381,22 @@ struct rproc *rproc_alloc(struct device *dev, const char *name,
 EXPORT_SYMBOL(rproc_alloc);
 
 /**
- * rproc_put() - unroll rproc_alloc()
+ * rproc_free() - unroll rproc_alloc()
+ * @rproc: the remote processor handle
+ *
+ * This function decrements the rproc dev refcount.
+ *
+ * If no one holds any reference to rproc anymore, then its refcount would
+ * now drop to zero, and it would be freed.
+ */
+void rproc_free(struct rproc *rproc)
+{
+	put_device(&rproc->dev);
+}
+EXPORT_SYMBOL(rproc_free);
+
+/**
+ * rproc_put() - release rproc reference
  * @rproc: the remote processor handle
  *
  * This function decrements the rproc dev refcount.
@@ -1402,6 +1406,7 @@ EXPORT_SYMBOL(rproc_alloc);
  */
 void rproc_put(struct rproc *rproc)
 {
+	module_put(rproc->dev.parent->driver->owner);
 	put_device(&rproc->dev);
 }
 EXPORT_SYMBOL(rproc_put);
@@ -1417,7 +1422,7 @@ EXPORT_SYMBOL(rproc_put);
  *
  * After rproc_del() returns, @rproc isn't freed yet, because
  * of the outstanding reference created by rproc_alloc. To decrement that
- * one last refcount, one still needs to call rproc_put().
+ * one last refcount, one still needs to call rproc_free().
  *
  * Returns 0 on success and -EINVAL if @rproc isn't valid.
  */

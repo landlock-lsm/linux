@@ -64,7 +64,6 @@
 #include <linux/page_owner.h>
 #include <linux/kthread.h>
 #include <linux/memcontrol.h>
-#include <linux/random.h>
 
 #include <asm/sections.h>
 #include <asm/tlbflush.h>
@@ -260,7 +259,7 @@ int watermark_scale_factor = 10;
 
 static unsigned long __meminitdata nr_kernel_pages;
 static unsigned long __meminitdata nr_all_pages;
-static unsigned long __meminitdata nr_memory_reserve;
+static unsigned long __meminitdata dma_reserve;
 
 #ifdef CONFIG_HAVE_MEMBLOCK_NODE_MAP
 static unsigned long __meminitdata arch_zone_lowest_possible_pfn[MAX_NR_ZONES];
@@ -1251,15 +1250,6 @@ static void __free_pages_ok(struct page *page, unsigned int order)
 	local_irq_restore(flags);
 }
 
-bool __meminitdata ram_latent_entropy;
-
-static int __init setup_ram_latent_entropy(char *str)
-{
-	ram_latent_entropy = true;
-	return 0;
-}
-early_param("ram_latent_entropy", setup_ram_latent_entropy);
-
 static void __init __free_pages_boot_core(struct page *page, unsigned int order)
 {
 	unsigned int nr_pages = 1 << order;
@@ -1274,17 +1264,6 @@ static void __init __free_pages_boot_core(struct page *page, unsigned int order)
 	}
 	__ClearPageReserved(p);
 	set_page_count(p, 0);
-
-	if (ram_latent_entropy && !PageHighMem(page) &&
-		page_to_pfn(page) < 0x100000) {
-		u64 hash = 0;
-		size_t index, end = PAGE_SIZE * nr_pages / sizeof(hash);
-		const u64 *data = lowmem_page_address(page);
-
-		for (index = 0; index < end; index++)
-			hash ^= hash + data[index];
-		add_device_randomness((const void *)&hash, sizeof(hash));
-	}
 
 	page_zone(page)->managed_pages += nr_pages;
 	set_page_refcounted(page);
@@ -3005,9 +2984,11 @@ static DEFINE_RATELIMIT_STATE(nopage_rs,
 		DEFAULT_RATELIMIT_INTERVAL,
 		DEFAULT_RATELIMIT_BURST);
 
-void warn_alloc_failed(gfp_t gfp_mask, unsigned int order, const char *fmt, ...)
+void warn_alloc(gfp_t gfp_mask, const char *fmt, ...)
 {
 	unsigned int filter = SHOW_MEM_FILTER_NODES;
+	struct va_format vaf;
+	va_list args;
 
 	if ((gfp_mask & __GFP_NOWARN) || !__ratelimit(&nopage_rs) ||
 	    debug_guardpage_minorder() > 0)
@@ -3025,22 +3006,16 @@ void warn_alloc_failed(gfp_t gfp_mask, unsigned int order, const char *fmt, ...)
 	if (in_interrupt() || !(gfp_mask & __GFP_DIRECT_RECLAIM))
 		filter &= ~SHOW_MEM_FILTER_NODES;
 
-	if (fmt) {
-		struct va_format vaf;
-		va_list args;
+	pr_warn("%s: ", current->comm);
 
-		va_start(args, fmt);
+	va_start(args, fmt);
+	vaf.fmt = fmt;
+	vaf.va = &args;
+	pr_cont("%pV", &vaf);
+	va_end(args);
 
-		vaf.fmt = fmt;
-		vaf.va = &args;
+	pr_cont(", mode:%#x(%pGg)\n", gfp_mask, &gfp_mask);
 
-		pr_warn("%pV", &vaf);
-
-		va_end(args);
-	}
-
-	pr_warn("%s: page allocation failure: order:%u, mode:%#x(%pGg)\n",
-		current->comm, order, gfp_mask, &gfp_mask);
 	dump_stack();
 	if (!should_suppress_show_mem())
 		show_mem(filter);
@@ -3186,13 +3161,16 @@ static inline bool
 should_compact_retry(struct alloc_context *ac, int order, int alloc_flags,
 		     enum compact_result compact_result,
 		     enum compact_priority *compact_priority,
-		     int compaction_retries)
+		     int *compaction_retries)
 {
 	int max_retries = MAX_COMPACT_RETRIES;
 	int min_priority;
 
 	if (!order)
 		return false;
+
+	if (compaction_made_progress(compact_result))
+		(*compaction_retries)++;
 
 	/*
 	 * compaction considers all the zone as desperately out of memory
@@ -3221,18 +3199,19 @@ should_compact_retry(struct alloc_context *ac, int order, int alloc_flags,
 	 */
 	if (order > PAGE_ALLOC_COSTLY_ORDER)
 		max_retries /= 4;
-	if (compaction_retries <= max_retries)
+	if (*compaction_retries <= max_retries)
 		return true;
 
 	/*
-	 * Make sure there is at least one attempt at the highest priority
-	 * if we exhausted all retries at the lower priorities
+	 * Make sure there are attempts at the highest priority if we exhausted
+	 * all retries or failed at the lower priorities.
 	 */
 check_priority:
 	min_priority = (order > PAGE_ALLOC_COSTLY_ORDER) ?
 			MIN_COMPACT_COSTLY_PRIORITY : MIN_COMPACT_PRIORITY;
 	if (*compact_priority > min_priority) {
 		(*compact_priority)--;
+		*compaction_retries = 0;
 		return true;
 	}
 	return false;
@@ -3251,7 +3230,7 @@ static inline bool
 should_compact_retry(struct alloc_context *ac, unsigned int order, int alloc_flags,
 		     enum compact_result compact_result,
 		     enum compact_priority *compact_priority,
-		     int compaction_retries)
+		     int *compaction_retries)
 {
 	struct zone *zone;
 	struct zoneref *z;
@@ -3424,16 +3403,26 @@ bool gfp_pfmemalloc_allowed(gfp_t gfp_mask)
 static inline bool
 should_reclaim_retry(gfp_t gfp_mask, unsigned order,
 		     struct alloc_context *ac, int alloc_flags,
-		     bool did_some_progress, int no_progress_loops)
+		     bool did_some_progress, int *no_progress_loops)
 {
 	struct zone *zone;
 	struct zoneref *z;
 
 	/*
+	 * Costly allocations might have made a progress but this doesn't mean
+	 * their order will become available due to high fragmentation so
+	 * always increment the no progress counter for them
+	 */
+	if (did_some_progress && order <= PAGE_ALLOC_COSTLY_ORDER)
+		*no_progress_loops = 0;
+	else
+		(*no_progress_loops)++;
+
+	/*
 	 * Make sure we converge to OOM if we cannot make any progress
 	 * several times in the row.
 	 */
-	if (no_progress_loops > MAX_RECLAIM_RETRIES)
+	if (*no_progress_loops > MAX_RECLAIM_RETRIES)
 		return false;
 
 	/*
@@ -3448,7 +3437,7 @@ should_reclaim_retry(gfp_t gfp_mask, unsigned order,
 		unsigned long reclaimable;
 
 		available = reclaimable = zone_reclaimable_pages(zone);
-		available -= DIV_ROUND_UP(no_progress_loops * available,
+		available -= DIV_ROUND_UP((*no_progress_loops) * available,
 					  MAX_RECLAIM_RETRIES);
 		available += zone_page_state_snapshot(zone, NR_FREE_PAGES);
 
@@ -3509,6 +3498,8 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
 	enum compact_result compact_result;
 	int compaction_retries = 0;
 	int no_progress_loops = 0;
+	unsigned long alloc_start = jiffies;
+	unsigned int stall_timeout = 10 * HZ;
 
 	/*
 	 * In the slowpath, we sanity check order to avoid ever trying to
@@ -3653,9 +3644,6 @@ retry:
 	if (page)
 		goto got_pg;
 
-	if (order && compaction_made_progress(compact_result))
-		compaction_retries++;
-
 	/* Do not loop if specifically requested */
 	if (gfp_mask & __GFP_NORETRY)
 		goto nopage;
@@ -3667,18 +3655,16 @@ retry:
 	if (order > PAGE_ALLOC_COSTLY_ORDER && !(gfp_mask & __GFP_REPEAT))
 		goto nopage;
 
-	/*
-	 * Costly allocations might have made a progress but this doesn't mean
-	 * their order will become available due to high fragmentation so
-	 * always increment the no progress counter for them
-	 */
-	if (did_some_progress && order <= PAGE_ALLOC_COSTLY_ORDER)
-		no_progress_loops = 0;
-	else
-		no_progress_loops++;
+	/* Make sure we know about allocations which stall for too long */
+	if (time_after(jiffies, alloc_start + stall_timeout)) {
+		warn_alloc(gfp_mask,
+			"page alloction stalls for %ums, order:%u\n",
+			jiffies_to_msecs(jiffies-alloc_start), order);
+		stall_timeout += 10 * HZ;
+	}
 
 	if (should_reclaim_retry(gfp_mask, order, ac, alloc_flags,
-				 did_some_progress > 0, no_progress_loops))
+				 did_some_progress > 0, &no_progress_loops))
 		goto retry;
 
 	/*
@@ -3690,7 +3676,7 @@ retry:
 	if (did_some_progress > 0 &&
 			should_compact_retry(ac, order, alloc_flags,
 				compact_result, &compact_priority,
-				compaction_retries))
+				&compaction_retries))
 		goto retry;
 
 	/* Reclaim has failed us, start killing things */
@@ -3705,7 +3691,8 @@ retry:
 	}
 
 nopage:
-	warn_alloc_failed(gfp_mask, order, NULL);
+	warn_alloc(gfp_mask,
+			"page allocation failure: order:%u", order);
 got_pg:
 	return page;
 }
@@ -5903,10 +5890,10 @@ static void __paginginit free_area_init_core(struct pglist_data *pgdat)
 		}
 
 		/* Account for reserved pages */
-		if (j == 0 && freesize > nr_memory_reserve) {
-			freesize -= nr_memory_reserve;
+		if (j == 0 && freesize > dma_reserve) {
+			freesize -= dma_reserve;
 			printk(KERN_DEBUG "  %s zone: %lu pages reserved\n",
-					zone_names[0], nr_memory_reserve);
+					zone_names[0], dma_reserve);
 		}
 
 		if (!is_highmem_idx(j))
@@ -6592,9 +6579,8 @@ void __init mem_init_print_info(const char *str)
 }
 
 /**
- * set_memory_reserve - set number of pages reserved in the first zone
- * @nr_reserve: The number of pages to mark reserved
- * @inc: true increment to existing value; false set new value.
+ * set_dma_reserve - set the specified number of pages reserved in the first zone
+ * @new_dma_reserve: The number of pages to mark reserved
  *
  * The per-cpu batchsize and zone watermarks are determined by managed_pages.
  * In the DMA zone, a significant percentage may be consumed by kernel image
@@ -6603,12 +6589,9 @@ void __init mem_init_print_info(const char *str)
  * first zone (e.g., ZONE_DMA). The effect will be lower watermarks and
  * smaller per-cpu batchsize.
  */
-void __init set_memory_reserve(unsigned long nr_reserve, bool inc)
+void __init set_dma_reserve(unsigned long new_dma_reserve)
 {
-	if (inc)
-		nr_memory_reserve += nr_reserve;
-	else
-		nr_memory_reserve = nr_reserve;
+	dma_reserve = new_dma_reserve;
 }
 
 void __init free_area_init(unsigned long *zones_size)

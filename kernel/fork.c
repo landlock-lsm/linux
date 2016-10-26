@@ -159,15 +159,41 @@ void __weak arch_release_thread_stack(unsigned long *stack)
  * kmemcache based allocator.
  */
 # if THREAD_SIZE >= PAGE_SIZE || defined(CONFIG_VMAP_STACK)
+
+#ifdef CONFIG_VMAP_STACK
+/*
+ * vmalloc() is a bit slow, and calling vfree() enough times will force a TLB
+ * flush.  Try to minimize the number of calls by caching stacks.
+ */
+#define NR_CACHED_STACKS 2
+static DEFINE_PER_CPU(struct vm_struct *, cached_stacks[NR_CACHED_STACKS]);
+#endif
+
 static unsigned long *alloc_thread_stack_node(struct task_struct *tsk, int node)
 {
 #ifdef CONFIG_VMAP_STACK
-	void *stack = __vmalloc_node_range(THREAD_SIZE, THREAD_SIZE,
-					   VMALLOC_START, VMALLOC_END,
-					   THREADINFO_GFP | __GFP_HIGHMEM,
-					   PAGE_KERNEL,
-					   0, node,
-					   __builtin_return_address(0));
+	void *stack;
+	int i;
+
+	local_irq_disable();
+	for (i = 0; i < NR_CACHED_STACKS; i++) {
+		struct vm_struct *s = this_cpu_read(cached_stacks[i]);
+
+		if (!s)
+			continue;
+		this_cpu_write(cached_stacks[i], NULL);
+
+		tsk->stack_vm_area = s;
+		local_irq_enable();
+		return s->addr;
+	}
+	local_irq_enable();
+
+	stack = __vmalloc_node_range(THREAD_SIZE, THREAD_SIZE,
+				     VMALLOC_START, VMALLOC_END,
+				     THREADINFO_GFP | __GFP_HIGHMEM,
+				     PAGE_KERNEL,
+				     0, node, __builtin_return_address(0));
 
 	/*
 	 * We can't call find_vm_area() in interrupt context, and
@@ -187,10 +213,28 @@ static unsigned long *alloc_thread_stack_node(struct task_struct *tsk, int node)
 
 static inline void free_thread_stack(struct task_struct *tsk)
 {
-	if (task_stack_vm_area(tsk))
+#ifdef CONFIG_VMAP_STACK
+	if (task_stack_vm_area(tsk)) {
+		unsigned long flags;
+		int i;
+
+		local_irq_save(flags);
+		for (i = 0; i < NR_CACHED_STACKS; i++) {
+			if (this_cpu_read(cached_stacks[i]))
+				continue;
+
+			this_cpu_write(cached_stacks[i], tsk->stack_vm_area);
+			local_irq_restore(flags);
+			return;
+		}
+		local_irq_restore(flags);
+
 		vfree(tsk->stack);
-	else
-		__free_pages(virt_to_page(tsk->stack), THREAD_SIZE_ORDER);
+		return;
+	}
+#endif
+
+	__free_pages(virt_to_page(tsk->stack), THREAD_SIZE_ORDER);
 }
 # else
 static struct kmem_cache *thread_stack_cache;
@@ -269,11 +313,40 @@ static void account_kernel_stack(struct task_struct *tsk, int account)
 	}
 }
 
-void free_task(struct task_struct *tsk)
+static void release_task_stack(struct task_struct *tsk)
 {
 	account_kernel_stack(tsk, -1);
 	arch_release_thread_stack(tsk->stack);
 	free_thread_stack(tsk);
+	tsk->stack = NULL;
+#ifdef CONFIG_VMAP_STACK
+	tsk->stack_vm_area = NULL;
+#endif
+}
+
+#ifdef CONFIG_THREAD_INFO_IN_TASK
+void put_task_stack(struct task_struct *tsk)
+{
+	if (atomic_dec_and_test(&tsk->stack_refcount))
+		release_task_stack(tsk);
+}
+#endif
+
+void free_task(struct task_struct *tsk)
+{
+#ifndef CONFIG_THREAD_INFO_IN_TASK
+	/*
+	 * The task is finally done with both the stack and thread_info,
+	 * so free both.
+	 */
+	release_task_stack(tsk);
+#else
+	/*
+	 * If the task had a separate stack allocation, it should be gone
+	 * by now.
+	 */
+	WARN_ON_ONCE(atomic_read(&tsk->stack_refcount) != 0);
+#endif
 	rt_mutex_debug_task_free(tsk);
 	ftrace_graph_exit_task(tsk);
 	put_seccomp(tsk);
@@ -351,6 +424,7 @@ int arch_task_struct_size __read_mostly;
 
 void __init fork_init(void)
 {
+	int i;
 #ifndef CONFIG_ARCH_TASK_STRUCT_ALLOCATOR
 #ifndef ARCH_MIN_TASKALIGN
 #define ARCH_MIN_TASKALIGN	L1_CACHE_BYTES
@@ -370,6 +444,10 @@ void __init fork_init(void)
 	init_task.signal->rlim[RLIMIT_NPROC].rlim_max = max_threads/2;
 	init_task.signal->rlim[RLIMIT_SIGPENDING] =
 		init_task.signal->rlim[RLIMIT_NPROC];
+
+	for (i = 0; i < UCOUNT_COUNTS; i++) {
+		init_user_ns.ucount_max[i] = max_threads/2;
+	}
 }
 
 int __weak arch_dup_task_struct(struct task_struct *dst,
@@ -417,6 +495,9 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 #ifdef CONFIG_VMAP_STACK
 	tsk->stack_vm_area = stack_vm_area;
 #endif
+#ifdef CONFIG_THREAD_INFO_IN_TASK
+	atomic_set(&tsk->stack_refcount, 1);
+#endif
 
 	if (err)
 		goto free_stack;
@@ -430,8 +511,6 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 	 */
 	tsk->seccomp.filter = NULL;
 #ifdef CONFIG_SECURITY_LANDLOCK
-	tsk->seccomp.thread_filter = NULL;
-	tsk->seccomp.landlock_ret = NULL;
 	tsk->seccomp.landlock_hooks = NULL;
 #endif /* CONFIG_SECURITY_LANDLOCK */
 #endif /* CONFIG_SECCOMP */
@@ -1289,7 +1368,7 @@ static int copy_signal(unsigned long clone_flags, struct task_struct *tsk)
 	return 0;
 }
 
-static int copy_seccomp(struct task_struct *p)
+static void copy_seccomp(struct task_struct *p)
 {
 #ifdef CONFIG_SECCOMP
 	/*
@@ -1305,7 +1384,6 @@ static int copy_seccomp(struct task_struct *p)
 	p->seccomp.mode = current->seccomp.mode;
 	p->seccomp.filter = current->seccomp.filter;
 #if defined(CONFIG_SECCOMP_FILTER) && defined(CONFIG_SECURITY_LANDLOCK)
-	/* No copy for thread_filter nor landlock_ret. */
 	p->seccomp.landlock_hooks = current->seccomp.landlock_hooks;
 	if (p->seccomp.landlock_hooks)
 		atomic_inc(&p->seccomp.landlock_hooks->usage);
@@ -1327,7 +1405,6 @@ static int copy_seccomp(struct task_struct *p)
 	if (p->seccomp.mode != SECCOMP_MODE_DISABLED)
 		set_tsk_thread_flag(p, TIF_SECCOMP);
 #endif
-	return 0;
 }
 
 SYSCALL_DEFINE1(set_tid_address, int __user *, tidptr)
@@ -1687,9 +1764,7 @@ static __latent_entropy struct task_struct *copy_process(
 	 * Copy seccomp details explicitly here, in case they were changed
 	 * before holding sighand lock.
 	 */
-	retval = copy_seccomp(p);
-	if (retval)
-		goto bad_fork_cancel_cgroup;
+	copy_seccomp(p);
 
 	/*
 	 * Process group and session signals need to be delivered to just the
@@ -1796,6 +1871,7 @@ bad_fork_cleanup_count:
 	atomic_dec(&p->cred->user->processes);
 	exit_creds(p);
 bad_fork_free:
+	put_task_stack(p);
 	free_task(p);
 fork_out:
 	return ERR_PTR(retval);

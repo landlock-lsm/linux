@@ -104,12 +104,6 @@ struct registry_priv {
 	bool	monitor_enable;
 };
 
-/* For registry parameters */
-#define RGTRY_OFT(field) ((u32)offsetof(struct registry_priv, field))
-#define RGTRY_SZ(field)   sizeof(((struct registry_priv *)0)->field)
-#define BSSID_OFT(field) ((u32)offsetofT(struct wlan_bssid_ex, field))
-#define BSSID_SZ(field)   sizeof(((struct wlan_bssid_ex *)0)->field)
-
 #define MAX_CONTINUAL_URB_ERR		4
 
 struct dvobj_priv {
@@ -154,7 +148,7 @@ struct adapter {
 	struct	eeprom_priv eeprompriv;
 	struct	led_priv	ledpriv;
 
-	void *HalData;
+	struct hal_data_8188e *HalData;
 
 	s32	bDriverStopped;
 	s32	bSurpriseRemoved;
@@ -182,8 +176,6 @@ struct adapter {
 };
 
 #define adapter_to_dvobj(adapter) (adapter->dvobj)
-
-int rtw_handle_dualmac(struct adapter *adapter, bool init);
 
 static inline u8 *myid(struct eeprom_priv *peepriv)
 {

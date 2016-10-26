@@ -44,7 +44,7 @@ MODULE_PARM_DESC(rx_frag_size, "Size of a fragment that holds rcvd data.");
 /* Per-module error detection/recovery workq shared across all functions.
  * Each function schedules its own work request on this shared workq.
  */
-struct workqueue_struct *be_err_recovery_workq;
+static struct workqueue_struct *be_err_recovery_workq;
 
 static const struct pci_device_id be_dev_ids[] = {
 	{ PCI_DEVICE(BE_VENDOR_ID, BE_DEVICE_ID1) },
@@ -60,7 +60,7 @@ static const struct pci_device_id be_dev_ids[] = {
 MODULE_DEVICE_TABLE(pci, be_dev_ids);
 
 /* Workqueue used by all functions for defering cmd calls to the adapter */
-struct workqueue_struct *be_wq;
+static struct workqueue_struct *be_wq;
 
 /* UE Status Low CSR */
 static const char * const ue_status_low_desc[] = {
@@ -724,14 +724,24 @@ void be_link_status_update(struct be_adapter *adapter, u8 link_status)
 	netdev_info(netdev, "Link is %s\n", link_status ? "Up" : "Down");
 }
 
+static int be_gso_hdr_len(struct sk_buff *skb)
+{
+	if (skb->encapsulation)
+		return skb_inner_transport_offset(skb) +
+		       inner_tcp_hdrlen(skb);
+	return skb_transport_offset(skb) + tcp_hdrlen(skb);
+}
+
 static void be_tx_stats_update(struct be_tx_obj *txo, struct sk_buff *skb)
 {
 	struct be_tx_stats *stats = tx_stats(txo);
-	u64 tx_pkts = skb_shinfo(skb)->gso_segs ? : 1;
+	u32 tx_pkts = skb_shinfo(skb)->gso_segs ? : 1;
+	/* Account for headers which get duplicated in TSO pkt */
+	u32 dup_hdr_len = tx_pkts > 1 ? be_gso_hdr_len(skb) * (tx_pkts - 1) : 0;
 
 	u64_stats_update_begin(&stats->sync);
 	stats->tx_reqs++;
-	stats->tx_bytes += skb->len;
+	stats->tx_bytes += skb->len + dup_hdr_len;
 	stats->tx_pkts += tx_pkts;
 	if (skb->encapsulation && skb->ip_summed == CHECKSUM_PARTIAL)
 		stats->tx_vxlan_offload_pkts += tx_pkts;
@@ -1895,7 +1905,8 @@ static int be_clear_vf_tvt(struct be_adapter *adapter, int vf)
 	return 0;
 }
 
-static int be_set_vf_vlan(struct net_device *netdev, int vf, u16 vlan, u8 qos)
+static int be_set_vf_vlan(struct net_device *netdev, int vf, u16 vlan, u8 qos,
+			  __be16 vlan_proto)
 {
 	struct be_adapter *adapter = netdev_priv(netdev);
 	struct be_vf_cfg *vf_cfg = &adapter->vf_cfg[vf];
@@ -1906,6 +1917,9 @@ static int be_set_vf_vlan(struct net_device *netdev, int vf, u16 vlan, u8 qos)
 
 	if (vf >= adapter->num_vfs || vlan > 4095 || qos > 7)
 		return -EINVAL;
+
+	if (vlan_proto != htons(ETH_P_8021Q))
+		return -EPROTONOSUPPORT;
 
 	if (vlan || qos) {
 		vlan |= qos << VLAN_PRIO_SHIFT;
@@ -4365,7 +4379,7 @@ static void be_setup_init(struct be_adapter *adapter)
  * for distribution between the VFs. This self-imposed limit will determine the
  * no: of VFs for which RSS can be enabled.
  */
-void be_calculate_pf_pool_rss_tables(struct be_adapter *adapter)
+static void be_calculate_pf_pool_rss_tables(struct be_adapter *adapter)
 {
 	struct be_port_resources port_res = {0};
 	u8 rss_tables_on_port;

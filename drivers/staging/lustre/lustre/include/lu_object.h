@@ -602,7 +602,7 @@ struct lu_site {
 	/**
 	 * index of bucket on hash table while purging
 	 */
-	int		       ls_purge_start;
+	unsigned int		ls_purge_start;
 	/**
 	 * Top-level device for this stack.
 	 */
@@ -621,6 +621,11 @@ struct lu_site {
 	 **/
 	struct list_head		ls_ld_linkage;
 	spinlock_t		ls_ld_lock;
+
+	/**
+	 * Lock to serialize site purge.
+	 */
+	struct mutex		ls_purge_mutex;
 
 	/**
 	 * lu_site stats
@@ -1285,7 +1290,7 @@ static inline bool lu_name_is_valid_2(const char *name, size_t name_len)
  */
 struct lu_buf {
 	void   *lb_buf;
-	ssize_t lb_len;
+	size_t	lb_len;
 };
 
 #define DLUBUF "(%p %zu)"
@@ -1313,6 +1318,13 @@ struct lu_kmem_descr {
 
 int  lu_kmem_init(struct lu_kmem_descr *caches);
 void lu_kmem_fini(struct lu_kmem_descr *caches);
+
+void lu_buf_free(struct lu_buf *buf);
+void lu_buf_alloc(struct lu_buf *buf, size_t size);
+void lu_buf_realloc(struct lu_buf *buf, size_t size);
+
+int lu_buf_check_and_grow(struct lu_buf *buf, size_t len);
+struct lu_buf *lu_buf_check_and_alloc(struct lu_buf *buf, size_t len);
 
 /** @} lu */
 #endif /* __LUSTRE_LU_OBJECT_H */

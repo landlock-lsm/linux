@@ -1340,7 +1340,6 @@ static struct sock *sk_prot_alloc(struct proto *prot, gfp_t priority,
 		if (!try_module_get(prot->owner))
 			goto out_free_sec;
 		sk_tx_queue_clear(sk);
-		cgroup_sk_alloc(&sk->sk_cgrp_data);
 	}
 
 	return sk;
@@ -1364,6 +1363,7 @@ static void sk_prot_free(struct proto *prot, struct sock *sk)
 	slab = prot->slab;
 
 	cgroup_sk_free(&sk->sk_cgrp_data);
+	mem_cgroup_sk_free(sk);
 	security_sk_free(sk);
 	if (slab != NULL)
 		kmem_cache_free(slab, sk);
@@ -1400,6 +1400,8 @@ struct sock *sk_alloc(struct net *net, int family, gfp_t priority,
 		sock_net_set(sk, net);
 		atomic_set(&sk->sk_wmem_alloc, 1);
 
+		mem_cgroup_sk_alloc(sk);
+		cgroup_sk_alloc(&sk->sk_cgrp_data);
 		sock_update_classid(&sk->sk_cgrp_data);
 		sock_update_netprioidx(&sk->sk_cgrp_data);
 	}
@@ -1544,6 +1546,10 @@ struct sock *sk_clone_lock(const struct sock *sk, const gfp_t priority)
 		newsk->sk_priority = 0;
 		newsk->sk_incoming_cpu = raw_smp_processor_id();
 		atomic64_set(&newsk->sk_cookie, 0);
+
+		mem_cgroup_sk_alloc(newsk);
+		cgroup_sk_alloc(&newsk->sk_cgrp_data);
+
 		/*
 		 * Before updating sk_refcnt, we must commit prior changes to memory
 		 * (Documentation/RCU/rculist_nulls.txt for details)
@@ -1565,9 +1571,6 @@ struct sock *sk_clone_lock(const struct sock *sk, const gfp_t priority)
 		sk_refcnt_debug_inc(newsk);
 		sk_set_socket(newsk, NULL);
 		newsk->sk_wq = NULL;
-
-		if (mem_cgroup_sockets_enabled && sk->sk_memcg)
-			sock_update_memcg(newsk);
 
 		if (newsk->sk_prot->sockets_allocated)
 			sk_sockets_allocated_inc(newsk);

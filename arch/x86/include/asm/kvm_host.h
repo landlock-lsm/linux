@@ -568,6 +568,7 @@ struct kvm_vcpu_arch {
 		struct kvm_steal_time steal;
 	} st;
 
+	u64 tsc_offset;
 	u64 last_guest_tsc;
 	u64 last_host_tsc;
 	u64 tsc_offset_adjustment;
@@ -701,6 +702,8 @@ struct kvm_hv {
 	/* Hyper-v based guest crash (NT kernel bugcheck) parameters */
 	u64 hv_crash_param[HV_X64_MSR_CRASH_PARAMS];
 	u64 hv_crash_ctl;
+
+	HV_REFERENCE_TSC_PAGE tsc_ref;
 };
 
 struct kvm_arch {
@@ -953,7 +956,6 @@ struct kvm_x86_ops {
 
 	bool (*has_wbinvd_exit)(void);
 
-	u64 (*read_tsc_offset)(struct kvm_vcpu *vcpu);
 	void (*write_tsc_offset)(struct kvm_vcpu *vcpu, u64 offset);
 
 	u64 (*read_l1_tsc)(struct kvm_vcpu *vcpu, u64 host_tsc);

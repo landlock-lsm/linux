@@ -80,9 +80,9 @@ it is guaranteed that the state did change in between the two events.
 	  has the unregistered logical address. In that case all other bits are 0.
 
 
-.. tabularcolumns:: |p{1.0cm}|p{2.0cm}|p{14.5cm}|
-
 .. c:type:: cec_event_lost_msgs
+
+.. tabularcolumns:: |p{1.0cm}|p{2.0cm}|p{14.5cm}|
 
 .. flat-table:: struct cec_event_lost_msgs
     :header-rows:  0

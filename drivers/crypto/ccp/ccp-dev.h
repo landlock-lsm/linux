@@ -601,6 +601,8 @@ void ccp_platform_exit(void);
 void ccp_add_device(struct ccp_device *ccp);
 void ccp_del_device(struct ccp_device *ccp);
 
+extern void ccp_log_error(struct ccp_device *, int);
+
 struct ccp_device *ccp_alloc_struct(struct device *dev);
 bool ccp_queues_suspended(struct ccp_device *ccp);
 int ccp_cmd_queue_thread(void *data);
@@ -639,8 +641,8 @@ struct ccp_vdata {
 	const unsigned int offset;
 };
 
-extern	struct ccp_vdata ccpv3;
-extern	struct ccp_vdata ccpv5;
-extern	struct ccp_vdata ccpv5other;
+extern const struct ccp_vdata ccpv3;
+extern const struct ccp_vdata ccpv5a;
+extern const struct ccp_vdata ccpv5b;
 
 #endif

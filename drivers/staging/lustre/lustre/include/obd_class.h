@@ -677,15 +677,6 @@ static inline int obd_unpackmd(struct obd_export *exp,
 	return rc;
 }
 
-/* helper functions */
-static inline int obd_alloc_memmd(struct obd_export *exp,
-				  struct lov_stripe_md **mem_tgt)
-{
-	LASSERT(mem_tgt);
-	LASSERT(!*mem_tgt);
-	return obd_unpackmd(exp, mem_tgt, NULL, 0);
-}
-
 static inline int obd_free_memmd(struct obd_export *exp,
 				 struct lov_stripe_md **mem_tgt)
 {
@@ -699,29 +690,26 @@ static inline int obd_free_memmd(struct obd_export *exp,
 }
 
 static inline int obd_create(const struct lu_env *env, struct obd_export *exp,
-			     struct obdo *obdo, struct lov_stripe_md **ea,
-			     struct obd_trans_info *oti)
+			     struct obdo *obdo, struct obd_trans_info *oti)
 {
 	int rc;
 
 	EXP_CHECK_DT_OP(exp, create);
 	EXP_COUNTER_INCREMENT(exp, create);
 
-	rc = OBP(exp->exp_obd, create)(env, exp, obdo, ea, oti);
+	rc = OBP(exp->exp_obd, create)(env, exp, obdo, oti);
 	return rc;
 }
 
 static inline int obd_destroy(const struct lu_env *env, struct obd_export *exp,
-			      struct obdo *obdo, struct lov_stripe_md *ea,
-			      struct obd_trans_info *oti,
-			      struct obd_export *md_exp)
+			      struct obdo *obdo, struct obd_trans_info *oti)
 {
 	int rc;
 
 	EXP_CHECK_DT_OP(exp, destroy);
 	EXP_COUNTER_INCREMENT(exp, destroy);
 
-	rc = OBP(exp->exp_obd, destroy)(env, exp, obdo, ea, oti, md_exp);
+	rc = OBP(exp->exp_obd, destroy)(env, exp, obdo, oti);
 	return rc;
 }
 
@@ -1152,19 +1140,6 @@ static inline int obd_commitrw(const struct lu_env *env, int cmd,
 	return rc;
 }
 
-static inline int obd_adjust_kms(struct obd_export *exp,
-				 struct lov_stripe_md *lsm, u64 size,
-				 int shrink)
-{
-	int rc;
-
-	EXP_CHECK_DT_OP(exp, adjust_kms);
-	EXP_COUNTER_INCREMENT(exp, adjust_kms);
-
-	rc = OBP(exp->exp_obd, adjust_kms)(exp, lsm, size, shrink);
-	return rc;
-}
-
 static inline int obd_iocontrol(unsigned int cmd, struct obd_export *exp,
 				int len, void *karg, void __user *uarg)
 {
@@ -1358,9 +1333,9 @@ static inline int md_close(struct obd_export *exp, struct md_op_data *op_data,
 }
 
 static inline int md_create(struct obd_export *exp, struct md_op_data *op_data,
-			    const void *data, int datalen, int mode, __u32 uid,
-			    __u32 gid, cfs_cap_t cap_effective, __u64 rdev,
-			    struct ptlrpc_request **request)
+			    const void *data, size_t datalen, umode_t mode,
+			    uid_t uid, gid_t gid, cfs_cap_t cap_effective,
+			    __u64 rdev, struct ptlrpc_request **request)
 {
 	int rc;
 
@@ -1440,8 +1415,8 @@ static inline int md_link(struct obd_export *exp, struct md_op_data *op_data,
 }
 
 static inline int md_rename(struct obd_export *exp, struct md_op_data *op_data,
-			    const char *old, int oldlen, const char *new,
-			    int newlen, struct ptlrpc_request **request)
+			    const char *old, size_t oldlen, const char *new,
+			    size_t newlen, struct ptlrpc_request **request)
 {
 	int rc;
 
@@ -1453,7 +1428,7 @@ static inline int md_rename(struct obd_export *exp, struct md_op_data *op_data,
 }
 
 static inline int md_setattr(struct obd_export *exp, struct md_op_data *op_data,
-			     void *ea, int ealen, void *ea2, int ea2len,
+			     void *ea, size_t ealen, void *ea2, size_t ea2len,
 			     struct ptlrpc_request **request,
 			     struct md_open_data **mod)
 {
@@ -1522,23 +1497,14 @@ static inline int md_free_lustre_md(struct obd_export *exp,
 	return MDP(exp->exp_obd, free_lustre_md)(exp, md);
 }
 
-static inline int md_update_lsm_md(struct obd_export *exp,
-				   struct lmv_stripe_md *lsm,
-				   struct mdt_body *body,
-				   ldlm_blocking_callback cb)
-{
-	EXP_CHECK_MD_OP(exp, update_lsm_md);
-	EXP_MD_COUNTER_INCREMENT(exp, update_lsm_md);
-	return MDP(exp->exp_obd, update_lsm_md)(exp, lsm, body, cb);
-}
-
 static inline int md_merge_attr(struct obd_export *exp,
 				const struct lmv_stripe_md *lsm,
-				struct cl_attr *attr)
+				struct cl_attr *attr,
+				ldlm_blocking_callback cb)
 {
 	EXP_CHECK_MD_OP(exp, merge_attr);
 	EXP_MD_COUNTER_INCREMENT(exp, merge_attr);
-	return MDP(exp->exp_obd, merge_attr)(exp, lsm, attr);
+	return MDP(exp->exp_obd, merge_attr)(exp, lsm, attr, cb);
 }
 
 static inline int md_setxattr(struct obd_export *exp, const struct lu_fid *fid,
@@ -1696,6 +1662,9 @@ struct lwp_register_item {
 extern int (*ptlrpc_put_connection_superhack)(struct ptlrpc_connection *c);
 
 /* obd_mount.c */
+int lustre_unregister_fs(void);
+int lustre_register_fs(void);
+int lustre_check_exclusion(struct super_block *sb, char *svname);
 
 /* sysctl.c */
 int obd_sysctl_init(void);
@@ -1716,9 +1685,16 @@ void class_exit_uuidlist(void);
 extern char obd_jobid_node[];
 extern struct miscdevice obd_psdev;
 extern spinlock_t obd_types_lock;
+int class_procfs_init(void);
+int class_procfs_clean(void);
 
 /* prng.c */
 #define ll_generate_random_uuid(uuid_out) cfs_get_random_bytes(uuid_out, sizeof(class_uuid_t))
+
+/* statfs_pack.c */
+struct kstatfs;
+void statfs_pack(struct obd_statfs *osfs, struct kstatfs *sfs);
+void statfs_unpack(struct kstatfs *sfs, struct obd_statfs *osfs);
 
 /* root squash info */
 struct rw_semaphore;

@@ -37,7 +37,6 @@
 #define DEBUG_SUBSYSTEM S_LLITE
 
 #include "../include/obd_support.h"
-#include "../include/lustre_lite.h"
 #include "../include/lustre/lustre_idl.h"
 #include "../include/lustre_dlm.h"
 
@@ -279,14 +278,13 @@ static int ll_revalidate_dentry(struct dentry *dentry,
 	if (lookup_flags & (LOOKUP_PARENT | LOOKUP_OPEN | LOOKUP_CREATE))
 		return 1;
 
-	if (d_need_statahead(dir, dentry) <= 0)
+	if (!dentry_may_statahead(dir, dentry))
 		return 1;
 
 	if (lookup_flags & LOOKUP_RCU)
 		return -ECHILD;
 
-	do_statahead_enter(dir, &dentry, !d_inode(dentry));
-	ll_statahead_mark(dir, dentry);
+	ll_statahead(dir, &dentry, !d_inode(dentry));
 	return 1;
 }
 

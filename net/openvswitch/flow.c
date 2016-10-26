@@ -29,6 +29,7 @@
 #include <linux/module.h>
 #include <linux/in.h>
 #include <linux/rcupdate.h>
+#include <linux/cpumask.h>
 #include <linux/if_arp.h>
 #include <linux/ip.h>
 #include <linux/ipv6.h>
@@ -72,32 +73,33 @@ void ovs_flow_stats_update(struct sw_flow *flow, __be16 tcp_flags,
 {
 	struct flow_stats *stats;
 	int node = numa_node_id();
+	int cpu = smp_processor_id();
 	int len = skb->len + (skb_vlan_tag_present(skb) ? VLAN_HLEN : 0);
 
-	stats = rcu_dereference(flow->stats[node]);
+	stats = rcu_dereference(flow->stats[cpu]);
 
-	/* Check if already have node-specific stats. */
+	/* Check if already have CPU-specific stats. */
 	if (likely(stats)) {
 		spin_lock(&stats->lock);
 		/* Mark if we write on the pre-allocated stats. */
-		if (node == 0 && unlikely(flow->stats_last_writer != node))
-			flow->stats_last_writer = node;
+		if (cpu == 0 && unlikely(flow->stats_last_writer != cpu))
+			flow->stats_last_writer = cpu;
 	} else {
 		stats = rcu_dereference(flow->stats[0]); /* Pre-allocated. */
 		spin_lock(&stats->lock);
 
-		/* If the current NUMA-node is the only writer on the
+		/* If the current CPU is the only writer on the
 		 * pre-allocated stats keep using them.
 		 */
-		if (unlikely(flow->stats_last_writer != node)) {
+		if (unlikely(flow->stats_last_writer != cpu)) {
 			/* A previous locker may have already allocated the
-			 * stats, so we need to check again.  If node-specific
+			 * stats, so we need to check again.  If CPU-specific
 			 * stats were already allocated, we update the pre-
 			 * allocated stats as we have already locked them.
 			 */
-			if (likely(flow->stats_last_writer != NUMA_NO_NODE)
-			    && likely(!rcu_access_pointer(flow->stats[node]))) {
-				/* Try to allocate node-specific stats. */
+			if (likely(flow->stats_last_writer != -1) &&
+			    likely(!rcu_access_pointer(flow->stats[cpu]))) {
+				/* Try to allocate CPU-specific stats. */
 				struct flow_stats *new_stats;
 
 				new_stats =
@@ -114,12 +116,12 @@ void ovs_flow_stats_update(struct sw_flow *flow, __be16 tcp_flags,
 					new_stats->tcp_flags = tcp_flags;
 					spin_lock_init(&new_stats->lock);
 
-					rcu_assign_pointer(flow->stats[node],
+					rcu_assign_pointer(flow->stats[cpu],
 							   new_stats);
 					goto unlock;
 				}
 			}
-			flow->stats_last_writer = node;
+			flow->stats_last_writer = cpu;
 		}
 	}
 
@@ -136,14 +138,15 @@ void ovs_flow_stats_get(const struct sw_flow *flow,
 			struct ovs_flow_stats *ovs_stats,
 			unsigned long *used, __be16 *tcp_flags)
 {
-	int node;
+	int cpu;
 
 	*used = 0;
 	*tcp_flags = 0;
 	memset(ovs_stats, 0, sizeof(*ovs_stats));
 
-	for_each_node(node) {
-		struct flow_stats *stats = rcu_dereference_ovsl(flow->stats[node]);
+	/* We open code this to make sure cpu 0 is always considered */
+	for (cpu = 0; cpu < nr_cpu_ids; cpu = cpumask_next(cpu, cpu_possible_mask)) {
+		struct flow_stats *stats = rcu_dereference_ovsl(flow->stats[cpu]);
 
 		if (stats) {
 			/* Local CPU may write on non-local stats, so we must
@@ -163,10 +166,11 @@ void ovs_flow_stats_get(const struct sw_flow *flow,
 /* Called with ovs_mutex. */
 void ovs_flow_stats_clear(struct sw_flow *flow)
 {
-	int node;
+	int cpu;
 
-	for_each_node(node) {
-		struct flow_stats *stats = ovsl_dereference(flow->stats[node]);
+	/* We open code this to make sure cpu 0 is always considered */
+	for (cpu = 0; cpu < nr_cpu_ids; cpu = cpumask_next(cpu, cpu_possible_mask)) {
+		struct flow_stats *stats = ovsl_dereference(flow->stats[cpu]);
 
 		if (stats) {
 			spin_lock_bh(&stats->lock);
@@ -339,7 +343,7 @@ static int parse_vlan(struct sk_buff *skb, struct sw_flow_key *key)
 	key->eth.cvlan.tci = 0;
 	key->eth.cvlan.tpid = 0;
 
-	if (likely(skb_vlan_tag_present(skb))) {
+	if (skb_vlan_tag_present(skb)) {
 		key->eth.vlan.tci = htons(skb->vlan_tci);
 		key->eth.vlan.tpid = skb->vlan_proto;
 	} else {
@@ -629,12 +633,7 @@ static int key_extract(struct sk_buff *skb, struct sw_flow_key *key)
 	} else if (eth_p_mpls(key->eth.type)) {
 		size_t stack_len = MPLS_HLEN;
 
-		/* In the presence of an MPLS label stack the end of the L2
-		 * header and the beginning of the L3 header differ.
-		 *
-		 * Advance network_header to the beginning of the L3
-		 * header. mac_len corresponds to the end of the L2 header.
-		 */
+		skb_set_inner_network_header(skb, skb->mac_len);
 		while (1) {
 			__be32 lse;
 
@@ -642,12 +641,12 @@ static int key_extract(struct sk_buff *skb, struct sw_flow_key *key)
 			if (unlikely(error))
 				return 0;
 
-			memcpy(&lse, skb_network_header(skb), MPLS_HLEN);
+			memcpy(&lse, skb_inner_network_header(skb), MPLS_HLEN);
 
 			if (stack_len == MPLS_HLEN)
 				memcpy(&key->mpls.top_lse, &lse, MPLS_HLEN);
 
-			skb_set_network_header(skb, skb->mac_len + stack_len);
+			skb_set_inner_network_header(skb, skb->mac_len + stack_len);
 			if (lse & htonl(MPLS_LS_S_MASK))
 				break;
 
@@ -762,8 +761,6 @@ int ovs_flow_key_extract_userspace(struct net *net, const struct nlattr *attr,
 				   struct sw_flow_key *key, bool log)
 {
 	int err;
-
-	memset(key, 0, OVS_SW_FLOW_KEY_METADATA_SIZE);
 
 	/* Extract metadata from netlink attributes. */
 	err = ovs_nla_get_flow_metadata(net, attr, key, log);

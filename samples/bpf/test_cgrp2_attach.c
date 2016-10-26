@@ -69,7 +69,7 @@ static int prog_load(int map_fd, int verdict)
 		BPF_EXIT_INSN(),
 	};
 
-	return bpf_prog_load(BPF_PROG_TYPE_CGROUP_SOCKET,
+	return bpf_prog_load(BPF_PROG_TYPE_CGROUP_SKB,
 			     prog, sizeof(prog), "GPL", 0);
 }
 

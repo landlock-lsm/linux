@@ -50,7 +50,7 @@ static void fsl_mc_msi_update_dom_ops(struct msi_domain_info *info)
 	/*
 	 * set_desc should not be set by the caller
 	 */
-	if (ops->set_desc == NULL)
+	if (!ops->set_desc)
 		ops->set_desc = fsl_mc_msi_set_desc;
 }
 
@@ -140,7 +140,7 @@ static void fsl_mc_msi_update_chip_ops(struct msi_domain_info *info)
 	/*
 	 * irq_write_msi_msg should not be set by the caller
 	 */
-	if (chip->irq_write_msi_msg == NULL)
+	if (!chip->irq_write_msi_msg)
 		chip->irq_write_msi_msg = fsl_mc_msi_write_msg;
 }
 
@@ -211,7 +211,7 @@ static int fsl_mc_msi_alloc_descs(struct device *dev, unsigned int irq_count)
 	struct msi_desc *msi_desc;
 
 	for (i = 0; i < irq_count; i++) {
-		msi_desc = alloc_msi_entry(dev);
+		msi_desc = alloc_msi_entry(dev, 1, NULL);
 		if (!msi_desc) {
 			dev_err(dev, "Failed to allocate msi entry\n");
 			error = -ENOMEM;
@@ -219,7 +219,6 @@ static int fsl_mc_msi_alloc_descs(struct device *dev, unsigned int irq_count)
 		}
 
 		msi_desc->fsl_mc.msi_index = i;
-		msi_desc->nvec_used = 1;
 		INIT_LIST_HEAD(&msi_desc->list);
 		list_add_tail(&msi_desc->list, dev_to_msi_list(dev));
 	}

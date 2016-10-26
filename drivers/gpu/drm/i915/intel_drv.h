@@ -52,11 +52,15 @@
  */
 #define _wait_for(COND, US, W) ({ \
 	unsigned long timeout__ = jiffies + usecs_to_jiffies(US) + 1;	\
-	int ret__ = 0;							\
-	while (!(COND)) {						\
-		if (time_after(jiffies, timeout__)) {			\
-			if (!(COND))					\
-				ret__ = -ETIMEDOUT;			\
+	int ret__;							\
+	for (;;) {							\
+		bool expired__ = time_after(jiffies, timeout__);	\
+		if (COND) {						\
+			ret__ = 0;					\
+			break;						\
+		}							\
+		if (expired__) {					\
+			ret__ = -ETIMEDOUT;				\
 			break;						\
 		}							\
 		if ((W) && drm_can_sleep()) {				\
@@ -259,6 +263,7 @@ struct intel_panel {
 		bool enabled;
 		bool combination_mode;	/* gen 2/4 only */
 		bool active_low_pwm;
+		bool alternate_pwm_increment;	/* lpt+ */
 
 		/* PWM chip */
 		bool util_pin_active_low;	/* bxt+ */
@@ -1737,9 +1742,9 @@ void ilk_wm_get_hw_state(struct drm_device *dev);
 void skl_wm_get_hw_state(struct drm_device *dev);
 void skl_ddb_get_hw_state(struct drm_i915_private *dev_priv,
 			  struct skl_ddb_allocation *ddb /* out */);
-bool skl_can_enable_sagv(struct drm_atomic_state *state);
-int skl_enable_sagv(struct drm_i915_private *dev_priv);
-int skl_disable_sagv(struct drm_i915_private *dev_priv);
+bool intel_can_enable_sagv(struct drm_atomic_state *state);
+int intel_enable_sagv(struct drm_i915_private *dev_priv);
+int intel_disable_sagv(struct drm_i915_private *dev_priv);
 bool skl_ddb_allocation_equals(const struct skl_ddb_allocation *old,
 			       const struct skl_ddb_allocation *new,
 			       enum pipe pipe);

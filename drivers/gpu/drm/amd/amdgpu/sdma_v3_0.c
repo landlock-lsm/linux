@@ -335,12 +335,8 @@ out:
  */
 static uint32_t sdma_v3_0_ring_get_rptr(struct amdgpu_ring *ring)
 {
-	u32 rptr;
-
 	/* XXX check if swapping is necessary on BE */
-	rptr = ring->adev->wb.wb[ring->rptr_offs] >> 2;
-
-	return rptr;
+	return ring->adev->wb.wb[ring->rptr_offs] >> 2;
 }
 
 /**
@@ -498,31 +494,6 @@ static void sdma_v3_0_ring_emit_fence(struct amdgpu_ring *ring, u64 addr, u64 se
 	amdgpu_ring_write(ring, SDMA_PKT_HEADER_OP(SDMA_OP_TRAP));
 	amdgpu_ring_write(ring, SDMA_PKT_TRAP_INT_CONTEXT_INT_CONTEXT(0));
 }
-
-unsigned init_cond_exec(struct amdgpu_ring *ring)
-{
-	unsigned ret;
-	amdgpu_ring_write(ring, SDMA_PKT_HEADER_OP(SDMA_OP_COND_EXE));
-	amdgpu_ring_write(ring, lower_32_bits(ring->cond_exe_gpu_addr));
-	amdgpu_ring_write(ring, upper_32_bits(ring->cond_exe_gpu_addr));
-	amdgpu_ring_write(ring, 1);
-	ret = ring->wptr;/* this is the offset we need patch later */
-	amdgpu_ring_write(ring, 0x55aa55aa);/* insert dummy here and patch it later */
-	return ret;
-}
-
-void patch_cond_exec(struct amdgpu_ring *ring, unsigned offset)
-{
-	unsigned cur;
-	BUG_ON(ring->ring[offset] != 0x55aa55aa);
-
-	cur = ring->wptr - 1;
-	if (likely(cur > offset))
-		ring->ring[offset] = cur - offset;
-	else
-		ring->ring[offset] = (ring->ring_size>>2) - offset + cur;
-}
-
 
 /**
  * sdma_v3_0_gfx_stop - stop the gfx async dma engines
@@ -1133,6 +1104,22 @@ static void sdma_v3_0_ring_emit_vm_flush(struct amdgpu_ring *ring,
 			  SDMA_PKT_POLL_REGMEM_DW5_INTERVAL(10)); /* retry count, poll interval */
 }
 
+static unsigned sdma_v3_0_ring_get_emit_ib_size(struct amdgpu_ring *ring)
+{
+	return
+		7 + 6; /* sdma_v3_0_ring_emit_ib */
+}
+
+static unsigned sdma_v3_0_ring_get_dma_frame_size(struct amdgpu_ring *ring)
+{
+	return
+		6 + /* sdma_v3_0_ring_emit_hdp_flush */
+		3 + /* sdma_v3_0_ring_emit_hdp_invalidate */
+		6 + /* sdma_v3_0_ring_emit_pipeline_sync */
+		12 + /* sdma_v3_0_ring_emit_vm_flush */
+		10 + 10 + 10; /* sdma_v3_0_ring_emit_fence x3 for user fence, vm fence */
+}
+
 static int sdma_v3_0_early_init(void *handle)
 {
 	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
@@ -1281,7 +1268,7 @@ static int sdma_v3_0_wait_for_idle(void *handle)
 	return -ETIMEDOUT;
 }
 
-static int sdma_v3_0_check_soft_reset(void *handle)
+static bool sdma_v3_0_check_soft_reset(void *handle)
 {
 	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 	u32 srbm_soft_reset = 0;
@@ -1294,14 +1281,12 @@ static int sdma_v3_0_check_soft_reset(void *handle)
 	}
 
 	if (srbm_soft_reset) {
-		adev->ip_block_status[AMD_IP_BLOCK_TYPE_SDMA].hang = true;
 		adev->sdma.srbm_soft_reset = srbm_soft_reset;
+		return true;
 	} else {
-		adev->ip_block_status[AMD_IP_BLOCK_TYPE_SDMA].hang = false;
 		adev->sdma.srbm_soft_reset = 0;
+		return false;
 	}
-
-	return 0;
 }
 
 static int sdma_v3_0_pre_soft_reset(void *handle)
@@ -1309,7 +1294,7 @@ static int sdma_v3_0_pre_soft_reset(void *handle)
 	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 	u32 srbm_soft_reset = 0;
 
-	if (!adev->ip_block_status[AMD_IP_BLOCK_TYPE_SDMA].hang)
+	if (!adev->sdma.srbm_soft_reset)
 		return 0;
 
 	srbm_soft_reset = adev->sdma.srbm_soft_reset;
@@ -1328,7 +1313,7 @@ static int sdma_v3_0_post_soft_reset(void *handle)
 	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 	u32 srbm_soft_reset = 0;
 
-	if (!adev->ip_block_status[AMD_IP_BLOCK_TYPE_SDMA].hang)
+	if (!adev->sdma.srbm_soft_reset)
 		return 0;
 
 	srbm_soft_reset = adev->sdma.srbm_soft_reset;
@@ -1348,7 +1333,7 @@ static int sdma_v3_0_soft_reset(void *handle)
 	u32 srbm_soft_reset = 0;
 	u32 tmp;
 
-	if (!adev->ip_block_status[AMD_IP_BLOCK_TYPE_SDMA].hang)
+	if (!adev->sdma.srbm_soft_reset)
 		return 0;
 
 	srbm_soft_reset = adev->sdma.srbm_soft_reset;
@@ -1594,6 +1579,8 @@ static const struct amdgpu_ring_funcs sdma_v3_0_ring_funcs = {
 	.test_ib = sdma_v3_0_ring_test_ib,
 	.insert_nop = sdma_v3_0_ring_insert_nop,
 	.pad_ib = sdma_v3_0_ring_pad_ib,
+	.get_emit_ib_size = sdma_v3_0_ring_get_emit_ib_size,
+	.get_dma_frame_size = sdma_v3_0_ring_get_dma_frame_size,
 };
 
 static void sdma_v3_0_set_ring_funcs(struct amdgpu_device *adev)

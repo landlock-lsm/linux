@@ -14,7 +14,10 @@
  * before:
  * void __latent_entropy test(int argc, char *argv[])
  * {
- *	printf("%u %s\n", argc, *argv);
+ *	if (argc <= 1)
+ *		printf("%s: no command arguments :(\n", *argv);
+ *	else
+ *		printf("%s: %d command arguments!\n", *argv, args - 1);
  * }
  *
  * after:
@@ -37,22 +40,20 @@
  *	local_entropy ^= tmp_latent_entropy;
  *
  *	// latent_entropy_execute() 3.
- *	local_entropy += 4623067384293424948;
- *
- *	printf("%u %s\n", argc, *argv);
+ *	if (argc <= 1) {
+ *		// perturb_local_entropy()
+ *		local_entropy += 4623067384293424948;
+ *		printf("%s: no command arguments :(\n", *argv);
+ *		// perturb_local_entropy()
+ *	} else {
+ *		local_entropy ^= 3896280633962944730;
+ *		printf("%s: %d command arguments!\n", *argv, args - 1);
+ *	}
  *
  *	// latent_entropy_execute() 4.
  *	tmp_latent_entropy = rol(tmp_latent_entropy, local_entropy);
  *	latent_entropy = tmp_latent_entropy;
  * }
- *
- * It would look like this in C:
- *
- * unsigned long local_entropy = latent_entropy;
- * local_entropy ^= 1234567890;
- * local_entropy ^= (unsigned long)__builtin_frame_address(0);
- * local_entropy += 9876543210;
- * latent_entropy = rol(local_entropy, 1234509876);
  *
  * TODO:
  * - add ipa pass to identify not explicitly marked candidate functions
@@ -518,7 +519,7 @@ static unsigned int latent_entropy_execute(void)
 	if (!create_latent_entropy_decl())
 		return 0;
 
-	/* 2. initialize local entropy variable */
+	/* prepare for step 2 below */
 	gcc_assert(single_succ_p(ENTRY_BLOCK_PTR_FOR_FN(cfun)));
 	bb = single_succ(ENTRY_BLOCK_PTR_FOR_FN(cfun));
 	if (!single_pred_p(bb)) {

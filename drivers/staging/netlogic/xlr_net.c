@@ -269,16 +269,6 @@ static void xlr_make_tx_desc(struct nlm_fmn_msg *msg, unsigned long addr,
 	msg->msg3 = 0;
 }
 
-static void __maybe_unused xlr_wakeup_queue(unsigned long dev)
-{
-	struct net_device *ndev = (struct net_device *)dev;
-	struct xlr_net_priv *priv = netdev_priv(ndev);
-	struct phy_device *phydev = xlr_get_phydev(priv);
-
-	if (phydev->link)
-		netif_tx_wake_queue(netdev_get_tx_queue(ndev, priv->wakeup_q));
-}
-
 static netdev_tx_t xlr_net_start_xmit(struct sk_buff *skb,
 				      struct net_device *ndev)
 {
@@ -413,7 +403,7 @@ static struct rtnl_link_stats64 *xlr_get_stats64(struct net_device *ndev,
 	return stats;
 }
 
-static struct net_device_ops xlr_netdev_ops = {
+static const struct net_device_ops xlr_netdev_ops = {
 	.ndo_open = xlr_net_open,
 	.ndo_stop = xlr_net_stop,
 	.ndo_start_xmit = xlr_net_start_xmit,

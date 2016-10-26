@@ -61,8 +61,8 @@ static int prism2sta_probe_usb(struct usb_interface *interface,
 {
 	struct usb_device *dev;
 
-	wlandevice_t *wlandev = NULL;
-	hfa384x_t *hw = NULL;
+	struct wlandevice *wlandev = NULL;
+	struct hfa384x *hw = NULL;
 	int result = 0;
 
 	dev = interface_to_usbdev(interface);
@@ -134,15 +134,15 @@ done:
 
 static void prism2sta_disconnect_usb(struct usb_interface *interface)
 {
-	wlandevice_t *wlandev;
+	struct wlandevice *wlandev;
 
-	wlandev = (wlandevice_t *)usb_get_intfdata(interface);
+	wlandev = (struct wlandevice *)usb_get_intfdata(interface);
 	if (wlandev) {
 		LIST_HEAD(cleanlist);
-		hfa384x_usbctlx_t *ctlx, *temp;
+		struct hfa384x_usbctlx *ctlx, *temp;
 		unsigned long flags;
 
-		hfa384x_t *hw = wlandev->priv;
+		struct hfa384x *hw = wlandev->priv;
 
 		if (!hw)
 			goto exit;
@@ -218,10 +218,10 @@ exit:
 static int prism2sta_suspend(struct usb_interface *interface,
 			     pm_message_t message)
 {
-	hfa384x_t *hw = NULL;
-	wlandevice_t *wlandev;
+	struct hfa384x *hw = NULL;
+	struct wlandevice *wlandev;
 
-	wlandev = (wlandevice_t *)usb_get_intfdata(interface);
+	wlandev = (struct wlandevice *)usb_get_intfdata(interface);
 	if (!wlandev)
 		return -ENODEV;
 
@@ -241,10 +241,10 @@ static int prism2sta_suspend(struct usb_interface *interface,
 static int prism2sta_resume(struct usb_interface *interface)
 {
 	int result = 0;
-	hfa384x_t *hw = NULL;
-	wlandevice_t *wlandev;
+	struct hfa384x *hw = NULL;
+	struct wlandevice *wlandev;
 
-	wlandev = (wlandevice_t *)usb_get_intfdata(interface);
+	wlandev = (struct wlandevice *)usb_get_intfdata(interface);
 	if (!wlandev)
 		return -ENODEV;
 

@@ -442,8 +442,6 @@ static int netvsc_start_xmit(struct sk_buff *skb, struct net_device *net)
 	}
 
 	net_trans_info = get_net_transport_info(skb, &hdr_offset);
-	if (net_trans_info == TRANSPORT_INFO_NOT_IP)
-		goto do_send;
 
 	/*
 	 * Setup the sendside checksum offload only if this is not a
@@ -478,56 +476,29 @@ static int netvsc_start_xmit(struct sk_buff *skb, struct net_device *net)
 		}
 		lso_info->lso_v2_transmit.tcp_header_offset = hdr_offset;
 		lso_info->lso_v2_transmit.mss = skb_shinfo(skb)->gso_size;
-		goto do_send;
+	} else if (skb->ip_summed == CHECKSUM_PARTIAL) {
+		if (net_trans_info & INFO_TCP) {
+			rndis_msg_size += NDIS_CSUM_PPI_SIZE;
+			ppi = init_ppi_data(rndis_msg, NDIS_CSUM_PPI_SIZE,
+					    TCPIP_CHKSUM_PKTINFO);
+
+			csum_info = (struct ndis_tcp_ip_checksum_info *)((void *)ppi +
+									 ppi->ppi_offset);
+
+			if (net_trans_info & (INFO_IPV4 << 16))
+				csum_info->transmit.is_ipv4 = 1;
+			else
+				csum_info->transmit.is_ipv6 = 1;
+
+			csum_info->transmit.tcp_checksum = 1;
+			csum_info->transmit.tcp_header_offset = hdr_offset;
+		} else {
+			/* UDP checksum (and other) offload is not supported. */
+			if (skb_checksum_help(skb))
+				goto drop;
+		}
 	}
 
-	if ((skb->ip_summed == CHECKSUM_NONE) ||
-	    (skb->ip_summed == CHECKSUM_UNNECESSARY))
-		goto do_send;
-
-	rndis_msg_size += NDIS_CSUM_PPI_SIZE;
-	ppi = init_ppi_data(rndis_msg, NDIS_CSUM_PPI_SIZE,
-			    TCPIP_CHKSUM_PKTINFO);
-
-	csum_info = (struct ndis_tcp_ip_checksum_info *)((void *)ppi +
-			ppi->ppi_offset);
-
-	if (net_trans_info & (INFO_IPV4 << 16))
-		csum_info->transmit.is_ipv4 = 1;
-	else
-		csum_info->transmit.is_ipv6 = 1;
-
-	if (net_trans_info & INFO_TCP) {
-		csum_info->transmit.tcp_checksum = 1;
-		csum_info->transmit.tcp_header_offset = hdr_offset;
-	} else if (net_trans_info & INFO_UDP) {
-		/* UDP checksum offload is not supported on ws2008r2.
-		 * Furthermore, on ws2012 and ws2012r2, there are some
-		 * issues with udp checksum offload from Linux guests.
-		 * (these are host issues).
-		 * For now compute the checksum here.
-		 */
-		struct udphdr *uh;
-		u16 udp_len;
-
-		ret = skb_cow_head(skb, 0);
-		if (ret)
-			goto no_memory;
-
-		uh = udp_hdr(skb);
-		udp_len = ntohs(uh->len);
-		uh->check = 0;
-		uh->check = csum_tcpudp_magic(ip_hdr(skb)->saddr,
-					      ip_hdr(skb)->daddr,
-					      udp_len, IPPROTO_UDP,
-					      csum_partial(uh, udp_len, 0));
-		if (uh->check == 0)
-			uh->check = CSUM_MANGLED_0;
-
-		csum_info->transmit.udp_checksum = 0;
-	}
-
-do_send:
 	/* Start filling in the page buffers with the rndis hdr */
 	rndis_msg->msg_len += rndis_msg_size;
 	packet->total_data_buflen = rndis_msg->msg_len;
@@ -667,51 +638,23 @@ int netvsc_recv_callback(struct hv_device *device_obj,
 {
 	struct net_device *net = hv_get_drvdata(device_obj);
 	struct net_device_context *net_device_ctx = netdev_priv(net);
+	struct net_device *vf_netdev;
 	struct sk_buff *skb;
-	struct sk_buff *vf_skb;
 	struct netvsc_stats *rx_stats;
-	u32 bytes_recvd = packet->total_data_buflen;
-	int ret = 0;
 
-	if (!net || net->reg_state != NETREG_REGISTERED)
+	if (net->reg_state != NETREG_REGISTERED)
 		return NVSP_STAT_FAIL;
 
-	if (READ_ONCE(net_device_ctx->vf_inject)) {
-		atomic_inc(&net_device_ctx->vf_use_cnt);
-		if (!READ_ONCE(net_device_ctx->vf_inject)) {
-			/*
-			 * We raced; just move on.
-			 */
-			atomic_dec(&net_device_ctx->vf_use_cnt);
-			goto vf_injection_done;
-		}
-
-		/*
-		 * Inject this packet into the VF inerface.
-		 * On Hyper-V, multicast and brodcast packets
-		 * are only delivered on the synthetic interface
-		 * (after subjecting these to policy filters on
-		 * the host). Deliver these via the VF interface
-		 * in the guest.
-		 */
-		vf_skb = netvsc_alloc_recv_skb(net_device_ctx->vf_netdev,
-					       packet, csum_info, *data,
-					       vlan_tci);
-		if (vf_skb != NULL) {
-			++net_device_ctx->vf_netdev->stats.rx_packets;
-			net_device_ctx->vf_netdev->stats.rx_bytes +=
-				bytes_recvd;
-			netif_receive_skb(vf_skb);
-		} else {
-			++net->stats.rx_dropped;
-			ret = NVSP_STAT_FAIL;
-		}
-		atomic_dec(&net_device_ctx->vf_use_cnt);
-		return ret;
-	}
-
-vf_injection_done:
-	rx_stats = this_cpu_ptr(net_device_ctx->rx_stats);
+	/*
+	 * If necessary, inject this packet into the VF interface.
+	 * On Hyper-V, multicast and brodcast packets are only delivered
+	 * to the synthetic interface (after subjecting these to
+	 * policy filters on the host). Deliver these via the VF
+	 * interface in the guest.
+	 */
+	vf_netdev = rcu_dereference(net_device_ctx->vf_netdev);
+	if (vf_netdev && (vf_netdev->flags & IFF_UP))
+		net = vf_netdev;
 
 	/* Allocate a skb - TODO direct I/O to pages? */
 	skb = netvsc_alloc_recv_skb(net, packet, csum_info, *data, vlan_tci);
@@ -719,12 +662,25 @@ vf_injection_done:
 		++net->stats.rx_dropped;
 		return NVSP_STAT_FAIL;
 	}
-	skb_record_rx_queue(skb, channel->
-			    offermsg.offer.sub_channel_index);
 
+	if (net != vf_netdev)
+		skb_record_rx_queue(skb,
+				    channel->offermsg.offer.sub_channel_index);
+
+	/*
+	 * Even if injecting the packet, record the statistics
+	 * on the synthetic device because modifying the VF device
+	 * statistics will not work correctly.
+	 */
+	rx_stats = this_cpu_ptr(net_device_ctx->rx_stats);
 	u64_stats_update_begin(&rx_stats->syncp);
 	rx_stats->packets++;
 	rx_stats->bytes += packet->total_data_buflen;
+
+	if (skb->pkt_type == PACKET_BROADCAST)
+		++rx_stats->broadcast;
+	else if (skb->pkt_type == PACKET_MULTICAST)
+		++rx_stats->multicast;
 	u64_stats_update_end(&rx_stats->syncp);
 
 	/*
@@ -967,7 +923,7 @@ static struct rtnl_link_stats64 *netvsc_get_stats64(struct net_device *net,
 							    cpu);
 		struct netvsc_stats *rx_stats = per_cpu_ptr(ndev_ctx->rx_stats,
 							    cpu);
-		u64 tx_packets, tx_bytes, rx_packets, rx_bytes;
+		u64 tx_packets, tx_bytes, rx_packets, rx_bytes, rx_multicast;
 		unsigned int start;
 
 		do {
@@ -980,12 +936,14 @@ static struct rtnl_link_stats64 *netvsc_get_stats64(struct net_device *net,
 			start = u64_stats_fetch_begin_irq(&rx_stats->syncp);
 			rx_packets = rx_stats->packets;
 			rx_bytes = rx_stats->bytes;
+			rx_multicast = rx_stats->multicast + rx_stats->broadcast;
 		} while (u64_stats_fetch_retry_irq(&rx_stats->syncp, start));
 
 		t->tx_bytes	+= tx_bytes;
 		t->tx_packets	+= tx_packets;
 		t->rx_bytes	+= rx_bytes;
 		t->rx_packets	+= rx_packets;
+		t->multicast	+= rx_multicast;
 	}
 
 	t->tx_dropped	= net->stats.tx_dropped;
@@ -1215,22 +1173,44 @@ static void netvsc_free_netdev(struct net_device *netdev)
 	free_netdev(netdev);
 }
 
-static struct net_device *get_netvsc_net_device(char *mac)
+static struct net_device *get_netvsc_bymac(const u8 *mac)
 {
-	struct net_device *dev, *found = NULL;
+	struct net_device *dev;
 
 	ASSERT_RTNL();
 
 	for_each_netdev(&init_net, dev) {
-		if (memcmp(dev->dev_addr, mac, ETH_ALEN) == 0) {
-			if (dev->netdev_ops != &device_ops)
-				continue;
-			found = dev;
-			break;
-		}
+		if (dev->netdev_ops != &device_ops)
+			continue;	/* not a netvsc device */
+
+		if (ether_addr_equal(mac, dev->perm_addr))
+			return dev;
 	}
 
-	return found;
+	return NULL;
+}
+
+static struct net_device *get_netvsc_byref(struct net_device *vf_netdev)
+{
+	struct net_device *dev;
+
+	ASSERT_RTNL();
+
+	for_each_netdev(&init_net, dev) {
+		struct net_device_context *net_device_ctx;
+
+		if (dev->netdev_ops != &device_ops)
+			continue;	/* not a netvsc device */
+
+		net_device_ctx = netdev_priv(dev);
+		if (net_device_ctx->nvdev == NULL)
+			continue;	/* device is removed */
+
+		if (rtnl_dereference(net_device_ctx->vf_netdev) == vf_netdev)
+			return dev;	/* a match */
+	}
+
+	return NULL;
 }
 
 static int netvsc_register_vf(struct net_device *vf_netdev)
@@ -1238,9 +1218,8 @@ static int netvsc_register_vf(struct net_device *vf_netdev)
 	struct net_device *ndev;
 	struct net_device_context *net_device_ctx;
 	struct netvsc_device *netvsc_dev;
-	const struct ethtool_ops *eth_ops = vf_netdev->ethtool_ops;
 
-	if (eth_ops == NULL || eth_ops == &ethtool_ops)
+	if (vf_netdev->addr_len != ETH_ALEN)
 		return NOTIFY_DONE;
 
 	/*
@@ -1248,13 +1227,13 @@ static int netvsc_register_vf(struct net_device *vf_netdev)
 	 * associate with the VF interface. If we don't find a matching
 	 * synthetic interface, move on.
 	 */
-	ndev = get_netvsc_net_device(vf_netdev->dev_addr);
+	ndev = get_netvsc_bymac(vf_netdev->perm_addr);
 	if (!ndev)
 		return NOTIFY_DONE;
 
 	net_device_ctx = netdev_priv(ndev);
 	netvsc_dev = net_device_ctx->nvdev;
-	if (!netvsc_dev || net_device_ctx->vf_netdev)
+	if (!netvsc_dev || rtnl_dereference(net_device_ctx->vf_netdev))
 		return NOTIFY_DONE;
 
 	netdev_info(ndev, "VF registering: %s\n", vf_netdev->name);
@@ -1262,46 +1241,26 @@ static int netvsc_register_vf(struct net_device *vf_netdev)
 	 * Take a reference on the module.
 	 */
 	try_module_get(THIS_MODULE);
-	net_device_ctx->vf_netdev = vf_netdev;
+
+	dev_hold(vf_netdev);
+	rcu_assign_pointer(net_device_ctx->vf_netdev, vf_netdev);
 	return NOTIFY_OK;
-}
-
-static void netvsc_inject_enable(struct net_device_context *net_device_ctx)
-{
-	net_device_ctx->vf_inject = true;
-}
-
-static void netvsc_inject_disable(struct net_device_context *net_device_ctx)
-{
-	net_device_ctx->vf_inject = false;
-
-	/* Wait for currently active users to drain out. */
-	while (atomic_read(&net_device_ctx->vf_use_cnt) != 0)
-		udelay(50);
 }
 
 static int netvsc_vf_up(struct net_device *vf_netdev)
 {
 	struct net_device *ndev;
 	struct netvsc_device *netvsc_dev;
-	const struct ethtool_ops *eth_ops = vf_netdev->ethtool_ops;
 	struct net_device_context *net_device_ctx;
 
-	if (eth_ops == &ethtool_ops)
-		return NOTIFY_DONE;
-
-	ndev = get_netvsc_net_device(vf_netdev->dev_addr);
+	ndev = get_netvsc_byref(vf_netdev);
 	if (!ndev)
 		return NOTIFY_DONE;
 
 	net_device_ctx = netdev_priv(ndev);
 	netvsc_dev = net_device_ctx->nvdev;
 
-	if (!netvsc_dev || !net_device_ctx->vf_netdev)
-		return NOTIFY_DONE;
-
 	netdev_info(ndev, "VF up: %s\n", vf_netdev->name);
-	netvsc_inject_enable(net_device_ctx);
 
 	/*
 	 * Open the device before switching data path.
@@ -1327,23 +1286,15 @@ static int netvsc_vf_down(struct net_device *vf_netdev)
 	struct net_device *ndev;
 	struct netvsc_device *netvsc_dev;
 	struct net_device_context *net_device_ctx;
-	const struct ethtool_ops *eth_ops = vf_netdev->ethtool_ops;
 
-	if (eth_ops == &ethtool_ops)
-		return NOTIFY_DONE;
-
-	ndev = get_netvsc_net_device(vf_netdev->dev_addr);
+	ndev = get_netvsc_byref(vf_netdev);
 	if (!ndev)
 		return NOTIFY_DONE;
 
 	net_device_ctx = netdev_priv(ndev);
 	netvsc_dev = net_device_ctx->nvdev;
 
-	if (!netvsc_dev || !net_device_ctx->vf_netdev)
-		return NOTIFY_DONE;
-
 	netdev_info(ndev, "VF down: %s\n", vf_netdev->name);
-	netvsc_inject_disable(net_device_ctx);
 	netvsc_switch_datapath(ndev, false);
 	netdev_info(ndev, "Data path switched from VF: %s\n", vf_netdev->name);
 	rndis_filter_close(netvsc_dev);
@@ -1359,23 +1310,19 @@ static int netvsc_unregister_vf(struct net_device *vf_netdev)
 {
 	struct net_device *ndev;
 	struct netvsc_device *netvsc_dev;
-	const struct ethtool_ops *eth_ops = vf_netdev->ethtool_ops;
 	struct net_device_context *net_device_ctx;
 
-	if (eth_ops == &ethtool_ops)
-		return NOTIFY_DONE;
-
-	ndev = get_netvsc_net_device(vf_netdev->dev_addr);
+	ndev = get_netvsc_byref(vf_netdev);
 	if (!ndev)
 		return NOTIFY_DONE;
 
 	net_device_ctx = netdev_priv(ndev);
 	netvsc_dev = net_device_ctx->nvdev;
-	if (!netvsc_dev || !net_device_ctx->vf_netdev)
-		return NOTIFY_DONE;
+
 	netdev_info(ndev, "VF unregistering: %s\n", vf_netdev->name);
-	netvsc_inject_disable(net_device_ctx);
-	net_device_ctx->vf_netdev = NULL;
+
+	RCU_INIT_POINTER(net_device_ctx->vf_netdev, NULL);
+	dev_put(vf_netdev);
 	module_put(THIS_MODULE);
 	return NOTIFY_OK;
 }
@@ -1426,10 +1373,6 @@ static int netvsc_probe(struct hv_device *dev,
 
 	spin_lock_init(&net_device_ctx->lock);
 	INIT_LIST_HEAD(&net_device_ctx->reconfig_events);
-
-	atomic_set(&net_device_ctx->vf_use_cnt, 0);
-	net_device_ctx->vf_netdev = NULL;
-	net_device_ctx->vf_inject = false;
 
 	net->netdev_ops = &device_ops;
 
@@ -1539,13 +1482,21 @@ static int netvsc_netdev_event(struct notifier_block *this,
 {
 	struct net_device *event_dev = netdev_notifier_info_to_dev(ptr);
 
+	/* Skip our own events */
+	if (event_dev->netdev_ops == &device_ops)
+		return NOTIFY_DONE;
+
+	/* Avoid non-Ethernet type devices */
+	if (event_dev->type != ARPHRD_ETHER)
+		return NOTIFY_DONE;
+
 	/* Avoid Vlan dev with same MAC registering as VF */
 	if (event_dev->priv_flags & IFF_802_1Q_VLAN)
 		return NOTIFY_DONE;
 
 	/* Avoid Bonding master dev with same MAC registering as VF */
-	if (event_dev->priv_flags & IFF_BONDING &&
-	    event_dev->flags & IFF_MASTER)
+	if ((event_dev->priv_flags & IFF_BONDING) &&
+	    (event_dev->flags & IFF_MASTER))
 		return NOTIFY_DONE;
 
 	switch (event) {

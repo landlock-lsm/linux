@@ -243,12 +243,6 @@ depot_stack_handle_t depot_save_stack(struct stack_trace *trace,
 		alloc_flags &= ~GFP_ZONEMASK;
 		alloc_flags &= (GFP_ATOMIC | GFP_KERNEL);
 		alloc_flags |= __GFP_NOWARN;
-		/*
-		 * Avoid using current->mempolicy which may already have
-		 * been freed -- we may be in the process of saving the
-		 * stack for exactly that __mpol_put() call.
-		 */
-		alloc_flags |= __GFP_THISNODE;
 		page = alloc_pages(alloc_flags, STACK_ALLOC_ORDER);
 		if (page)
 			prealloc = page_address(page);

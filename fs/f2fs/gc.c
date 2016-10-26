@@ -47,6 +47,11 @@ static int gc_thread_func(void *data)
 			continue;
 		}
 
+#ifdef CONFIG_F2FS_FAULT_INJECTION
+		if (time_to_inject(sbi, FAULT_CHECKPOINT))
+			f2fs_stop_checkpoint(sbi, false);
+#endif
+
 		/*
 		 * [GC triggering condition]
 		 * 0. GC is not conducted currently.
@@ -96,7 +101,7 @@ int start_gc_thread(struct f2fs_sb_info *sbi)
 	dev_t dev = sbi->sb->s_bdev->bd_dev;
 	int err = 0;
 
-	gc_th = f2fs_kmalloc(sizeof(struct f2fs_gc_kthread), GFP_KERNEL);
+	gc_th = f2fs_kmalloc(sbi, sizeof(struct f2fs_gc_kthread), GFP_KERNEL);
 	if (!gc_th) {
 		err = -ENOMEM;
 		goto out;
@@ -270,7 +275,7 @@ static int get_victim_by_default(struct f2fs_sb_info *sbi,
 {
 	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
 	struct victim_sel_policy p;
-	unsigned int secno, max_cost, last_victim;
+	unsigned int secno, last_victim;
 	unsigned int last_segment = MAIN_SEGS(sbi);
 	unsigned int nsearched = 0;
 
@@ -280,7 +285,7 @@ static int get_victim_by_default(struct f2fs_sb_info *sbi,
 	select_policy(sbi, gc_type, type, &p);
 
 	p.min_segno = NULL_SEGNO;
-	p.min_cost = max_cost = get_max_cost(sbi, &p);
+	p.min_cost = get_max_cost(sbi, &p);
 
 	if (p.max_search == 0)
 		goto out;
@@ -847,14 +852,15 @@ static int do_garbage_collect(struct f2fs_sb_info *sbi,
 
 	for (segno = start_segno; segno < end_segno; segno++) {
 
-		if (get_valid_blocks(sbi, segno, 1) == 0)
-			continue;
-
 		/* find segment summary of victim */
 		sum_page = find_get_page(META_MAPPING(sbi),
 					GET_SUM_BLOCK(sbi, segno));
-		f2fs_bug_on(sbi, !PageUptodate(sum_page));
 		f2fs_put_page(sum_page, 0);
+
+		if (get_valid_blocks(sbi, segno, 1) == 0 ||
+				!PageUptodate(sum_page) ||
+				unlikely(f2fs_cp_error(sbi)))
+			goto next;
 
 		sum = page_address(sum_page);
 		f2fs_bug_on(sbi, type != GET_SUM_TYPE((&sum->footer)));
@@ -874,7 +880,7 @@ static int do_garbage_collect(struct f2fs_sb_info *sbi,
 								gc_type);
 
 		stat_inc_seg_count(sbi, type, gc_type);
-
+next:
 		f2fs_put_page(sum_page, 0);
 	}
 
@@ -925,10 +931,14 @@ gc_more:
 		 */
 		if (__get_victim(sbi, &segno, gc_type) ||
 						prefree_segments(sbi)) {
-			write_checkpoint(sbi, &cpc);
+			ret = write_checkpoint(sbi, &cpc);
+			if (ret)
+				goto stop;
 			segno = NULL_SEGNO;
 		} else if (has_not_enough_free_secs(sbi, 0, 0)) {
-			write_checkpoint(sbi, &cpc);
+			ret = write_checkpoint(sbi, &cpc);
+			if (ret)
+				goto stop;
 		}
 	}
 
@@ -948,7 +958,7 @@ gc_more:
 			goto gc_more;
 
 		if (gc_type == FG_GC)
-			write_checkpoint(sbi, &cpc);
+			ret = write_checkpoint(sbi, &cpc);
 	}
 stop:
 	mutex_unlock(&sbi->gc_mutex);

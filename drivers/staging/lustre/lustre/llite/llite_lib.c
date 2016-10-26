@@ -42,7 +42,6 @@
 #include <linux/mm.h>
 
 #include "../include/lustre/lustre_ioctl.h"
-#include "../include/lustre_lite.h"
 #include "../include/lustre_ha.h"
 #include "../include/lustre_dlm.h"
 #include "../include/lprocfs_status.h"
@@ -116,6 +115,7 @@ static struct ll_sb_info *ll_init_sbi(struct super_block *sb)
 	sbi->ll_sa_max = LL_SA_RPC_DEF;
 	atomic_set(&sbi->ll_sa_total, 0);
 	atomic_set(&sbi->ll_sa_wrong, 0);
+	atomic_set(&sbi->ll_sa_running, 0);
 	atomic_set(&sbi->ll_agl_total, 0);
 	sbi->ll_flags |= LL_SBI_AGL_ENABLED;
 
@@ -582,6 +582,17 @@ int ll_get_max_mdsize(struct ll_sb_info *sbi, int *lmmsize)
 	return rc;
 }
 
+/**
+ * Get the value of the default_easize parameter.
+ *
+ * \see client_obd::cl_default_mds_easize
+ *
+ * \param[in]  sbi	superblock info for this filesystem
+ * \param[out] lmmsize	pointer to storage location for value
+ *
+ * \retval 0		on success
+ * \retval negative	negated errno on failure
+ */
 int ll_get_default_mdsize(struct ll_sb_info *sbi, int *lmmsize)
 {
 	int size, rc;
@@ -593,6 +604,29 @@ int ll_get_default_mdsize(struct ll_sb_info *sbi, int *lmmsize)
 		CERROR("Get default mdsize error rc %d\n", rc);
 
 	return rc;
+}
+
+/**
+ * Set the default_easize parameter to the given value.
+ *
+ * \see client_obd::cl_default_mds_easize
+ *
+ * \param[in] sbi	superblock info for this filesystem
+ * \param[in] lmmsize	the size to set
+ *
+ * \retval 0		on success
+ * \retval negative	negated errno on failure
+ */
+int ll_set_default_mdsize(struct ll_sb_info *sbi, int lmmsize)
+{
+	if (lmmsize < sizeof(struct lov_mds_md) ||
+	    lmmsize > OBD_MAX_DEFAULT_EA_SIZE)
+		return -EINVAL;
+
+	return obd_set_info_async(NULL, sbi->ll_md_exp,
+				  sizeof(KEY_DEFAULT_EASIZE),
+				  KEY_DEFAULT_EASIZE,
+				  sizeof(int), &lmmsize, NULL);
 }
 
 static void client_common_put_super(struct super_block *sb)
@@ -630,6 +664,12 @@ void ll_kill_super(struct super_block *sb)
 	if (sbi) {
 		sb->s_dev = sbi->ll_sdev_orig;
 		sbi->ll_umounting = 1;
+
+		/* wait running statahead threads to quit */
+		while (atomic_read(&sbi->ll_sa_running) > 0) {
+			set_current_state(TASK_UNINTERRUPTIBLE);
+			schedule_timeout(msecs_to_jiffies(MSEC_PER_SEC >> 3));
+		}
 	}
 }
 
@@ -795,11 +835,13 @@ void ll_lli_init(struct ll_inode_info *lli)
 		lli->lli_sai = NULL;
 		spin_lock_init(&lli->lli_sa_lock);
 		lli->lli_opendir_pid = 0;
+		lli->lli_sa_enabled = 0;
+		lli->lli_def_stripe_offset = -1;
 	} else {
 		mutex_init(&lli->lli_size_mutex);
 		lli->lli_symlink_name = NULL;
 		init_rwsem(&lli->lli_trunc_sem);
-		mutex_init(&lli->lli_write_mutex);
+		range_lock_tree_init(&lli->lli_write_tree);
 		init_rwsem(&lli->lli_glimpse_sem);
 		lli->lli_glimpse_time = 0;
 		INIT_LIST_HEAD(&lli->lli_agl_list);
@@ -919,7 +961,8 @@ void ll_put_super(struct super_block *sb)
 	struct lustre_sb_info *lsi = s2lsi(sb);
 	struct ll_sb_info *sbi = ll_s2sbi(sb);
 	char *profilenm = get_profile_name(sb);
-	int ccc_count, next, force = 1, rc = 0;
+	int next, force = 1, rc = 0;
+	long ccc_count;
 
 	CDEBUG(D_VFSTRACE, "VFS Op: sb %p - %s\n", sb, profilenm);
 
@@ -940,13 +983,13 @@ void ll_put_super(struct super_block *sb)
 		struct l_wait_info lwi = LWI_INTR(LWI_ON_SIGNAL_NOOP, NULL);
 
 		rc = l_wait_event(sbi->ll_cache->ccc_unstable_waitq,
-				  !atomic_read(&sbi->ll_cache->ccc_unstable_nr),
+				  !atomic_long_read(&sbi->ll_cache->ccc_unstable_nr),
 				  &lwi);
 	}
 
-	ccc_count = atomic_read(&sbi->ll_cache->ccc_unstable_nr);
+	ccc_count = atomic_long_read(&sbi->ll_cache->ccc_unstable_nr);
 	if (!force && rc != -EINTR)
-		LASSERTF(!ccc_count, "count: %i\n", ccc_count);
+		LASSERTF(!ccc_count, "count: %li\n", ccc_count);
 
 	/* We need to set force before the lov_disconnect in
 	 * lustre_common_put_super, since l_d cleans up osc's as well.
@@ -1109,12 +1152,7 @@ static int ll_init_lsm_md(struct inode *inode, struct lustre_md *md)
 		}
 	}
 
-	/*
-	 * Here is where the lsm is being initialized(fill lmo_info) after
-	 * client retrieve MD stripe information from MDT.
-	 */
-	return md_update_lsm_md(ll_i2mdexp(inode), lsm, md->body,
-				ll_md_blocking_ast);
+	return 0;
 }
 
 static inline int lli_lsm_md_eq(const struct lmv_stripe_md *lsm_md1,
@@ -1421,7 +1459,7 @@ int ll_setattr_raw(struct dentry *dentry, struct iattr *attr, bool hsm_import)
 		attr->ia_valid |= ATTR_MTIME | ATTR_CTIME;
 	}
 
-	/* POSIX: check before ATTR_*TIME_SET set (from inode_change_ok) */
+	/* POSIX: check before ATTR_*TIME_SET set (from setattr_prepare) */
 	if (attr->ia_valid & TIMES_SET_FLAGS) {
 		if ((!uid_eq(current_fsuid(), inode->i_uid)) &&
 		    !capable(CFS_CAP_FOWNER))
@@ -1901,20 +1939,13 @@ void ll_delete_inode(struct inode *inode)
 		 * osc_extent implementation at LU-1030.
 		 */
 		cl_sync_file_range(inode, 0, OBD_OBJECT_EOF,
-				   CL_FSYNC_DISCARD, 1);
+				   CL_FSYNC_LOCAL, 1);
 
 	truncate_inode_pages_final(&inode->i_data);
 
-	/* Workaround for LU-118 */
-	if (inode->i_data.nrpages) {
-		spin_lock_irq(&inode->i_data.tree_lock);
-		spin_unlock_irq(&inode->i_data.tree_lock);
-		LASSERTF(inode->i_data.nrpages == 0,
-			 "inode="DFID"(%p) nrpages=%lu, see http://jira.whamcloud.com/browse/LU-118\n",
-			 PFID(ll_inode2fid(inode)), inode,
-			 inode->i_data.nrpages);
-	}
-	/* Workaround end */
+	LASSERTF(!inode->i_data.nrpages,
+		 "inode=" DFID "(%p) nrpages=%lu, see http://jira.whamcloud.com/browse/LU-118\n",
+		 PFID(ll_inode2fid(inode)), inode, inode->i_data.nrpages);
 
 	ll_clear_inode(inode);
 	clear_inode(inode);
@@ -2323,8 +2354,8 @@ int ll_process_config(struct lustre_cfg *lcfg)
 /* this function prepares md_op_data hint for passing ot down to MD stack. */
 struct md_op_data *ll_prep_md_op_data(struct md_op_data *op_data,
 				      struct inode *i1, struct inode *i2,
-				      const char *name, int namelen,
-				      int mode, __u32 opc, void *data)
+				      const char *name, size_t namelen,
+				      u32 mode, __u32 opc, void *data)
 {
 	if (!name) {
 		/* Do not reuse namelen for something else. */
@@ -2346,8 +2377,12 @@ struct md_op_data *ll_prep_md_op_data(struct md_op_data *op_data,
 
 	ll_i2gids(op_data->op_suppgids, i1, i2);
 	op_data->op_fid1 = *ll_inode2fid(i1);
-	if (S_ISDIR(i1->i_mode))
+	op_data->op_default_stripe_offset = -1;
+	if (S_ISDIR(i1->i_mode)) {
 		op_data->op_mea1 = ll_i2info(i1)->lli_lsm_md;
+		op_data->op_default_stripe_offset =
+			ll_i2info(i1)->lli_def_stripe_offset;
+	}
 
 	if (i2) {
 		op_data->op_fid2 = *ll_inode2fid(i2);
@@ -2373,9 +2408,10 @@ struct md_op_data *ll_prep_md_op_data(struct md_op_data *op_data,
 	op_data->op_bias = 0;
 	op_data->op_cli_flags = 0;
 	if ((opc == LUSTRE_OPC_CREATE) && name &&
-	    filename_is_volatile(name, namelen, NULL))
+	    filename_is_volatile(name, namelen, &op_data->op_mds))
 		op_data->op_bias |= MDS_CREATE_VOLATILE;
-	op_data->op_mds = 0;
+	else
+		op_data->op_mds = 0;
 	op_data->op_data = data;
 
 	/* When called by ll_setattr_raw, file is i1. */
@@ -2505,6 +2541,36 @@ void ll_dirty_page_discard_warn(struct page *page, int ioret)
 		free_page((unsigned long)buf);
 }
 
+ssize_t ll_copy_user_md(const struct lov_user_md __user *md,
+			struct lov_user_md **kbuf)
+{
+	struct lov_user_md lum;
+	ssize_t lum_size;
+
+	if (copy_from_user(&lum, md, sizeof(lum))) {
+		lum_size = -EFAULT;
+		goto no_kbuf;
+	}
+
+	lum_size = ll_lov_user_md_size(&lum);
+	if (lum_size < 0)
+		goto no_kbuf;
+
+	*kbuf = kzalloc(lum_size, GFP_NOFS);
+	if (!*kbuf) {
+		lum_size = -ENOMEM;
+		goto no_kbuf;
+	}
+
+	if (copy_from_user(*kbuf, md, lum_size) != 0) {
+		kfree(*kbuf);
+		*kbuf = NULL;
+		lum_size = -EFAULT;
+	}
+no_kbuf:
+	return lum_size;
+}
+
 /*
  * Compute llite root squash state after a change of root squash
  * configuration setting or add/remove of a lnet nid
@@ -2542,4 +2608,129 @@ void ll_compute_rootsquash_state(struct ll_sb_info *sbi)
 			sbi->ll_flags &= ~LL_SBI_NOROOTSQUASH;
 	}
 	up_write(&squash->rsi_sem);
+}
+
+/**
+ * Parse linkea content to extract information about a given hardlink
+ *
+ * \param[in]	ldata		- Initialized linkea data
+ * \param[in]	linkno		- Link identifier
+ * \param[out]	parent_fid	- The entry's parent FID
+ * \param[in]	size		- Entry name destination buffer
+ *
+ * \retval 0 on success
+ * \retval Appropriate negative error code on failure
+ */
+static int ll_linkea_decode(struct linkea_data *ldata, unsigned int linkno,
+			    struct lu_fid *parent_fid, struct lu_name *ln)
+{
+	unsigned int idx;
+	int rc;
+
+	rc = linkea_init(ldata);
+	if (rc < 0)
+		return rc;
+
+	if (linkno >= ldata->ld_leh->leh_reccount)
+		/* beyond last link */
+		return -ENODATA;
+
+	linkea_first_entry(ldata);
+	for (idx = 0; ldata->ld_lee; idx++) {
+		linkea_entry_unpack(ldata->ld_lee, &ldata->ld_reclen, ln,
+				    parent_fid);
+		if (idx == linkno)
+			break;
+
+		linkea_next_entry(ldata);
+	}
+
+	if (idx < linkno)
+		return -ENODATA;
+
+	return 0;
+}
+
+/**
+ * Get parent FID and name of an identified link. Operation is performed for
+ * a given link number, letting the caller iterate over linkno to list one or
+ * all links of an entry.
+ *
+ * \param[in]	  file	- File descriptor against which to perform the operation
+ * \param[in,out] arg	- User-filled structure containing the linkno to operate
+ *			  on and the available size. It is eventually filled with
+ *			  the requested information or left untouched on error
+ *
+ * \retval - 0 on success
+ * \retval - Appropriate negative error code on failure
+ */
+int ll_getparent(struct file *file, struct getparent __user *arg)
+{
+	struct inode *inode = file_inode(file);
+	struct linkea_data *ldata;
+	struct lu_fid parent_fid;
+	struct lu_buf buf = {
+		.lb_buf = NULL,
+		.lb_len = 0
+	};
+	struct lu_name ln;
+	u32 name_size;
+	u32 linkno;
+	int rc;
+
+	if (!capable(CFS_CAP_DAC_READ_SEARCH) &&
+	    !(ll_i2sbi(inode)->ll_flags & LL_SBI_USER_FID2PATH))
+		return -EPERM;
+
+	if (get_user(name_size, &arg->gp_name_size))
+		return -EFAULT;
+
+	if (get_user(linkno, &arg->gp_linkno))
+		return -EFAULT;
+
+	if (name_size > PATH_MAX)
+		return -EINVAL;
+
+	ldata = kzalloc(sizeof(*ldata), GFP_NOFS);
+	if (!ldata)
+		return -ENOMEM;
+
+	rc = linkea_data_new(ldata, &buf);
+	if (rc < 0)
+		goto ldata_free;
+
+	rc = ll_xattr_list(inode, XATTR_NAME_LINK, XATTR_TRUSTED_T, buf.lb_buf,
+			   buf.lb_len, OBD_MD_FLXATTR);
+	if (rc < 0)
+		goto lb_free;
+
+	rc = ll_linkea_decode(ldata, linkno, &parent_fid, &ln);
+	if (rc < 0)
+		goto lb_free;
+
+	if (ln.ln_namelen >= name_size) {
+		rc = -EOVERFLOW;
+		goto lb_free;
+	}
+
+	if (copy_to_user(&arg->gp_fid, &parent_fid, sizeof(arg->gp_fid))) {
+		rc = -EFAULT;
+		goto lb_free;
+	}
+
+	if (copy_to_user(&arg->gp_name, ln.ln_name, ln.ln_namelen)) {
+		rc = -EFAULT;
+		goto lb_free;
+	}
+
+	if (put_user('\0', arg->gp_name + ln.ln_namelen)) {
+		rc = -EFAULT;
+		goto lb_free;
+	}
+
+lb_free:
+	lu_buf_free(&buf);
+ldata_free:
+	kfree(ldata);
+	return rc;
 }

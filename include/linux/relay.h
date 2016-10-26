@@ -15,12 +15,12 @@
 #include <linux/timer.h>
 #include <linux/wait.h>
 #include <linux/list.h>
+#include <linux/irq_work.h>
 #include <linux/bug.h>
 #include <linux/fs.h>
 #include <linux/poll.h>
 #include <linux/kref.h>
 #include <linux/percpu.h>
-#include <linux/irq_work.h>
 
 /*
  * Tracks changes to rchan/rchan_buf structs

@@ -39,6 +39,7 @@ config ARM_GIC_V3_ITS
 	bool
 	depends on PCI
 	depends on PCI_MSI
+	select ACPI_IORT if ACPI
 
 config ARM_NVIC
 	bool
@@ -157,8 +158,8 @@ config PIC32_EVIC
 	select IRQ_DOMAIN
 
 config JCORE_AIC
-	bool "J-Core integrated AIC"
-	depends on OF && (SUPERH || COMPILE_TEST)
+	bool "J-Core integrated AIC" if COMPILE_TEST
+	depends on OF
 	select IRQ_DOMAIN
 	help
 	  Support for the J-Core integrated AIC.
@@ -274,3 +275,7 @@ config EZNPS_GIC
 	select IRQ_DOMAIN
 	help
 	  Support the EZchip NPS400 global interrupt controller
+
+config STM32_EXTI
+	bool
+	select IRQ_DOMAIN

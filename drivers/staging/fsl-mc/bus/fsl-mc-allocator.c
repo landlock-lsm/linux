@@ -142,8 +142,7 @@ static int __must_check fsl_mc_resource_pool_remove_device(struct fsl_mc_device
 		goto out_unlock;
 	}
 
-	list_del(&resource->node);
-	INIT_LIST_HEAD(&resource->node);
+	list_del_init(&resource->node);
 	res_pool->free_count--;
 	res_pool->max_count--;
 
@@ -220,8 +219,7 @@ int __must_check fsl_mc_resource_allocate(struct fsl_mc_bus *mc_bus,
 		    res_pool->free_count > res_pool->max_count))
 		goto out_unlock;
 
-	list_del(&resource->node);
-	INIT_LIST_HEAD(&resource->node);
+	list_del_init(&resource->node);
 
 	res_pool->free_count--;
 	error = 0;
@@ -652,7 +650,6 @@ static const struct fsl_mc_device_id match_id_table[] = {
 static struct fsl_mc_driver fsl_mc_allocator_driver = {
 	.driver = {
 		   .name = "fsl_mc_allocator",
-		   .owner = THIS_MODULE,
 		   .pm = NULL,
 		   },
 	.match_id_table = match_id_table,

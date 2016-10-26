@@ -243,6 +243,9 @@ static int ccp5_do_cmd(struct ccp5_desc *desc,
 		ret = wait_event_interruptible(cmd_q->int_queue,
 					       cmd_q->int_rcvd);
 		if (ret || cmd_q->cmd_error) {
+			if (cmd_q->cmd_error)
+				ccp_log_error(cmd_q->ccp,
+					      cmd_q->cmd_error);
 			/* A version 5 device doesn't use Job IDs... */
 			if (!ret)
 				ret = -EIO;
@@ -835,9 +838,12 @@ static int ccp5_init(struct ccp_device *ccp)
 	/* Register the DMA engine support */
 	ret = ccp_dmaengine_register(ccp);
 	if (ret)
-		goto e_kthread;
+		goto e_hwrng;
 
 	return 0;
+
+e_hwrng:
+	ccp_unregister_rng(ccp);
 
 e_kthread:
 	for (i = 0; i < ccp->cmd_q_count; i++)
@@ -994,7 +1000,7 @@ static const struct ccp_actions ccp5_actions = {
 	.irqhandler = ccp5_irq_handler,
 };
 
-struct ccp_vdata ccpv5 = {
+const struct ccp_vdata ccpv5a = {
 	.version = CCP_VERSION(5, 0),
 	.setup = ccp5_config,
 	.perform = &ccp5_actions,
@@ -1002,7 +1008,7 @@ struct ccp_vdata ccpv5 = {
 	.offset = 0x0,
 };
 
-struct ccp_vdata ccpv5other = {
+const struct ccp_vdata ccpv5b = {
 	.version = CCP_VERSION(5, 0),
 	.setup = ccp5other_config,
 	.perform = &ccp5_actions,

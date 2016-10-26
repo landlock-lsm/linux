@@ -14,7 +14,7 @@
 #include <linux/fs.h>
 #include <linux/seccomp.h>
 
-extern const struct bpf_func_proto bpf_landlock_cmp_fs_prop_with_struct_file_proto;
-extern const struct bpf_func_proto bpf_landlock_cmp_fs_beneath_with_struct_file_proto;
+extern const struct bpf_func_proto bpf_landlock_cmp_fs_beneath_proto;
+extern const struct bpf_func_proto bpf_landlock_get_fs_mode_proto;
 
 #endif /* _SECURITY_LANDLOCK_CHECKER_FS_H */

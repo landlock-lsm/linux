@@ -190,6 +190,29 @@ intel_dp_max_data_rate(int max_link_clock, int max_lanes)
 	return (max_link_clock * max_lanes * 8) / 10;
 }
 
+static int
+intel_dp_downstream_max_dotclock(struct intel_dp *intel_dp)
+{
+	struct intel_digital_port *intel_dig_port = dp_to_dig_port(intel_dp);
+	struct intel_encoder *encoder = &intel_dig_port->base;
+	struct drm_i915_private *dev_priv = to_i915(encoder->base.dev);
+	int max_dotclk = dev_priv->max_dotclk_freq;
+	int ds_max_dotclk;
+
+	int type = intel_dp->downstream_ports[0] & DP_DS_PORT_TYPE_MASK;
+
+	if (type != DP_DS_PORT_TYPE_VGA)
+		return max_dotclk;
+
+	ds_max_dotclk = drm_dp_downstream_max_clock(intel_dp->dpcd,
+						    intel_dp->downstream_ports);
+
+	if (ds_max_dotclk != 0)
+		max_dotclk = min(max_dotclk, ds_max_dotclk);
+
+	return max_dotclk;
+}
+
 static enum drm_mode_status
 intel_dp_mode_valid(struct drm_connector *connector,
 		    struct drm_display_mode *mode)
@@ -199,7 +222,9 @@ intel_dp_mode_valid(struct drm_connector *connector,
 	struct drm_display_mode *fixed_mode = intel_connector->panel.fixed_mode;
 	int target_clock = mode->clock;
 	int max_rate, mode_rate, max_lanes, max_link_clock;
-	int max_dotclk = to_i915(connector->dev)->max_dotclk_freq;
+	int max_dotclk;
+
+	max_dotclk = intel_dp_downstream_max_dotclock(intel_dp);
 
 	if (is_edp(intel_dp) && fixed_mode) {
 		if (mode->hdisplay > fixed_mode->hdisplay)
@@ -1243,7 +1268,7 @@ intel_dp_aux_fini(struct intel_dp *intel_dp)
 }
 
 static void
-intel_dp_aux_init(struct intel_dp *intel_dp, struct intel_connector *connector)
+intel_dp_aux_init(struct intel_dp *intel_dp)
 {
 	struct intel_digital_port *intel_dig_port = dp_to_dig_port(intel_dp);
 	enum port port = intel_dig_port->port;
@@ -1419,6 +1444,44 @@ static void intel_dp_print_rates(struct intel_dp *intel_dp)
 	DRM_DEBUG_KMS("common rates: %s\n", str);
 }
 
+static void intel_dp_print_hw_revision(struct intel_dp *intel_dp)
+{
+	uint8_t rev;
+	int len;
+
+	if ((drm_debug & DRM_UT_KMS) == 0)
+		return;
+
+	if (!(intel_dp->dpcd[DP_DOWNSTREAMPORT_PRESENT] &
+	      DP_DWN_STRM_PORT_PRESENT))
+		return;
+
+	len = drm_dp_dpcd_read(&intel_dp->aux, DP_BRANCH_HW_REV, &rev, 1);
+	if (len < 0)
+		return;
+
+	DRM_DEBUG_KMS("sink hw revision: %d.%d\n", (rev & 0xf0) >> 4, rev & 0xf);
+}
+
+static void intel_dp_print_sw_revision(struct intel_dp *intel_dp)
+{
+	uint8_t rev[2];
+	int len;
+
+	if ((drm_debug & DRM_UT_KMS) == 0)
+		return;
+
+	if (!(intel_dp->dpcd[DP_DOWNSTREAMPORT_PRESENT] &
+	      DP_DWN_STRM_PORT_PRESENT))
+		return;
+
+	len = drm_dp_dpcd_read(&intel_dp->aux, DP_BRANCH_SW_REV, &rev, 2);
+	if (len < 0)
+		return;
+
+	DRM_DEBUG_KMS("sink sw revision: %d.%d\n", rev[0], rev[1]);
+}
+
 static int rate_to_index(int find, const int *rates)
 {
 	int i = 0;
@@ -1459,6 +1522,20 @@ void intel_dp_compute_rate(struct intel_dp *intel_dp, int port_clock,
 		*link_bw = drm_dp_link_rate_to_bw_code(port_clock);
 		*rate_select = 0;
 	}
+}
+
+static int intel_dp_compute_bpp(struct intel_dp *intel_dp,
+				struct intel_crtc_state *pipe_config)
+{
+	int bpp, bpc;
+
+	bpp = pipe_config->pipe_bpp;
+	bpc = drm_dp_downstream_max_bpc(intel_dp->dpcd, intel_dp->downstream_ports);
+
+	if (bpc > 0)
+		bpp = min(bpp, 3*bpc);
+
+	return bpp;
 }
 
 bool
@@ -1527,7 +1604,7 @@ intel_dp_compute_config(struct intel_encoder *encoder,
 
 	/* Walk through all bpp values. Luckily they're all nicely spaced with 2
 	 * bpc in between. */
-	bpp = pipe_config->pipe_bpp;
+	bpp = intel_dp_compute_bpp(intel_dp, pipe_config);
 	if (is_edp(intel_dp)) {
 
 		/* Get bpp from vbt only for panels that dont have bpp in edid */
@@ -4260,7 +4337,7 @@ intel_dp_unset_edid(struct intel_dp *intel_dp)
 	intel_dp->has_audio = false;
 }
 
-static void
+static enum drm_connector_status
 intel_dp_long_pulse(struct intel_connector *intel_connector)
 {
 	struct drm_connector *connector = &intel_connector->base;
@@ -4284,7 +4361,7 @@ intel_dp_long_pulse(struct intel_connector *intel_connector)
 	else
 		status = connector_status_disconnected;
 
-	if (status != connector_status_connected) {
+	if (status == connector_status_disconnected) {
 		intel_dp->compliance_test_active = 0;
 		intel_dp->compliance_test_type = 0;
 		intel_dp->compliance_test_data = 0;
@@ -4311,6 +4388,9 @@ intel_dp_long_pulse(struct intel_connector *intel_connector)
 	intel_dp_print_rates(intel_dp);
 
 	intel_dp_probe_oui(intel_dp);
+
+	intel_dp_print_hw_revision(intel_dp);
+	intel_dp_print_sw_revision(intel_dp);
 
 	intel_dp_configure_mst(intel_dp);
 
@@ -4343,8 +4423,8 @@ intel_dp_long_pulse(struct intel_connector *intel_connector)
 	intel_dp->aux.i2c_defer_count = 0;
 
 	intel_dp_set_edid(intel_dp);
-
-	status = connector_status_connected;
+	if (is_edp(intel_dp) || intel_connector->detect_edid)
+		status = connector_status_connected;
 	intel_dp->detect_done = true;
 
 	/* Try to read the source of the interrupt */
@@ -4363,12 +4443,11 @@ intel_dp_long_pulse(struct intel_connector *intel_connector)
 	}
 
 out:
-	if ((status != connector_status_connected) &&
-	    (intel_dp->is_mst == false))
+	if (status != connector_status_connected && !intel_dp->is_mst)
 		intel_dp_unset_edid(intel_dp);
 
 	intel_display_power_put(to_i915(dev), power_domain);
-	return;
+	return status;
 }
 
 static enum drm_connector_status
@@ -4377,7 +4456,7 @@ intel_dp_detect(struct drm_connector *connector, bool force)
 	struct intel_dp *intel_dp = intel_attached_dp(connector);
 	struct intel_digital_port *intel_dig_port = dp_to_dig_port(intel_dp);
 	struct intel_encoder *intel_encoder = &intel_dig_port->base;
-	struct intel_connector *intel_connector = to_intel_connector(connector);
+	enum drm_connector_status status = connector->status;
 
 	DRM_DEBUG_KMS("[CONNECTOR:%d:%s]\n",
 		      connector->base.id, connector->name);
@@ -4392,14 +4471,11 @@ intel_dp_detect(struct drm_connector *connector, bool force)
 
 	/* If full detect is not performed yet, do a full detect */
 	if (!intel_dp->detect_done)
-		intel_dp_long_pulse(intel_dp->attached_connector);
+		status = intel_dp_long_pulse(intel_dp->attached_connector);
 
 	intel_dp->detect_done = false;
 
-	if (is_edp(intel_dp) || intel_connector->detect_edid)
-		return connector_status_connected;
-	else
-		return connector_status_disconnected;
+	return status;
 }
 
 static void
@@ -4751,36 +4827,34 @@ intel_dp_hpd_pulse(struct intel_digital_port *intel_dig_port, bool long_hpd)
 		      port_name(intel_dig_port->port),
 		      long_hpd ? "long" : "short");
 
+	if (long_hpd) {
+		intel_dp->detect_done = false;
+		return IRQ_NONE;
+	}
+
 	power_domain = intel_display_port_aux_power_domain(intel_encoder);
 	intel_display_power_get(dev_priv, power_domain);
 
-	if (long_hpd) {
-		intel_dp_long_pulse(intel_dp->attached_connector);
-		if (intel_dp->is_mst)
-			ret = IRQ_HANDLED;
-		goto put_power;
-
-	} else {
-		if (intel_dp->is_mst) {
-			if (intel_dp_check_mst_status(intel_dp) == -EINVAL) {
-				/*
-				 * If we were in MST mode, and device is not
-				 * there, get out of MST mode
-				 */
-				DRM_DEBUG_KMS("MST device may have disappeared %d vs %d\n",
-					      intel_dp->is_mst, intel_dp->mst_mgr.mst_state);
-				intel_dp->is_mst = false;
-				drm_dp_mst_topology_mgr_set_mst(&intel_dp->mst_mgr,
-								intel_dp->is_mst);
-				goto put_power;
-			}
+	if (intel_dp->is_mst) {
+		if (intel_dp_check_mst_status(intel_dp) == -EINVAL) {
+			/*
+			 * If we were in MST mode, and device is not
+			 * there, get out of MST mode
+			 */
+			DRM_DEBUG_KMS("MST device may have disappeared %d vs %d\n",
+				      intel_dp->is_mst, intel_dp->mst_mgr.mst_state);
+			intel_dp->is_mst = false;
+			drm_dp_mst_topology_mgr_set_mst(&intel_dp->mst_mgr,
+							intel_dp->is_mst);
+			intel_dp->detect_done = false;
+			goto put_power;
 		}
+	}
 
-		if (!intel_dp->is_mst) {
-			if (!intel_dp_short_pulse(intel_dp)) {
-				intel_dp_long_pulse(intel_dp->attached_connector);
-				goto put_power;
-			}
+	if (!intel_dp->is_mst) {
+		if (!intel_dp_short_pulse(intel_dp)) {
+			intel_dp->detect_done = false;
+			goto put_power;
 		}
 	}
 
@@ -5624,7 +5698,7 @@ intel_dp_init_connector(struct intel_digital_port *intel_dig_port,
 	connector->interlace_allowed = true;
 	connector->doublescan_allowed = 0;
 
-	intel_dp_aux_init(intel_dp, intel_connector);
+	intel_dp_aux_init(intel_dp);
 
 	INIT_DELAYED_WORK(&intel_dp->panel_vdd_work,
 			  edp_panel_vdd_work);

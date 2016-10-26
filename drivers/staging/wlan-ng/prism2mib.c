@@ -87,62 +87,62 @@ struct mibrec {
 	u16 parm3;
 	int (*func)(struct mibrec *mib,
 		     int isget,
-		     wlandevice_t *wlandev,
-		     hfa384x_t *hw,
+		     struct wlandevice *wlandev,
+		     struct hfa384x *hw,
 		     struct p80211msg_dot11req_mibset *msg, void *data);
 };
 
 static int prism2mib_bytearea2pstr(struct mibrec *mib,
 				   int isget,
-				   wlandevice_t *wlandev,
-				   hfa384x_t *hw,
+				   struct wlandevice *wlandev,
+				   struct hfa384x *hw,
 				   struct p80211msg_dot11req_mibset *msg,
 				   void *data);
 
 static int prism2mib_uint32(struct mibrec *mib,
 			    int isget,
-			    wlandevice_t *wlandev,
-			    hfa384x_t *hw,
+			    struct wlandevice *wlandev,
+			    struct hfa384x *hw,
 			    struct p80211msg_dot11req_mibset *msg, void *data);
 
 static int prism2mib_flag(struct mibrec *mib,
 			  int isget,
-			  wlandevice_t *wlandev,
-			  hfa384x_t *hw,
+			  struct wlandevice *wlandev,
+			  struct hfa384x *hw,
 			  struct p80211msg_dot11req_mibset *msg, void *data);
 
 static int prism2mib_wepdefaultkey(struct mibrec *mib,
 				   int isget,
-				   wlandevice_t *wlandev,
-				   hfa384x_t *hw,
+				   struct wlandevice *wlandev,
+				   struct hfa384x *hw,
 				   struct p80211msg_dot11req_mibset *msg,
 				   void *data);
 
 static int prism2mib_privacyinvoked(struct mibrec *mib,
 				    int isget,
-				    wlandevice_t *wlandev,
-				    hfa384x_t *hw,
+				    struct wlandevice *wlandev,
+				    struct hfa384x *hw,
 				    struct p80211msg_dot11req_mibset *msg,
 				    void *data);
 
 static int prism2mib_excludeunencrypted(struct mibrec *mib,
 					int isget,
-					wlandevice_t *wlandev,
-					hfa384x_t *hw,
+					struct wlandevice *wlandev,
+					struct hfa384x *hw,
 					struct p80211msg_dot11req_mibset *msg,
 					void *data);
 
 static int prism2mib_fragmentationthreshold(struct mibrec *mib,
 					    int isget,
-					    wlandevice_t *wlandev,
-					    hfa384x_t *hw,
+					    struct wlandevice *wlandev,
+					    struct hfa384x *hw,
 					    struct p80211msg_dot11req_mibset *msg,
 					    void *data);
 
 static int prism2mib_priv(struct mibrec *mib,
 			  int isget,
-			  wlandevice_t *wlandev,
-			  hfa384x_t *hw,
+			  struct wlandevice *wlandev,
+			  struct hfa384x *hw,
 			  struct p80211msg_dot11req_mibset *msg, void *data);
 
 static struct mibrec mibtab[] = {
@@ -257,16 +257,16 @@ static struct mibrec mibtab[] = {
  *	interrupt
  */
 
-int prism2mgmt_mibset_mibget(wlandevice_t *wlandev, void *msgp)
+int prism2mgmt_mibset_mibget(struct wlandevice *wlandev, void *msgp)
 {
-	hfa384x_t *hw = wlandev->priv;
+	struct hfa384x *hw = wlandev->priv;
 	int result, isget;
 	struct mibrec *mib;
 
 	u16 which;
 
 	struct p80211msg_dot11req_mibset *msg = msgp;
-	p80211itemd_t *mibitem;
+	struct p80211itemd *mibitem;
 
 	msg->resultcode.status = P80211ENUM_msgitem_status_data_ok;
 	msg->resultcode.data = P80211ENUM_resultcode_success;
@@ -284,7 +284,7 @@ int prism2mgmt_mibset_mibget(wlandevice_t *wlandev, void *msgp)
 	 ** MIB table.
 	 */
 
-	mibitem = (p80211itemd_t *) msg->mibattribute.data;
+	mibitem = (struct p80211itemd *)msg->mibattribute.data;
 
 	for (mib = mibtab; mib->did != 0; mib++)
 		if (mib->did == mibitem->did && (mib->flag & which))
@@ -373,13 +373,13 @@ done:
 
 static int prism2mib_bytearea2pstr(struct mibrec *mib,
 				   int isget,
-				   wlandevice_t *wlandev,
-				   hfa384x_t *hw,
+				   struct wlandevice *wlandev,
+				   struct hfa384x *hw,
 				   struct p80211msg_dot11req_mibset *msg,
 				   void *data)
 {
 	int result;
-	p80211pstrd_t *pstr = data;
+	struct p80211pstrd *pstr = data;
 	u8 bytebuf[MIB_TMP_MAXLEN];
 
 	if (isget) {
@@ -423,14 +423,14 @@ static int prism2mib_bytearea2pstr(struct mibrec *mib,
 
 static int prism2mib_uint32(struct mibrec *mib,
 			    int isget,
-			    wlandevice_t *wlandev,
-			    hfa384x_t *hw,
+			    struct wlandevice *wlandev,
+			    struct hfa384x *hw,
 			    struct p80211msg_dot11req_mibset *msg, void *data)
 {
 	int result;
 	u32 *uint32 = data;
 	u8 bytebuf[MIB_TMP_MAXLEN];
-	u16 *wordbuf = (u16 *) bytebuf;
+	u16 *wordbuf = (u16 *)bytebuf;
 
 	if (isget) {
 		result = hfa384x_drvr_getconfig16(hw, mib->parm1, wordbuf);
@@ -470,14 +470,14 @@ static int prism2mib_uint32(struct mibrec *mib,
 
 static int prism2mib_flag(struct mibrec *mib,
 			  int isget,
-			  wlandevice_t *wlandev,
-			  hfa384x_t *hw,
+			  struct wlandevice *wlandev,
+			  struct hfa384x *hw,
 			  struct p80211msg_dot11req_mibset *msg, void *data)
 {
 	int result;
 	u32 *uint32 = data;
 	u8 bytebuf[MIB_TMP_MAXLEN];
-	u16 *wordbuf = (u16 *) bytebuf;
+	u16 *wordbuf = (u16 *)bytebuf;
 	u32 flags;
 
 	result = hfa384x_drvr_getconfig16(hw, mib->parm1, wordbuf);
@@ -527,13 +527,13 @@ static int prism2mib_flag(struct mibrec *mib,
 
 static int prism2mib_wepdefaultkey(struct mibrec *mib,
 				   int isget,
-				   wlandevice_t *wlandev,
-				   hfa384x_t *hw,
+				   struct wlandevice *wlandev,
+				   struct hfa384x *hw,
 				   struct p80211msg_dot11req_mibset *msg,
 				   void *data)
 {
 	int result;
-	p80211pstrd_t *pstr = data;
+	struct p80211pstrd *pstr = data;
 	u8 bytebuf[MIB_TMP_MAXLEN];
 	u16 len;
 
@@ -577,8 +577,8 @@ static int prism2mib_wepdefaultkey(struct mibrec *mib,
 
 static int prism2mib_privacyinvoked(struct mibrec *mib,
 				    int isget,
-				    wlandevice_t *wlandev,
-				    hfa384x_t *hw,
+				    struct wlandevice *wlandev,
+				    struct hfa384x *hw,
 				    struct p80211msg_dot11req_mibset *msg,
 				    void *data)
 {
@@ -619,8 +619,8 @@ static int prism2mib_privacyinvoked(struct mibrec *mib,
 
 static int prism2mib_excludeunencrypted(struct mibrec *mib,
 					int isget,
-					wlandevice_t *wlandev,
-					hfa384x_t *hw,
+					struct wlandevice *wlandev,
+					struct hfa384x *hw,
 					struct p80211msg_dot11req_mibset *msg,
 					void *data)
 {
@@ -655,8 +655,8 @@ static int prism2mib_excludeunencrypted(struct mibrec *mib,
 
 static int prism2mib_fragmentationthreshold(struct mibrec *mib,
 					    int isget,
-					    wlandevice_t *wlandev,
-					    hfa384x_t *hw,
+					    struct wlandevice *wlandev,
+					    struct hfa384x *hw,
 					    struct p80211msg_dot11req_mibset *msg,
 					    void *data)
 {
@@ -701,20 +701,20 @@ static int prism2mib_fragmentationthreshold(struct mibrec *mib,
 
 static int prism2mib_priv(struct mibrec *mib,
 			  int isget,
-			  wlandevice_t *wlandev,
-			  hfa384x_t *hw,
+			  struct wlandevice *wlandev,
+			  struct hfa384x *hw,
 			  struct p80211msg_dot11req_mibset *msg, void *data)
 {
-	p80211pstrd_t *pstr = data;
+	struct p80211pstrd *pstr = data;
 
 	switch (mib->did) {
 	case DIDmib_lnx_lnxConfigTable_lnxRSNAIE:{
-			hfa384x_WPAData_t wpa;
+			struct hfa384x_WPAData wpa;
 
 			if (isget) {
 				hfa384x_drvr_getconfig(hw,
 						       HFA384x_RID_CNFWPADATA,
-						       (u8 *) &wpa,
+						       (u8 *)&wpa,
 						       sizeof(wpa));
 				pstr->len = le16_to_cpu(wpa.datalen);
 				memcpy(pstr->data, wpa.data, pstr->len);
@@ -724,7 +724,7 @@ static int prism2mib_priv(struct mibrec *mib,
 
 				hfa384x_drvr_setconfig(hw,
 						       HFA384x_RID_CNFWPADATA,
-						       (u8 *) &wpa,
+						       (u8 *)&wpa,
 						       sizeof(wpa));
 			}
 			break;
@@ -752,9 +752,9 @@ static int prism2mib_priv(struct mibrec *mib,
  */
 
 void prism2mgmt_pstr2bytestr(struct hfa384x_bytestr *bytestr,
-			     p80211pstrd_t *pstr)
+			     struct p80211pstrd *pstr)
 {
-	bytestr->len = cpu_to_le16((u16) (pstr->len));
+	bytestr->len = cpu_to_le16((u16)(pstr->len));
 	memcpy(bytestr->data, pstr->data, pstr->len);
 }
 
@@ -774,9 +774,9 @@ void prism2mgmt_pstr2bytestr(struct hfa384x_bytestr *bytestr,
  */
 
 void prism2mgmt_bytestr2pstr(struct hfa384x_bytestr *bytestr,
-			     p80211pstrd_t *pstr)
+			     struct p80211pstrd *pstr)
 {
-	pstr->len = (u8) (le16_to_cpu((u16) (bytestr->len)));
+	pstr->len = (u8)(le16_to_cpu((u16)(bytestr->len)));
 	memcpy(pstr->data, bytestr->data, pstr->len);
 }
 
@@ -795,8 +795,8 @@ void prism2mgmt_bytestr2pstr(struct hfa384x_bytestr *bytestr,
  *
  */
 
-void prism2mgmt_bytearea2pstr(u8 *bytearea, p80211pstrd_t *pstr, int len)
+void prism2mgmt_bytearea2pstr(u8 *bytearea, struct p80211pstrd *pstr, int len)
 {
-	pstr->len = (u8) len;
+	pstr->len = (u8)len;
 	memcpy(pstr->data, bytearea, len);
 }

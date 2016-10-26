@@ -505,12 +505,15 @@ skl_tplg_init_pipe_modules(struct skl *skl, struct skl_pipe *pipe)
 		 * FE/BE params
 		 */
 		skl_tplg_update_module_params(w, ctx);
-
+		mconfig->id.pvt_id = skl_get_pvt_id(ctx, mconfig);
+		if (mconfig->id.pvt_id < 0)
+			return ret;
 		skl_tplg_set_module_init_data(w);
 		ret = skl_init_module(ctx, mconfig);
-		if (ret < 0)
+		if (ret < 0) {
+			skl_put_pvt_id(ctx, mconfig);
 			return ret;
-
+		}
 		skl_tplg_alloc_pipe_mcps(skl, mconfig);
 		ret = skl_tplg_set_module_params(w, ctx);
 		if (ret < 0)
@@ -537,6 +540,7 @@ static int skl_tplg_unload_pipe_modules(struct skl_sst *ctx,
 			if (ret < 0)
 				return -EIO;
 		}
+		skl_put_pvt_id(ctx, mconfig);
 	}
 
 	/* no modules to unload in this path, so return */
@@ -603,6 +607,26 @@ static int skl_tplg_mixer_dapm_pre_pmu_event(struct snd_soc_dapm_widget *w,
 	return 0;
 }
 
+static int skl_fill_sink_instance_id(struct skl_sst *ctx,
+				struct skl_algo_data *alg_data)
+{
+	struct skl_kpb_params *params = (struct skl_kpb_params *)alg_data->params;
+	struct skl_mod_inst_map *inst;
+	int i, pvt_id;
+
+	inst = params->map;
+
+	for (i = 0; i < params->num_modules; i++) {
+		pvt_id = skl_get_pvt_instance_id_map(ctx,
+					inst->mod_id, inst->inst_id);
+		if (pvt_id < 0)
+			return -EINVAL;
+		inst->inst_id = pvt_id;
+		inst++;
+	}
+	return 0;
+}
+
 /*
  * Some modules require params to be set after the module is bound to
  * all pins connected.
@@ -651,6 +675,8 @@ static int skl_tplg_set_module_bind_params(struct snd_soc_dapm_widget *w,
 			bc = (struct skl_algo_data *)sb->dobj.private;
 
 			if (bc->set_params == SKL_PARAM_BIND) {
+				if (mconfig->m_type == SKL_MODULE_TYPE_KPB)
+					skl_fill_sink_instance_id(ctx, bc);
 				ret = skl_set_module_params(ctx,
 						(u32 *)bc->params, bc->max,
 						bc->param_id, mconfig);
@@ -1588,7 +1614,7 @@ static int skl_tplg_fill_pins_info(struct device *dev,
 		break;
 
 	default:
-		dev_err(dev, "Invalid direction value");
+		dev_err(dev, "Invalid direction value\n");
 		return -EINVAL;
 	}
 
@@ -1626,7 +1652,7 @@ static int skl_tplg_fill_fmt(struct device *dev,
 		break;
 
 	default:
-		dev_err(dev, "Invalid direction value");
+		dev_err(dev, "Invalid direction value\n");
 		return -EINVAL;
 	}
 
@@ -1664,7 +1690,7 @@ static int skl_tplg_fill_fmt(struct device *dev,
 		break;
 
 	default:
-		dev_err(dev, "Invalid token %d", tkn);
+		dev_err(dev, "Invalid token %d\n", tkn);
 		return -EINVAL;
 	}
 
@@ -1677,7 +1703,7 @@ static int skl_tplg_get_uuid(struct device *dev, struct skl_module_cfg *mconfig,
 	if (uuid_tkn->token == SKL_TKN_UUID)
 		memcpy(&mconfig->guid, &uuid_tkn->uuid, 16);
 	else {
-		dev_err(dev, "Not an UUID token tkn %d", uuid_tkn->token);
+		dev_err(dev, "Not an UUID token tkn %d\n", uuid_tkn->token);
 		return -EINVAL;
 	}
 
@@ -1913,7 +1939,7 @@ static int skl_tplg_get_tokens(struct device *dev,
 
 		switch (array->type) {
 		case SND_SOC_TPLG_TUPLE_TYPE_STRING:
-			dev_warn(dev, "no string tokens expected for skl tplg");
+			dev_warn(dev, "no string tokens expected for skl tplg\n");
 			continue;
 
 		case SND_SOC_TPLG_TUPLE_TYPE_UUID:
@@ -1966,7 +1992,7 @@ static int skl_tplg_get_desc_blocks(struct device *dev,
 		return tkn_elem->value;
 
 	default:
-		dev_err(dev, "Invalid descriptor token %d", tkn_elem->token);
+		dev_err(dev, "Invalid descriptor token %d\n", tkn_elem->token);
 		break;
 	}
 
@@ -2226,7 +2252,7 @@ static int skl_tplg_fill_str_mfest_tkn(struct device *dev,
 		break;
 
 	default:
-		dev_err(dev, "Not a string token %d", str_elem->token);
+		dev_err(dev, "Not a string token %d\n", str_elem->token);
 		break;
 	}
 
@@ -2267,7 +2293,7 @@ static int skl_tplg_get_int_tkn(struct device *dev,
 		break;
 
 	default:
-		dev_err(dev, "Not a manifest token %d", tkn_elem->token);
+		dev_err(dev, "Not a manifest token %d\n", tkn_elem->token);
 		return -EINVAL;
 	}
 
@@ -2306,7 +2332,7 @@ static int skl_tplg_get_manifest_tkn(struct device *dev,
 			continue;
 
 		case SND_SOC_TPLG_TUPLE_TYPE_UUID:
-			dev_warn(dev, "no uuid tokens for skl tplf manifest");
+			dev_warn(dev, "no uuid tokens for skl tplf manifest\n");
 			continue;
 
 		default:

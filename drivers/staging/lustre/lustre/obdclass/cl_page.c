@@ -170,7 +170,6 @@ struct cl_page *cl_page_alloc(const struct lu_env *env,
 	}
 	return page;
 }
-EXPORT_SYMBOL(cl_page_alloc);
 
 /**
  * Returns a cl_page with index \a idx at the object \a o, and associated with
@@ -228,11 +227,6 @@ EXPORT_SYMBOL(cl_page_find);
 
 static inline int cl_page_invariant(const struct cl_page *pg)
 {
-	/*
-	 * Page invariant is protected by a VM lock.
-	 */
-	LINVRNT(cl_page_is_vmlocked(NULL, pg));
-
 	return cl_page_in_use_noref(pg);
 }
 
@@ -864,7 +858,6 @@ void cl_page_completion(const struct lu_env *env,
 			       (const struct lu_env *,
 				const struct cl_page_slice *, int), ioret);
 	if (anchor) {
-		LASSERT(cl_page_is_vmlocked(env, pg));
 		LASSERT(pg->cp_sync_io == anchor);
 		pg->cp_sync_io = NULL;
 	}
@@ -1012,7 +1005,6 @@ int cl_page_cancel(const struct lu_env *env, struct cl_page *page)
 			      (const struct lu_env *,
 			       const struct cl_page_slice *));
 }
-EXPORT_SYMBOL(cl_page_cancel);
 
 /**
  * Converts a byte offset within object \a obj into a page index.
@@ -1038,9 +1030,9 @@ pgoff_t cl_index(const struct cl_object *obj, loff_t offset)
 }
 EXPORT_SYMBOL(cl_index);
 
-int cl_page_size(const struct cl_object *obj)
+size_t cl_page_size(const struct cl_object *obj)
 {
-	return 1 << PAGE_SHIFT;
+	return 1UL << PAGE_SHIFT;
 }
 EXPORT_SYMBOL(cl_page_size);
 
@@ -1079,11 +1071,11 @@ struct cl_client_cache *cl_cache_init(unsigned long lru_page_max)
 	/* Initialize cache data */
 	atomic_set(&cache->ccc_users, 1);
 	cache->ccc_lru_max = lru_page_max;
-	atomic_set(&cache->ccc_lru_left, lru_page_max);
+	atomic_long_set(&cache->ccc_lru_left, lru_page_max);
 	spin_lock_init(&cache->ccc_lru_lock);
 	INIT_LIST_HEAD(&cache->ccc_lru);
 
-	atomic_set(&cache->ccc_unstable_nr, 0);
+	atomic_long_set(&cache->ccc_unstable_nr, 0);
 	init_waitqueue_head(&cache->ccc_unstable_waitq);
 
 	return cache;

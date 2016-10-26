@@ -732,7 +732,7 @@ out:
 static const struct of_device_id pca953x_dt_ids[];
 
 static int pca953x_probe(struct i2c_client *client,
-				   const struct i2c_device_id *id)
+				   const struct i2c_device_id *i2c_id)
 {
 	struct pca953x_platform_data *pdata;
 	struct pca953x_chip *chip;
@@ -773,27 +773,45 @@ static int pca953x_probe(struct i2c_client *client,
 	}
 	chip->regulator = reg;
 
-	if (id) {
-		chip->driver_data = id->driver_data;
+	if (i2c_id) {
+		chip->driver_data = i2c_id->driver_data;
 	} else {
-		const struct acpi_device_id *id;
+		const struct acpi_device_id *acpi_id;
 		const struct of_device_id *match;
 
 		match = of_match_device(pca953x_dt_ids, &client->dev);
 		if (match) {
 			chip->driver_data = (int)(uintptr_t)match->data;
 		} else {
-			id = acpi_match_device(pca953x_acpi_ids, &client->dev);
-			if (!id) {
+			acpi_id = acpi_match_device(pca953x_acpi_ids, &client->dev);
+			if (!acpi_id) {
 				ret = -ENODEV;
 				goto err_exit;
 			}
 
-			chip->driver_data = id->driver_data;
+			chip->driver_data = acpi_id->driver_data;
 		}
 	}
 
 	mutex_init(&chip->i2c_lock);
+	/*
+	 * In case we have an i2c-mux controlled by a GPIO provided by an
+	 * expander using the same driver higher on the device tree, read the
+	 * i2c adapter nesting depth and use the retrieved value as lockdep
+	 * subclass for chip->i2c_lock.
+	 *
+	 * REVISIT: This solution is not complete. It protects us from lockdep
+	 * false positives when the expander controlling the i2c-mux is on
+	 * a different level on the device tree, but not when it's on the same
+	 * level on a different branch (in which case the subclass number
+	 * would be the same).
+	 *
+	 * TODO: Once a correct solution is developed, a similar fix should be
+	 * applied to all other i2c-controlled GPIO expanders (and potentially
+	 * regmap-i2c).
+	 */
+	lockdep_set_subclass(&chip->i2c_lock,
+			     i2c_adapter_depth(client->adapter));
 
 	/* initialize cached registers from their original values.
 	 * we can't share this chip with another i2c master.
@@ -848,7 +866,7 @@ static int pca953x_remove(struct i2c_client *client)
 {
 	struct pca953x_platform_data *pdata = dev_get_platdata(&client->dev);
 	struct pca953x_chip *chip = i2c_get_clientdata(client);
-	int ret = 0;
+	int ret;
 
 	if (pdata && pdata->teardown) {
 		ret = pdata->teardown(client, chip->gpio_chip.base,

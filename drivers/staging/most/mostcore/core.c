@@ -83,10 +83,13 @@ struct most_inst_obj {
 static const struct {
 	int most_ch_data_type;
 	char *name;
-} ch_data_type[] = { { MOST_CH_CONTROL, "control\n" },
+} ch_data_type[] = {
+	{ MOST_CH_CONTROL, "control\n" },
 	{ MOST_CH_ASYNC, "async\n" },
 	{ MOST_CH_SYNC, "sync\n" },
-	{ MOST_CH_ISOC_AVP, "isoc_avp\n"} };
+	{ MOST_CH_ISOC, "isoc\n"},
+	{ MOST_CH_ISOC, "isoc_avp\n"},
+};
 
 #define to_inst_obj(d) container_of(d, struct most_inst_obj, kobj)
 
@@ -261,11 +264,11 @@ static ssize_t show_available_directions(struct most_c_obj *c,
 
 	strcpy(buf, "");
 	if (c->iface->channel_vector[i].direction & MOST_CH_RX)
-		strcat(buf, "dir_rx ");
+		strcat(buf, "rx ");
 	if (c->iface->channel_vector[i].direction & MOST_CH_TX)
-		strcat(buf, "dir_tx ");
+		strcat(buf, "tx ");
 	strcat(buf, "\n");
-	return strlen(buf) + 1;
+	return strlen(buf);
 }
 
 static ssize_t show_available_datatypes(struct most_c_obj *c,
@@ -281,10 +284,10 @@ static ssize_t show_available_datatypes(struct most_c_obj *c,
 		strcat(buf, "async ");
 	if (c->iface->channel_vector[i].data_type & MOST_CH_SYNC)
 		strcat(buf, "sync ");
-	if (c->iface->channel_vector[i].data_type & MOST_CH_ISOC_AVP)
-		strcat(buf, "isoc_avp ");
+	if (c->iface->channel_vector[i].data_type & MOST_CH_ISOC)
+		strcat(buf, "isoc ");
 	strcat(buf, "\n");
-	return strlen(buf) + 1;
+	return strlen(buf);
 }
 
 static
@@ -392,9 +395,9 @@ static ssize_t show_set_direction(struct most_c_obj *c,
 				  char *buf)
 {
 	if (c->cfg.direction & MOST_CH_TX)
-		return snprintf(buf, PAGE_SIZE, "dir_tx\n");
+		return snprintf(buf, PAGE_SIZE, "tx\n");
 	else if (c->cfg.direction & MOST_CH_RX)
-		return snprintf(buf, PAGE_SIZE, "dir_rx\n");
+		return snprintf(buf, PAGE_SIZE, "rx\n");
 	return snprintf(buf, PAGE_SIZE, "unconfigured\n");
 }
 
@@ -405,7 +408,11 @@ static ssize_t store_set_direction(struct most_c_obj *c,
 {
 	if (!strcmp(buf, "dir_rx\n")) {
 		c->cfg.direction = MOST_CH_RX;
+	} else if (!strcmp(buf, "rx\n")) {
+		c->cfg.direction = MOST_CH_RX;
 	} else if (!strcmp(buf, "dir_tx\n")) {
+		c->cfg.direction = MOST_CH_TX;
+	} else if (!strcmp(buf, "tx\n")) {
 		c->cfg.direction = MOST_CH_TX;
 	} else {
 		pr_info("WARN: invalid attribute settings\n");
@@ -848,7 +855,23 @@ static ssize_t show_add_link(struct most_aim_obj *aim_obj,
 			     struct most_aim_attribute *attr,
 			     char *buf)
 {
-	return snprintf(buf, PAGE_SIZE, "%s\n", aim_obj->add_link);
+	struct most_c_obj *c;
+	struct most_inst_obj *i;
+	int offs = 0;
+
+	list_for_each_entry(i, &instance_list, list) {
+		list_for_each_entry(c, &i->channel_list, list) {
+			if (c->aim0.ptr == aim_obj->driver ||
+			    c->aim1.ptr == aim_obj->driver) {
+				offs += snprintf(buf + offs, PAGE_SIZE - offs,
+						 "%s:%s\n",
+						 kobject_name(&i->kobj),
+						 kobject_name(&c->kobj));
+			}
+		}
+	}
+
+	return offs;
 }
 
 /**
@@ -1307,17 +1330,14 @@ _exit:
 /**
  * most_submit_mbo - submits an MBO to fifo
  * @mbo: pointer to the MBO
- *
  */
-int most_submit_mbo(struct mbo *mbo)
+void most_submit_mbo(struct mbo *mbo)
 {
-	if (unlikely((!mbo) || (!mbo->context))) {
-		pr_err("Bad MBO or missing channel reference\n");
-		return -EINVAL;
-	}
+	if (WARN_ONCE(!mbo || !mbo->context,
+		      "bad mbo or missing channel reference\n"))
+		return;
 
 	nq_hdm_mbo(mbo);
-	return 0;
 }
 EXPORT_SYMBOL_GPL(most_submit_mbo);
 

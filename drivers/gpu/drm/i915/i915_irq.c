@@ -350,6 +350,9 @@ void gen6_reset_rps_interrupts(struct drm_i915_private *dev_priv)
 
 void gen6_enable_rps_interrupts(struct drm_i915_private *dev_priv)
 {
+	if (READ_ONCE(dev_priv->rps.interrupts_enabled))
+		return;
+
 	spin_lock_irq(&dev_priv->irq_lock);
 	WARN_ON_ONCE(dev_priv->rps.pm_iir);
 	WARN_ON_ONCE(I915_READ(gen6_pm_iir(dev_priv)) & dev_priv->pm_rps_events);
@@ -368,10 +371,13 @@ u32 gen6_sanitize_rps_pm_mask(struct drm_i915_private *dev_priv, u32 mask)
 
 void gen6_disable_rps_interrupts(struct drm_i915_private *dev_priv)
 {
+	if (!READ_ONCE(dev_priv->rps.interrupts_enabled))
+		return;
+
 	spin_lock_irq(&dev_priv->irq_lock);
 	dev_priv->rps.interrupts_enabled = false;
 
-	I915_WRITE(GEN6_PMINTRMSK, gen6_sanitize_rps_pm_mask(dev_priv, ~0));
+	I915_WRITE(GEN6_PMINTRMSK, gen6_sanitize_rps_pm_mask(dev_priv, ~0u));
 
 	__gen6_disable_pm_irq(dev_priv, dev_priv->pm_rps_events);
 	I915_WRITE(gen6_pm_ier(dev_priv), I915_READ(gen6_pm_ier(dev_priv)) &
@@ -2816,7 +2822,7 @@ semaphore_wait_to_signaller_ring(struct intel_engine_cs *engine, u32 ipehr,
 			if (engine == signaller)
 				continue;
 
-			if (offset == signaller->semaphore.signal_ggtt[engine->id])
+			if (offset == signaller->semaphore.signal_ggtt[engine->hw_id])
 				return signaller;
 		}
 	} else {
@@ -2826,13 +2832,13 @@ semaphore_wait_to_signaller_ring(struct intel_engine_cs *engine, u32 ipehr,
 			if(engine == signaller)
 				continue;
 
-			if (sync_bits == signaller->semaphore.mbox.wait[engine->id])
+			if (sync_bits == signaller->semaphore.mbox.wait[engine->hw_id])
 				return signaller;
 		}
 	}
 
-	DRM_DEBUG_DRIVER("No signaller ring found for ring %i, ipehr 0x%08x, offset 0x%016llx\n",
-			 engine->id, ipehr, offset);
+	DRM_DEBUG_DRIVER("No signaller ring found for %s, ipehr 0x%08x, offset 0x%016llx\n",
+			 engine->name, ipehr, offset);
 
 	return ERR_PTR(-ENODEV);
 }
@@ -4500,7 +4506,7 @@ void intel_irq_init(struct drm_i915_private *dev_priv)
 		dev_priv->rps.pm_intr_keep |= GEN6_PM_RP_UP_EI_EXPIRED;
 
 	if (INTEL_INFO(dev_priv)->gen >= 8)
-		dev_priv->rps.pm_intr_keep |= GEN8_PMINTR_REDIRECT_TO_NON_DISP;
+		dev_priv->rps.pm_intr_keep |= GEN8_PMINTR_REDIRECT_TO_GUC;
 
 	INIT_DELAYED_WORK(&dev_priv->gpu_error.hangcheck_work,
 			  i915_hangcheck_elapsed);

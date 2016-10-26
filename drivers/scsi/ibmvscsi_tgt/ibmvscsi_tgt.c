@@ -3186,9 +3186,6 @@ static int ibmvscsis_rdma(struct ibmvscsis_cmd *cmd, struct scatterlist *sg,
 					 vscsi->dds.window[LOCAL].liobn,
 					 server_ioba);
 		} else {
-			/* write to client */
-			struct srp_cmd *srp = (struct srp_cmd *)iue->sbuf->buf;
-
 			/* The h_copy_rdma will cause phyp, running in another
 			 * partition, to read memory, so we need to make sure
 			 * the data has been written out, hence these syncs.
@@ -3449,6 +3446,7 @@ static int ibmvscsis_probe(struct vio_dev *vdev,
 	vscsi->map_ioba = dma_map_single(&vdev->dev, vscsi->map_buf, PAGE_SIZE,
 					 DMA_BIDIRECTIONAL);
 	if (dma_mapping_error(&vdev->dev, vscsi->map_ioba)) {
+		rc = -ENOMEM;
 		dev_err(&vscsi->dev, "probe: error mapping command buffer\n");
 		goto free_buf;
 	}

@@ -41,6 +41,7 @@
 #include "lustre_export.h"
 #include "lustre_fid.h"
 #include "lustre_fld.h"
+#include "lustre_handles.h"
 #include "lustre_intent.h"
 
 #define MAX_OBD_DEVICES 8192
@@ -72,6 +73,13 @@ static inline void loi_init(struct lov_oinfo *loi)
 {
 }
 
+/*
+ * If we are unable to get the maximum object size from the OST in
+ * ocd_maxbytes using OBD_CONNECT_MAXBYTES, then we fall back to using
+ * the old maximum object size from ext3.
+ */
+#define LUSTRE_EXT3_STRIPE_MAXBYTES 0x1fffffff000ULL
+
 struct lov_stripe_md {
 	atomic_t     lsm_refc;
 	spinlock_t	lsm_lock;
@@ -80,30 +88,16 @@ struct lov_stripe_md {
 	/* maximum possible file size, might change as OSTs status changes,
 	 * e.g. disconnected, deactivated
 	 */
-	__u64	    lsm_maxbytes;
-	struct {
-		/* Public members. */
-		struct ost_id lw_object_oi; /* lov object id/seq */
-
-		/* LOV-private members start here -- only for use in lov/. */
-		__u32 lw_magic;
-		__u32 lw_stripe_size;      /* size of the stripe */
-		__u32 lw_pattern;	  /* striping pattern (RAID0, RAID1) */
-		__u16 lw_stripe_count;  /* number of objects being striped over */
-		__u16 lw_layout_gen;       /* generation of the layout */
-		char  lw_pool_name[LOV_MAXPOOLNAME]; /* pool name */
-	} lsm_wire;
-
+	__u64		lsm_maxbytes;
+	struct ost_id	lsm_oi;
+	__u32		lsm_magic;
+	__u32		lsm_stripe_size;
+	__u32		lsm_pattern;	/* striping pattern (RAID0, RAID1) */
+	__u16		lsm_stripe_count;
+	__u16		lsm_layout_gen;
+	char		lsm_pool_name[LOV_MAXPOOLNAME + 1];
 	struct lov_oinfo *lsm_oinfo[0];
 };
-
-#define lsm_oi		 lsm_wire.lw_object_oi
-#define lsm_magic	lsm_wire.lw_magic
-#define lsm_layout_gen   lsm_wire.lw_layout_gen
-#define lsm_stripe_size  lsm_wire.lw_stripe_size
-#define lsm_pattern      lsm_wire.lw_pattern
-#define lsm_stripe_count lsm_wire.lw_stripe_count
-#define lsm_pool_name    lsm_wire.lw_pool_name
 
 static inline bool lsm_is_released(struct lov_stripe_md *lsm)
 {
@@ -168,7 +162,7 @@ struct obd_type {
 struct brw_page {
 	u64 off;
 	struct page *pg;
-	int count;
+	unsigned int count;
 	u32 flag;
 };
 
@@ -202,31 +196,68 @@ enum obd_cl_sem_lock_class {
 	OBD_CLI_SEM_MDCOSC,
 };
 
+/*
+ * Limit reply buffer size for striping data to one x86_64 page. This
+ * value is chosen to fit the striping data for common use cases while
+ * staying well below the limit at which the buffer must be backed by
+ * vmalloc(). Excessive use of vmalloc() may cause spinlock contention
+ * on the MDS.
+ */
+#define OBD_MAX_DEFAULT_EA_SIZE		4096
+#define OBD_MAX_DEFAULT_COOKIE_SIZE	4096
+
 struct mdc_rpc_lock;
 struct obd_import;
 struct client_obd {
 	struct rw_semaphore  cl_sem;
 	struct obd_uuid	  cl_target_uuid;
 	struct obd_import       *cl_import; /* ptlrpc connection state */
-	int		      cl_conn_count;
-	/* max_mds_easize is purely a performance thing so we don't have to
-	 * call obd_size_diskmd() all the time.
+	size_t			 cl_conn_count;
+	/*
+	 * Cache maximum and default values for easize and cookiesize. This is
+	 * strictly a performance optimization to minimize calls to
+	 * obd_size_diskmd(). The default values are used to calculate the
+	 * initial size of a request buffer. The ptlrpc layer will resize the
+	 * buffer as needed to accommodate a larger reply from the
+	 * server. The default values should be small enough to avoid wasted
+	 * memory and excessive use of vmalloc(), yet large enough to avoid
+	 * reallocating the buffer in the common use case.
 	 */
-	int			 cl_default_mds_easize;
-	int			 cl_max_mds_easize;
-	int			 cl_default_mds_cookiesize;
-	int			 cl_max_mds_cookiesize;
+	/*
+	 * Default EA size for striping attributes. It is initialized at
+	 * mount-time based on the default stripe width of the filesystem,
+	 * then it tracks the largest observed EA size advertised by
+	 * the MDT, up to a maximum value of OBD_MAX_DEFAULT_EA_SIZE.
+	 */
+	u32			 cl_default_mds_easize;
+	/* Maximum possible EA size computed at mount-time based on
+	 * the number of OSTs in the filesystem. May be increased at
+	 * run-time if a larger observed size is advertised by the MDT.
+	 */
+	u32			 cl_max_mds_easize;
+	/* Default cookie size for llog cookies (see struct llog_cookie). It is
+	 * initialized to zero at mount-time, then it tracks the largest
+	 * observed cookie size advertised by the MDT, up to a maximum value of
+	 * OBD_MAX_DEFAULT_COOKIE_SIZE. Note that llog_cookies are not
+	 * used by clients communicating with MDS versions 2.4.0 and later.
+	 */
+	u32			 cl_default_mds_cookiesize;
+	/* Maximum possible cookie size computed at mount-time based on
+	 * the number of OSTs in the filesystem. May be increased at
+	 * run-time if a larger observed size is advertised by the MDT.
+	 */
+	u32			 cl_max_mds_cookiesize;
 
 	enum lustre_sec_part     cl_sp_me;
 	enum lustre_sec_part     cl_sp_to;
 	struct sptlrpc_flavor    cl_flvr_mgc;   /* fixed flavor of mgc->mgs */
 
 	/* the grant values are protected by loi_list_lock below */
-	long		     cl_dirty_pages;	/* all _dirty_ in pahges */
-	long		     cl_dirty_max_pages;/* allowed w/o rpc */
-	long		     cl_dirty_transit; /* dirty synchronous */
-	long		     cl_avail_grant;   /* bytes of credit for ost */
-	long		     cl_lost_grant;    /* lost credits (trunc) */
+	unsigned long		 cl_dirty_pages;	/* all _dirty_ in pahges */
+	unsigned long		 cl_dirty_max_pages;	/* allowed w/o rpc */
+	unsigned long		 cl_dirty_transit;	/* dirty synchronous */
+	unsigned long		 cl_avail_grant;	/* bytes of credit for ost */
+	unsigned long		 cl_lost_grant;		/* lost credits (trunc) */
 
 	/* since we allocate grant by blocks, we don't know how many grant will
 	 * be used to add a page into cache. As a solution, we reserve maximum
@@ -243,7 +274,7 @@ struct client_obd {
 	 * the extent size. A chunk is max(PAGE_SIZE, OST block size)
 	 */
 	int		  cl_chunkbits;
-	int		  cl_extent_tax; /* extent overhead, by bytes */
+	unsigned int	  cl_extent_tax; /* extent overhead, by bytes */
 
 	/* keep track of objects that have lois that contain pages which
 	 * have been queued for async brw.  this lock also protects the
@@ -268,13 +299,13 @@ struct client_obd {
 	struct list_head	       cl_loi_hp_ready_list;
 	struct list_head	       cl_loi_write_list;
 	struct list_head	       cl_loi_read_list;
-	int		      cl_r_in_flight;
-	int		      cl_w_in_flight;
+	__u32			 cl_r_in_flight;
+	__u32			 cl_w_in_flight;
 	/* just a sum of the loi/lop pending numbers to be exported by sysfs */
 	atomic_t	     cl_pending_w_pages;
 	atomic_t	     cl_pending_r_pages;
 	__u32			 cl_max_pages_per_rpc;
-	int		      cl_max_rpcs_in_flight;
+	__u32			 cl_max_rpcs_in_flight;
 	struct obd_histogram     cl_read_rpc_hist;
 	struct obd_histogram     cl_write_rpc_hist;
 	struct obd_histogram     cl_read_page_hist;
@@ -285,13 +316,13 @@ struct client_obd {
 	/* lru for osc caching pages */
 	struct cl_client_cache	*cl_cache;
 	struct list_head	 cl_lru_osc; /* member of cl_cache->ccc_lru */
-	atomic_t		*cl_lru_left;
-	atomic_t		 cl_lru_busy;
+	atomic_long_t		*cl_lru_left;
+	atomic_long_t		 cl_lru_busy;
+	atomic_long_t		 cl_lru_in_list;
 	atomic_t		 cl_lru_shrinkers;
-	atomic_t		 cl_lru_in_list;
 	struct list_head	 cl_lru_list; /* lru page list */
 	spinlock_t		 cl_lru_list_lock; /* page list protector */
-	atomic_t		 cl_unstable_count;
+	atomic_long_t		 cl_unstable_count;
 
 	/* number of in flight destroy rpcs is limited to max_rpcs_in_flight */
 	atomic_t	     cl_destroy_in_flight;
@@ -317,7 +348,7 @@ struct client_obd {
 	/* used by quotacheck when the servers are older than 2.4 */
 	int		      cl_qchk_stat; /* quotacheck stat of the peer */
 #define CL_NOT_QUOTACHECKED 1   /* client->cl_qchk_stat init value */
-#if LUSTRE_VERSION_CODE >= OBD_OCD_VERSION(2, 7, 50, 0)
+#if OBD_OCD_VERSION(2, 7, 53, 0) < LUSTRE_VERSION_CODE
 #warning "please consider removing quotacheck compatibility code"
 #endif
 
@@ -398,7 +429,7 @@ struct lov_obd {
 struct lmv_tgt_desc {
 	struct obd_uuid		ltd_uuid;
 	struct obd_export	*ltd_exp;
-	int			ltd_idx;
+	u32			ltd_idx;
 	struct mutex		ltd_fid_mutex;
 	unsigned long		ltd_active:1; /* target up for requests */
 };
@@ -425,9 +456,8 @@ struct lmv_obd {
 	int			max_def_easize;
 	int			max_cookiesize;
 	int			max_def_cookiesize;
-	int			server_timeout;
 
-	int			tgts_size; /* size of tgts array */
+	u32			tgts_size; /* size of tgts array */
 	struct lmv_tgt_desc	**tgts;
 
 	struct obd_connect_data	conn_data;
@@ -437,11 +467,11 @@ struct lmv_obd {
 struct niobuf_local {
 	__u64		lnb_file_offset;
 	__u32		lnb_page_offset;
-	__u32		len;
-	__u32		flags;
-	struct page	*page;
-	struct dentry	*dentry;
-	int		rc;
+	__u32		lnb_len;
+	__u32		lnb_flags;
+	struct page	*lnb_page;
+	void		*lnb_data;
+	int		lnb_rc;
 };
 
 #define LUSTRE_FLD_NAME	 "fld"
@@ -674,20 +704,16 @@ enum obd_cleanup_stage {
 #define KEY_INTERMDS	    "inter_mds"
 #define KEY_LAST_ID	     "last_id"
 #define KEY_LAST_FID		"last_fid"
-#define KEY_LOCK_TO_STRIPE      "lock_to_stripe"
 #define KEY_LOVDESC	     "lovdesc"
 #define KEY_MAX_EASIZE		"max_easize"
 #define KEY_DEFAULT_EASIZE	"default_easize"
-#define KEY_MDS_CONN	    "mds_conn"
 #define KEY_MGSSEC	      "mgssec"
-#define KEY_NEXT_ID	     "next_id"
 #define KEY_READ_ONLY	   "read-only"
 #define KEY_REGISTER_TARGET     "register_target"
 #define KEY_SET_FS	      "set_fs"
 #define KEY_TGT_COUNT	   "tgt_count"
 /*      KEY_SET_INFO in lustre_idl.h */
 #define KEY_SPTLRPC_CONF	"sptlrpc_conf"
-#define KEY_CONNECT_FLAG	"connect_flags"
 
 #define KEY_CACHE_SET		"cache_set"
 #define KEY_CACHE_LRU_SHRINK	"cache_lru_shrink"
@@ -729,6 +755,14 @@ static inline int it_to_lock_mode(struct lookup_intent *it)
 	return -EINVAL;
 }
 
+enum md_cli_flags {
+	CLI_SET_MEA	= BIT(0),
+	CLI_RM_ENTRY	= BIT(1),
+	CLI_HASH64	= BIT(2),
+	CLI_API32	= BIT(3),
+	CLI_MIGRATE	= BIT(4),
+};
+
 struct md_op_data {
 	struct lu_fid	   op_fid1; /* operation fid1 (usually parent) */
 	struct lu_fid	   op_fid2; /* operation fid2 (usually child) */
@@ -738,7 +772,7 @@ struct md_op_data {
 	struct lustre_handle    op_handle;
 	s64			op_mod_time;
 	const char	     *op_name;
-	int		     op_namelen;
+	size_t			op_namelen;
 	__u32		   op_mode;
 	struct lmv_stripe_md   *op_mea1;
 	struct lmv_stripe_md   *op_mea2;
@@ -766,33 +800,25 @@ struct md_op_data {
 	__u64		   op_offset;
 
 	/* Used by readdir */
-	__u32		   op_npages;
+	__u32			op_max_pages;
 
 	/* used to transfer info between the stacks of MD client
 	 * see enum op_cli_flags
 	 */
-	__u32			op_cli_flags;
+	enum md_cli_flags	op_cli_flags;
 
 	/* File object data version for HSM release, on client */
 	__u64			op_data_version;
 	struct lustre_handle	op_lease_handle;
-};
 
-#define op_stripe_offset       op_ioepoch
-#define op_max_pages           op_valid
+	/* default stripe offset */
+	__u32			op_default_stripe_offset;
+};
 
 struct md_callback {
 	int (*md_blocking_ast)(struct ldlm_lock *lock,
 			       struct ldlm_lock_desc *desc,
 			       void *data, int flag);
-};
-
-enum op_cli_flags {
-	CLI_SET_MEA	= 1 << 0,
-	CLI_RM_ENTRY	= 1 << 1,
-	CLI_HASH64	= BIT(2),
-	CLI_API32	= BIT(3),
-	CLI_MIGRATE	= BIT(4),
 };
 
 struct md_enqueue_info;
@@ -805,8 +831,7 @@ struct md_enqueue_info {
 	struct inode	   *mi_dir;
 	int (*mi_cb)(struct ptlrpc_request *req,
 		     struct md_enqueue_info *minfo, int rc);
-	__u64		   mi_cbdata;
-	unsigned int	    mi_generation;
+	void			*mi_cbdata;
 };
 
 struct obd_ops {
@@ -867,13 +892,10 @@ struct obd_ops {
 	int (*unpackmd)(struct obd_export *exp,
 			struct lov_stripe_md **mem_tgt,
 			struct lov_mds_md *disk_src, int disk_len);
-	int (*preallocate)(struct lustre_handle *, u32 *req, u64 *ids);
 	int (*create)(const struct lu_env *env, struct obd_export *exp,
-		      struct obdo *oa, struct lov_stripe_md **ea,
-		      struct obd_trans_info *oti);
+		      struct obdo *oa, struct obd_trans_info *oti);
 	int (*destroy)(const struct lu_env *env, struct obd_export *exp,
-		       struct obdo *oa, struct lov_stripe_md *ea,
-		       struct obd_trans_info *oti, struct obd_export *md_exp);
+		       struct obdo *oa, struct obd_trans_info *oti);
 	int (*setattr)(const struct lu_env *, struct obd_export *exp,
 		       struct obd_info *oinfo, struct obd_trans_info *oti);
 	int (*setattr_async)(struct obd_export *exp, struct obd_info *oinfo,
@@ -883,8 +905,6 @@ struct obd_ops {
 		       struct obd_info *oinfo);
 	int (*getattr_async)(struct obd_export *exp, struct obd_info *oinfo,
 			     struct ptlrpc_request_set *set);
-	int (*adjust_kms)(struct obd_export *exp, struct lov_stripe_md *lsm,
-			  u64 size, int shrink);
 	int (*preprw)(const struct lu_env *env, int cmd,
 		      struct obd_export *exp, struct obdo *oa, int objcount,
 		      struct obd_ioobj *obj, struct niobuf_remote *remote,
@@ -950,6 +970,17 @@ struct md_open_data {
 	bool			  mod_is_create;
 };
 
+struct obd_client_handle {
+	struct lustre_handle	 och_fh;
+	struct lu_fid		 och_fid;
+	struct md_open_data	*och_mod;
+	struct lustre_handle	 och_lease_handle; /* open lock for lease */
+	__u32			 och_magic;
+	int			 och_flags;
+};
+
+#define OBD_CLIENT_HANDLE_MAGIC 0xd15ea5ed
+
 struct lookup_intent;
 struct cl_attr;
 
@@ -959,8 +990,8 @@ struct md_ops {
 	int (*close)(struct obd_export *, struct md_op_data *,
 		     struct md_open_data *, struct ptlrpc_request **);
 	int (*create)(struct obd_export *, struct md_op_data *,
-		      const void *, int, int, __u32, __u32, cfs_cap_t,
-		      __u64, struct ptlrpc_request **);
+		      const void *, size_t, umode_t, uid_t, gid_t,
+		      cfs_cap_t, __u64, struct ptlrpc_request **);
 	int (*done_writing)(struct obd_export *, struct md_op_data  *,
 			    struct md_open_data *);
 	int (*enqueue)(struct obd_export *, struct ldlm_enqueue_info *,
@@ -978,10 +1009,10 @@ struct md_ops {
 	int (*link)(struct obd_export *, struct md_op_data *,
 		    struct ptlrpc_request **);
 	int (*rename)(struct obd_export *, struct md_op_data *,
-		      const char *, int, const char *, int,
+		      const char *, size_t, const char *, size_t,
 		      struct ptlrpc_request **);
 	int (*setattr)(struct obd_export *, struct md_op_data *, void *,
-		       int, void *, int, struct ptlrpc_request **,
+		       size_t, void *, size_t, struct ptlrpc_request **,
 			 struct md_open_data **mod);
 	int (*sync)(struct obd_export *, const struct lu_fid *,
 		    struct ptlrpc_request **);
@@ -999,7 +1030,7 @@ struct md_ops {
 			u64, const char *, const char *, int, int, int,
 			struct ptlrpc_request **);
 
-	int (*init_ea_size)(struct obd_export *, int, int, int, int);
+	int (*init_ea_size)(struct obd_export *, u32, u32, u32, u32);
 
 	int (*get_lustre_md)(struct obd_export *, struct ptlrpc_request *,
 			     struct obd_export *, struct obd_export *,
@@ -1009,10 +1040,7 @@ struct md_ops {
 
 	int (*merge_attr)(struct obd_export *,
 			  const struct lmv_stripe_md *lsm,
-			  struct cl_attr *attr);
-
-	int (*update_lsm_md)(struct obd_export *, struct lmv_stripe_md *lsm,
-			     struct mdt_body *, ldlm_blocking_callback);
+			  struct cl_attr *attr, ldlm_blocking_callback);
 
 	int (*set_open_replay_data)(struct obd_export *,
 				    struct obd_client_handle *,
@@ -1052,8 +1080,6 @@ struct md_ops {
 
 struct lsm_operations {
 	void (*lsm_free)(struct lov_stripe_md *);
-	int (*lsm_destroy)(struct lov_stripe_md *, struct obdo *oa,
-			   struct obd_export *md_exp);
 	void (*lsm_stripe_by_index)(struct lov_stripe_md *, int *, u64 *,
 				    u64 *);
 	void (*lsm_stripe_by_offset)(struct lov_stripe_md *, int *, u64 *,
@@ -1122,7 +1148,8 @@ static inline const char *lu_dev_name(const struct lu_device *lu_dev)
 	return lu_dev->ld_obd->obd_name;
 }
 
-static inline bool filename_is_volatile(const char *name, int namelen, int *idx)
+static inline bool filename_is_volatile(const char *name, size_t namelen,
+					int *idx)
 {
 	const char	*start;
 	char		*end;
@@ -1183,8 +1210,8 @@ static inline void client_adjust_max_dirty(struct client_obd *cli)
 		cli->cl_dirty_max_pages =
 			(OSC_MAX_DIRTY_DEFAULT * 1024 * 1024) >> PAGE_SHIFT;
 	else {
-		long dirty_max = cli->cl_max_rpcs_in_flight *
-				 cli->cl_max_pages_per_rpc;
+		unsigned long dirty_max = cli->cl_max_rpcs_in_flight *
+					  cli->cl_max_pages_per_rpc;
 
 		if (dirty_max > cli->cl_dirty_max_pages)
 			cli->cl_dirty_max_pages = dirty_max;

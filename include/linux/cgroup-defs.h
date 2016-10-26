@@ -59,13 +59,6 @@ enum {
 	 * specified at mount time and thus is implemented here.
 	 */
 	CGRP_CPUSET_CLONE_CHILDREN,
-	/*
-	 * Keep track of the no_new_privs property of processes in the cgroup.
-	 * This is useful to quickly check if all processes in the cgroup have
-	 * their no_new_privs bit on. This flag is initially set to true but
-	 * ANDed with every processes coming in the cgroup.
-	 */
-	CGRP_NO_NEW_PRIVS,
 };
 
 /* cgroup_root->flags */

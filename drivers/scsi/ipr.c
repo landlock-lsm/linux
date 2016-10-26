@@ -493,15 +493,15 @@ struct ipr_error_table_t ipr_error_table[] = {
 	"9072: Link not operational transition"},
 	{0x066B8200, 0, IPR_DEFAULT_LOG_LEVEL,
 	"9032: Array exposed but still protected"},
-	{0x066B8300, 0, IPR_DEFAULT_LOG_LEVEL + 1,
+	{0x066B8300, 0, IPR_DEBUG_LOG_LEVEL,
 	"70DD: Device forced failed by disrupt device command"},
 	{0x066B9100, 0, IPR_DEFAULT_LOG_LEVEL,
 	"4061: Multipath redundancy level got better"},
 	{0x066B9200, 0, IPR_DEFAULT_LOG_LEVEL,
 	"4060: Multipath redundancy level got worse"},
-	{0x06808100, 0, IPR_DEFAULT_LOG_LEVEL,
+	{0x06808100, 0, IPR_DEBUG_LOG_LEVEL,
 	"9083: Device raw mode enabled"},
-	{0x06808200, 0, IPR_DEFAULT_LOG_LEVEL,
+	{0x06808200, 0, IPR_DEBUG_LOG_LEVEL,
 	"9084: Device raw mode disabled"},
 	{0x07270000, 0, 0,
 	"Failure due to other device"},
@@ -2586,7 +2586,6 @@ static void ipr_process_error(struct ipr_cmnd *ipr_cmd)
 	struct ipr_hostrcb *hostrcb = ipr_cmd->u.hostrcb;
 	u32 ioasc = be32_to_cpu(ipr_cmd->s.ioasa.hdr.ioasc);
 	u32 fd_ioasc;
-	char *envp[] = { "ASYNC_ERR_LOG=1", NULL };
 
 	if (ioa_cfg->sis64)
 		fd_ioasc = be32_to_cpu(hostrcb->hcam.u.error64.fd_ioasc);
@@ -2607,8 +2606,8 @@ static void ipr_process_error(struct ipr_cmnd *ipr_cmd)
 	}
 
 	list_add_tail(&hostrcb->queue, &ioa_cfg->hostrcb_report_q);
+	schedule_work(&ioa_cfg->work_q);
 	hostrcb = ipr_get_free_hostrcb(ioa_cfg);
-	kobject_uevent_env(&ioa_cfg->host->shost_dev.kobj, KOBJ_CHANGE, envp);
 
 	ipr_send_hcam(ioa_cfg, IPR_HCAM_CDB_OP_CODE_LOG_DATA, hostrcb);
 }
@@ -8049,7 +8048,8 @@ static int ipr_ioafp_identify_hrrq(struct ipr_cmnd *ipr_cmd)
 
 	ENTER;
 	ipr_cmd->job_step = ipr_ioafp_std_inquiry;
-	dev_info(&ioa_cfg->pdev->dev, "Starting IOA initialization sequence.\n");
+	if (ioa_cfg->identify_hrrq_index == 0)
+		dev_info(&ioa_cfg->pdev->dev, "Starting IOA initialization sequence.\n");
 
 	if (ioa_cfg->identify_hrrq_index < ioa_cfg->hrrq_num) {
 		hrrq = &ioa_cfg->hrrq[ioa_cfg->identify_hrrq_index];

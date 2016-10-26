@@ -414,16 +414,11 @@ static int class_cleanup(struct obd_device *obd, struct lustre_cfg *lcfg)
 	}
 	/* Leave this on forever */
 	obd->obd_stopping = 1;
-
-	/* wait for already-arrived-connections to finish. */
-	while (obd->obd_conn_inprogress > 0) {
-		spin_unlock(&obd->obd_dev_lock);
-
-		cond_resched();
-
-		spin_lock(&obd->obd_dev_lock);
-	}
 	spin_unlock(&obd->obd_dev_lock);
+
+	while (obd->obd_conn_inprogress > 0)
+		yield();
+	smp_rmb();
 
 	if (lcfg->lcfg_bufcount >= 2 && LUSTRE_CFG_BUFLEN(lcfg, 1) > 0) {
 		for (flag = lustre_cfg_string(lcfg, 1); *flag != 0; flag++)
@@ -743,7 +738,7 @@ static int process_param2_config(struct lustre_cfg *lcfg)
 	}
 
 	start = ktime_get();
-	rc = call_usermodehelper(argv[0], argv, NULL, 1);
+	rc = call_usermodehelper(argv[0], argv, NULL, UMH_WAIT_PROC);
 	end = ktime_get();
 
 	if (rc < 0) {
@@ -1046,8 +1041,6 @@ int class_process_proc_param(char *prefix, struct lprocfs_vars *lvars,
 	return rc;
 }
 EXPORT_SYMBOL(class_process_proc_param);
-
-extern int lustre_check_exclusion(struct super_block *sb, char *svname);
 
 /** Parse a configuration llog, doing various manipulations on them
  * for various reasons, (modifications for compatibility, skip obsolete

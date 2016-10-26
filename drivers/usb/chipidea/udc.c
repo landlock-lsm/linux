@@ -350,8 +350,7 @@ static int add_td_to_list(struct ci_hw_ep *hwep, struct ci_hw_req *hwreq,
 	if (node == NULL)
 		return -ENOMEM;
 
-	node->ptr = dma_pool_zalloc(hwep->td_pool, GFP_ATOMIC,
-				   &node->dma);
+	node->ptr = dma_pool_zalloc(hwep->td_pool, GFP_ATOMIC, &node->dma);
 	if (node->ptr == NULL) {
 		kfree(node);
 		return -ENOMEM;
@@ -1677,12 +1676,10 @@ static int init_eps(struct ci_hdrc *ci)
 			usb_ep_set_maxpacket_limit(&hwep->ep, (unsigned short)~0);
 
 			INIT_LIST_HEAD(&hwep->qh.queue);
-			hwep->qh.ptr = dma_pool_alloc(ci->qh_pool, GFP_KERNEL,
-						     &hwep->qh.dma);
+			hwep->qh.ptr = dma_pool_zalloc(ci->qh_pool, GFP_KERNEL,
+						       &hwep->qh.dma);
 			if (hwep->qh.ptr == NULL)
 				retval = -ENOMEM;
-			else
-				memset(hwep->qh.ptr, 0, sizeof(*hwep->qh.ptr));
 
 			/*
 			 * set up shorthands for ep0 out and in endpoints,
@@ -1996,7 +1993,7 @@ int ci_hdrc_gadget_init(struct ci_hdrc *ci)
 	if (!hw_read(ci, CAP_DCCPARAMS, DCCPARAMS_DC))
 		return -ENXIO;
 
-	rdrv = devm_kzalloc(ci->dev, sizeof(struct ci_role_driver), GFP_KERNEL);
+	rdrv = devm_kzalloc(ci->dev, sizeof(*rdrv), GFP_KERNEL);
 	if (!rdrv)
 		return -ENOMEM;
 

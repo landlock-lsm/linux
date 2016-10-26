@@ -259,8 +259,6 @@ phys_addr_t paddr_vmcoreinfo_note(void);
 	vmcoreinfo_append_str("NUMBER(%s)=%ld\n", #name, (long)name)
 #define VMCOREINFO_CONFIG(name) \
 	vmcoreinfo_append_str("CONFIG_%s=y\n", #name)
-#define VMCOREINFO_PHYS_BASE(value) \
-	vmcoreinfo_append_str("PHYS_BASE=%lx\n", (unsigned long)value)
 #define VMCOREINFO_PAGE_OFFSET(value) \
 	vmcoreinfo_append_str("PAGE_OFFSET=%lx\n", (unsigned long)value)
 #define VMCOREINFO_VMALLOC_START(value) \

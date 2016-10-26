@@ -42,7 +42,6 @@ struct x509_certificate {
 	bool		self_signed;		/* T if self-signed (check unsupported_sig too) */
 	bool		unsupported_key;	/* T if key uses unsupported crypto */
 	bool		unsupported_sig;	/* T if signature uses unsupported crypto */
-	bool		blacklisted;
 };
 
 /*

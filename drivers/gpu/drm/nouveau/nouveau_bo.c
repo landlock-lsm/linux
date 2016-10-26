@@ -209,7 +209,8 @@ nouveau_bo_new(struct drm_device *dev, int size, int align,
 	nvbo->tile_flags = tile_flags;
 	nvbo->bo.bdev = &drm->ttm.bdev;
 
-	nvbo->force_coherent = flags & TTM_PL_FLAG_UNCACHED;
+	if (!nvxx_device(&drm->device)->func->cpu_coherent)
+		nvbo->force_coherent = flags & TTM_PL_FLAG_UNCACHED;
 
 	nvbo->page_shift = 12;
 	if (drm->client.vm) {
@@ -1315,7 +1316,8 @@ nouveau_bo_verify_access(struct ttm_buffer_object *bo, struct file *filp)
 {
 	struct nouveau_bo *nvbo = nouveau_bo(bo);
 
-	return drm_vma_node_verify_access(&nvbo->gem.vma_node, filp);
+	return drm_vma_node_verify_access(&nvbo->gem.vma_node,
+					  filp->private_data);
 }
 
 static int

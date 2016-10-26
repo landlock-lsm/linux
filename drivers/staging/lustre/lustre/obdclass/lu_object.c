@@ -338,10 +338,10 @@ int lu_site_purge(const struct lu_env *env, struct lu_site *s, int nr)
 	struct cfs_hash_bd	    bd2;
 	struct list_head	       dispose;
 	int		      did_sth;
-	int		      start;
+	unsigned int start;
 	int		      count;
 	int		      bnr;
-	int		      i;
+	unsigned int i;
 
 	if (OBD_FAIL_CHECK(OBD_FAIL_OBD_NO_LRU))
 		return 0;
@@ -352,8 +352,13 @@ int lu_site_purge(const struct lu_env *env, struct lu_site *s, int nr)
 	 * the dispose list, removing them from LRU and hash table.
 	 */
 	start = s->ls_purge_start;
-	bnr = (nr == ~0) ? -1 : nr / CFS_HASH_NBKT(s->ls_obj_hash) + 1;
+	bnr = (nr == ~0) ? -1 : nr / (int)CFS_HASH_NBKT(s->ls_obj_hash) + 1;
  again:
+	/*
+	 * It doesn't make any sense to make purge threads parallel, that can
+	 * only bring troubles to us. See LU-5331.
+	 */
+	mutex_lock(&s->ls_purge_mutex);
 	did_sth = 0;
 	cfs_hash_for_each_bucket(s->ls_obj_hash, &bd, i) {
 		if (i < start)
@@ -399,6 +404,7 @@ int lu_site_purge(const struct lu_env *env, struct lu_site *s, int nr)
 		if (nr == 0)
 			break;
 	}
+	mutex_unlock(&s->ls_purge_mutex);
 
 	if (nr != 0 && did_sth && start != 0) {
 		start = 0; /* restart from the first bucket */
@@ -761,13 +767,15 @@ struct lu_object *lu_object_find_slice(const struct lu_env *env,
 	struct lu_object *obj;
 
 	top = lu_object_find(env, dev, f, conf);
-	if (!IS_ERR(top)) {
-		obj = lu_object_locate(top->lo_header, dev->ld_type);
-		if (!obj)
-			lu_object_put(env, top);
-	} else {
-		obj = top;
+	if (IS_ERR(top))
+		return top;
+
+	obj = lu_object_locate(top->lo_header, dev->ld_type);
+	if (unlikely(!obj)) {
+		lu_object_put(env, top);
+		obj = ERR_PTR(-ENOENT);
 	}
+
 	return obj;
 }
 EXPORT_SYMBOL(lu_object_find_slice);
@@ -863,11 +871,11 @@ EXPORT_SYMBOL(lu_site_print);
 /**
  * Return desired hash table order.
  */
-static int lu_htable_order(struct lu_device *top)
+static unsigned long lu_htable_order(struct lu_device *top)
 {
 	unsigned long bits_max = LU_SITE_BITS_MAX;
 	unsigned long cache_size;
-	int bits;
+	unsigned long bits;
 
 	/*
 	 * Calculate hash table size, assuming that we want reasonable
@@ -983,7 +991,8 @@ int lu_site_init(struct lu_site *s, struct lu_device *top)
 	char name[16];
 
 	memset(s, 0, sizeof(*s));
-	snprintf(name, 16, "lu_site_%s", top->ld_type->ldt_name);
+	mutex_init(&s->ls_purge_mutex);
+	snprintf(name, sizeof(name), "lu_site_%s", top->ld_type->ldt_name);
 	for (bits = lu_htable_order(top); bits >= LU_SITE_BITS_MIN; bits--) {
 		s->ls_obj_hash = cfs_hash_create(name, bits, bits,
 						 bits - LU_SITE_BKT_BITS,
@@ -1291,7 +1300,6 @@ void lu_stack_fini(const struct lu_env *env, struct lu_device *top)
 		}
 	}
 }
-EXPORT_SYMBOL(lu_stack_fini);
 
 enum {
 	/**
@@ -1318,7 +1326,7 @@ static unsigned key_set_version;
 int lu_context_key_register(struct lu_context_key *key)
 {
 	int result;
-	int i;
+	unsigned int i;
 
 	LASSERT(key->lct_init);
 	LASSERT(key->lct_fini);
@@ -1513,18 +1521,16 @@ void lu_context_key_quiesce(struct lu_context_key *key)
 		++key_set_version;
 	}
 }
-EXPORT_SYMBOL(lu_context_key_quiesce);
 
 void lu_context_key_revive(struct lu_context_key *key)
 {
 	key->lct_tags &= ~LCT_QUIESCENT;
 	++key_set_version;
 }
-EXPORT_SYMBOL(lu_context_key_revive);
 
 static void keys_fini(struct lu_context *ctx)
 {
-	int	i;
+	unsigned int i;
 
 	if (!ctx->lc_value)
 		return;
@@ -1538,7 +1544,7 @@ static void keys_fini(struct lu_context *ctx)
 
 static int keys_fill(struct lu_context *ctx)
 {
-	int i;
+	unsigned int i;
 
 	LINVRNT(ctx->lc_value);
 	for (i = 0; i < ARRAY_SIZE(lu_keys); ++i) {
@@ -1651,7 +1657,7 @@ EXPORT_SYMBOL(lu_context_enter);
  */
 void lu_context_exit(struct lu_context *ctx)
 {
-	int i;
+	unsigned int i;
 
 	LINVRNT(ctx->lc_state == LCS_ENTERED);
 	ctx->lc_state = LCS_LEFT;
@@ -1679,7 +1685,6 @@ int lu_context_refill(struct lu_context *ctx)
 {
 	return likely(ctx->lc_version == key_set_version) ? 0 : keys_fill(ctx);
 }
-EXPORT_SYMBOL(lu_context_refill);
 
 /**
  * lu_ctx_tags/lu_ses_tags will be updated if there are new types of
@@ -1733,7 +1738,7 @@ static void lu_site_stats_get(struct cfs_hash *hs,
 			      struct lu_site_stats *stats, int populated)
 {
 	struct cfs_hash_bd bd;
-	int	   i;
+	unsigned int i;
 
 	cfs_hash_for_each_bucket(hs, &bd, i) {
 		struct lu_site_bkt_data *bkt = cfs_hash_bd_extra_get(hs, &bd);
@@ -1977,3 +1982,73 @@ void lu_kmem_fini(struct lu_kmem_descr *caches)
 	}
 }
 EXPORT_SYMBOL(lu_kmem_fini);
+
+void lu_buf_free(struct lu_buf *buf)
+{
+	LASSERT(buf);
+	if (buf->lb_buf) {
+		LASSERT(buf->lb_len > 0);
+		kvfree(buf->lb_buf);
+		buf->lb_buf = NULL;
+		buf->lb_len = 0;
+	}
+}
+EXPORT_SYMBOL(lu_buf_free);
+
+void lu_buf_alloc(struct lu_buf *buf, size_t size)
+{
+	LASSERT(buf);
+	LASSERT(!buf->lb_buf);
+	LASSERT(!buf->lb_len);
+	buf->lb_buf = libcfs_kvzalloc(size, GFP_NOFS);
+	if (likely(buf->lb_buf))
+		buf->lb_len = size;
+}
+EXPORT_SYMBOL(lu_buf_alloc);
+
+void lu_buf_realloc(struct lu_buf *buf, size_t size)
+{
+	lu_buf_free(buf);
+	lu_buf_alloc(buf, size);
+}
+EXPORT_SYMBOL(lu_buf_realloc);
+
+struct lu_buf *lu_buf_check_and_alloc(struct lu_buf *buf, size_t len)
+{
+	if (!buf->lb_buf && !buf->lb_len)
+		lu_buf_alloc(buf, len);
+
+	if ((len > buf->lb_len) && buf->lb_buf)
+		lu_buf_realloc(buf, len);
+
+	return buf;
+}
+EXPORT_SYMBOL(lu_buf_check_and_alloc);
+
+/**
+ * Increase the size of the \a buf.
+ * preserves old data in buffer
+ * old buffer remains unchanged on error
+ * \retval 0 or -ENOMEM
+ */
+int lu_buf_check_and_grow(struct lu_buf *buf, size_t len)
+{
+	char *ptr;
+
+	if (len <= buf->lb_len)
+		return 0;
+
+	ptr = libcfs_kvzalloc(len, GFP_NOFS);
+	if (!ptr)
+		return -ENOMEM;
+
+	/* Free the old buf */
+	if (buf->lb_buf) {
+		memcpy(ptr, buf->lb_buf, buf->lb_len);
+		kvfree(buf->lb_buf);
+	}
+
+	buf->lb_buf = ptr;
+	buf->lb_len = len;
+	return 0;
+}

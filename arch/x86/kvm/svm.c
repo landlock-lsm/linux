@@ -1119,13 +1119,6 @@ static void init_sys_seg(struct vmcb_seg *seg, uint32_t type)
 	seg->base = 0;
 }
 
-static u64 svm_read_tsc_offset(struct kvm_vcpu *vcpu)
-{
-	struct vcpu_svm *svm = to_svm(vcpu);
-
-	return svm->vmcb->control.tsc_offset;
-}
-
 static void svm_write_tsc_offset(struct kvm_vcpu *vcpu, u64 offset)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
@@ -1419,7 +1412,7 @@ static void avic_vm_destroy(struct kvm *kvm)
 static int avic_vm_init(struct kvm *kvm)
 {
 	unsigned long flags;
-	int err = -ENOMEM;
+	int vm_id, err = -ENOMEM;
 	struct kvm_arch *vm_data = &kvm->arch;
 	struct page *p_page;
 	struct page *l_page;
@@ -1427,9 +1420,10 @@ static int avic_vm_init(struct kvm *kvm)
 	if (!avic)
 		return 0;
 
-	vm_data->avic_vm_id = avic_get_next_vm_id();
-	if (vm_data->avic_vm_id < 0)
-		return vm_data->avic_vm_id;
+	vm_id = avic_get_next_vm_id();
+	if (vm_id < 0)
+		return vm_id;
+	vm_data->avic_vm_id = (u32)vm_id;
 
 	/* Allocating physical APIC ID table (4KB) */
 	p_page = alloc_page(GFP_KERNEL);
@@ -5427,7 +5421,6 @@ static struct kvm_x86_ops svm_x86_ops __ro_after_init = {
 
 	.has_wbinvd_exit = svm_has_wbinvd_exit,
 
-	.read_tsc_offset = svm_read_tsc_offset,
 	.write_tsc_offset = svm_write_tsc_offset,
 	.adjust_tsc_offset_guest = svm_adjust_tsc_offset_guest,
 	.read_l1_tsc = svm_read_l1_tsc,

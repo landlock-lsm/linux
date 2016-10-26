@@ -984,6 +984,7 @@ static int of_pmu_irq_cfg(struct arm_pmu *pmu)
 		int irq = platform_get_irq(pdev, 0);
 
 		if (irq > 0 && irq_is_percpu(irq)) {
+			/* If using PPIs, check the affinity of the partition */
 			int ret;
 
 			ret = irq_get_percpu_devid_partition(irq, &pmu->supported_cpus);
@@ -1041,7 +1042,7 @@ int arm_pmu_device_probe(struct platform_device *pdev,
 		ret = of_pmu_irq_cfg(pmu);
 		if (!ret)
 			ret = init_fn(pmu);
-	} else {
+	} else if (probe_table) {
 		cpumask_setall(&pmu->supported_cpus);
 		ret = probe_current_pmu(pmu, probe_table);
 	}

@@ -74,6 +74,7 @@
 #include <net/checksum.h>
 #include <net/inetpeer.h>
 #include <net/lwtunnel.h>
+#include <linux/bpf-cgroup.h>
 #include <linux/igmp.h>
 #include <linux/netfilter_ipv4.h>
 #include <linux/netfilter_bridge.h>
@@ -303,6 +304,7 @@ int ip_mc_output(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
 	struct rtable *rt = skb_rtable(skb);
 	struct net_device *dev = rt->dst.dev;
+	int ret;
 
 	/*
 	 *	If the indicated interface is up and running, send the packet.
@@ -311,6 +313,13 @@ int ip_mc_output(struct net *net, struct sock *sk, struct sk_buff *skb)
 
 	skb->dev = dev;
 	skb->protocol = htons(ETH_P_IP);
+
+	ret = cgroup_bpf_run_filter(sk_to_full_sk(sk), skb,
+				    BPF_CGROUP_INET_EGRESS);
+	if (ret) {
+		kfree_skb(skb);
+		return ret;
+	}
 
 	/*
 	 *	Multicasts are looped back for other local users
@@ -364,11 +373,19 @@ int ip_mc_output(struct net *net, struct sock *sk, struct sk_buff *skb)
 int ip_output(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
 	struct net_device *dev = skb_dst(skb)->dev;
+	int ret;
 
 	IP_UPD_PO_STATS(net, IPSTATS_MIB_OUT, skb->len);
 
 	skb->dev = dev;
 	skb->protocol = htons(ETH_P_IP);
+
+	ret = cgroup_bpf_run_filter(sk_to_full_sk(sk), skb,
+				    BPF_CGROUP_INET_EGRESS);
+	if (ret) {
+		kfree_skb(skb);
+		return ret;
+	}
 
 	return NF_HOOK_COND(NFPROTO_IPV4, NF_INET_POST_ROUTING,
 			    net, sk, skb, NULL, dev,

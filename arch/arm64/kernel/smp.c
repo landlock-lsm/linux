@@ -201,12 +201,6 @@ int __cpu_up(unsigned int cpu, struct task_struct *idle)
 	return ret;
 }
 
-static void smp_store_cpu_info(unsigned int cpuid)
-{
-	store_cpu_topology(cpuid);
-	numa_store_cpu_info(cpuid);
-}
-
 /*
  * This is the secondary CPU boot entry.  We're using this CPUs
  * idle thread stack, but a set of temporary page tables.
@@ -254,7 +248,7 @@ asmlinkage void secondary_start_kernel(void)
 	 */
 	notify_cpu_starting(cpu);
 
-	smp_store_cpu_info(cpu);
+	store_cpu_topology(cpu);
 
 	/*
 	 * OK, now it's safe to let the boot CPU continue.  Wait for
@@ -550,6 +544,7 @@ acpi_map_gic_cpu_interface(struct acpi_madt_generic_interrupt *processor)
 			return;
 		}
 		bootcpu_valid = true;
+		early_map_cpu_to_node(0, acpi_numa_get_nid(0, hwid));
 		return;
 	}
 
@@ -701,10 +696,13 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 {
 	int err;
 	unsigned int cpu;
+	unsigned int this_cpu;
 
 	init_cpu_topology();
 
-	smp_store_cpu_info(smp_processor_id());
+	this_cpu = smp_processor_id();
+	store_cpu_topology(this_cpu);
+	numa_store_cpu_info(this_cpu);
 
 	/*
 	 * If UP is mandated by "nosmp" (which implies "maxcpus=0"), don't set
@@ -731,6 +729,7 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 			continue;
 
 		set_cpu_present(cpu, true);
+		numa_store_cpu_info(cpu);
 	}
 }
 

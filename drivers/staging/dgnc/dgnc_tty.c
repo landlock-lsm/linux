@@ -45,7 +45,6 @@
 /*
  * internal variables
  */
-static struct dgnc_board	*dgnc_BoardsByMajor[256];
 static unsigned char		*dgnc_TmpWriteBuf;
 
 /*
@@ -186,7 +185,8 @@ int dgnc_tty_register(struct dgnc_board *brd)
 	if (IS_ERR(brd->serial_driver))
 		return PTR_ERR(brd->serial_driver);
 
-	snprintf(brd->serial_name, MAXTTYNAMELEN, "tty_dgnc_%d_", brd->boardnum);
+	snprintf(brd->serial_name, MAXTTYNAMELEN, "tty_dgnc_%d_",
+		 brd->boardnum);
 
 	brd->serial_driver->name = brd->serial_name;
 	brd->serial_driver->name_base = 0;
@@ -203,15 +203,11 @@ int dgnc_tty_register(struct dgnc_board *brd)
 	 */
 	tty_set_operations(brd->serial_driver, &dgnc_tty_ops);
 
-	if (!brd->dgnc_major_serial_registered) {
-		/* Register tty devices */
-		rc = tty_register_driver(brd->serial_driver);
-		if (rc < 0) {
-			dev_dbg(&brd->pdev->dev,
-				"Can't register tty device (%d)\n", rc);
-			goto free_serial_driver;
-		}
-		brd->dgnc_major_serial_registered = true;
+	rc = tty_register_driver(brd->serial_driver);
+	if (rc < 0) {
+		dev_dbg(&brd->pdev->dev,
+			"Can't register tty device (%d)\n", rc);
+		goto free_serial_driver;
 	}
 
 	/*
@@ -246,19 +242,13 @@ int dgnc_tty_register(struct dgnc_board *brd)
 	 */
 	tty_set_operations(brd->print_driver, &dgnc_tty_ops);
 
-	if (!brd->dgnc_major_transparent_print_registered) {
-		/* Register Transparent Print devices */
-		rc = tty_register_driver(brd->print_driver);
-		if (rc < 0) {
-			dev_dbg(&brd->pdev->dev,
-				"Can't register Transparent Print device(%d)\n",
-				rc);
-			goto free_print_driver;
-		}
-		brd->dgnc_major_transparent_print_registered = true;
+	rc = tty_register_driver(brd->print_driver);
+	if (rc < 0) {
+		dev_dbg(&brd->pdev->dev,
+			"Can't register Transparent Print device(%d)\n",
+			rc);
+		goto free_print_driver;
 	}
-
-	dgnc_BoardsByMajor[brd->serial_driver->major] = brd;
 
 	return 0;
 
@@ -270,6 +260,14 @@ free_serial_driver:
 	put_tty_driver(brd->serial_driver);
 
 	return rc;
+}
+
+void dgnc_tty_unregister(struct dgnc_board *brd)
+{
+	tty_unregister_driver(brd->print_driver);
+	tty_unregister_driver(brd->serial_driver);
+	put_tty_driver(brd->print_driver);
+	put_tty_driver(brd->serial_driver);
 }
 
 /*
@@ -378,38 +376,30 @@ void dgnc_tty_post_uninit(void)
 }
 
 /*
- * dgnc_tty_uninit()
+ * dgnc_cleanup_tty()
  *
  * Uninitialize the TTY portion of this driver.  Free all memory and
  * resources.
  */
-void dgnc_tty_uninit(struct dgnc_board *brd)
+void dgnc_cleanup_tty(struct dgnc_board *brd)
 {
 	int i = 0;
 
-	if (brd->dgnc_major_serial_registered) {
-		dgnc_BoardsByMajor[brd->serial_driver->major] = NULL;
-		for (i = 0; i < brd->nasync; i++) {
-			if (brd->channels[i])
-				dgnc_remove_tty_sysfs(brd->channels[i]->
-						      ch_tun.un_sysfs);
-			tty_unregister_device(brd->serial_driver, i);
-		}
-		tty_unregister_driver(brd->serial_driver);
-		brd->dgnc_major_serial_registered = false;
+	for (i = 0; i < brd->nasync; i++) {
+		if (brd->channels[i])
+			dgnc_remove_tty_sysfs(brd->channels[i]->
+					      ch_tun.un_sysfs);
+		tty_unregister_device(brd->serial_driver, i);
 	}
+	tty_unregister_driver(brd->serial_driver);
 
-	if (brd->dgnc_major_transparent_print_registered) {
-		dgnc_BoardsByMajor[brd->print_driver->major] = NULL;
-		for (i = 0; i < brd->nasync; i++) {
-			if (brd->channels[i])
-				dgnc_remove_tty_sysfs(brd->channels[i]->
-						      ch_pun.un_sysfs);
-			tty_unregister_device(brd->print_driver, i);
-		}
-		tty_unregister_driver(brd->print_driver);
-		brd->dgnc_major_transparent_print_registered = false;
+	for (i = 0; i < brd->nasync; i++) {
+		if (brd->channels[i])
+			dgnc_remove_tty_sysfs(brd->channels[i]->
+					      ch_pun.un_sysfs);
+		tty_unregister_device(brd->print_driver, i);
 	}
+	tty_unregister_driver(brd->print_driver);
 
 	put_tty_driver(brd->serial_driver);
 	put_tty_driver(brd->print_driver);
@@ -940,6 +930,24 @@ void dgnc_wakeup_writes(struct channel_t *ch)
 	spin_unlock_irqrestore(&ch->ch_lock, flags);
 }
 
+struct dgnc_board *find_board_by_major(unsigned int major)
+{
+	int i;
+
+	for (i = 0; i < MAXBOARDS; i++) {
+		struct dgnc_board *brd = dgnc_board[i];
+
+		if (!brd)
+			return NULL;
+
+		if (major == brd->serial_driver->major ||
+		    major == brd->print_driver->major)
+			return brd;
+	}
+
+	return NULL;
+}
+
 /************************************************************************
  *
  * TTY Entry points and helper functions
@@ -969,7 +977,7 @@ static int dgnc_tty_open(struct tty_struct *tty, struct file *file)
 		return -ENXIO;
 
 	/* Get board pointer from our array of majors we have allocated */
-	brd = dgnc_BoardsByMajor[major];
+	brd = find_board_by_major(major);
 	if (!brd)
 		return -ENXIO;
 
@@ -2547,9 +2555,8 @@ static int dgnc_tty_ioctl(struct tty_struct *tty, unsigned int cmd,
 
 		spin_unlock_irqrestore(&ch->ch_lock, flags);
 
-		rc = put_user(C_CLOCAL(tty) ? 1 : 0,
-			      (unsigned long __user *)arg);
-		return rc;
+		return put_user(C_CLOCAL(tty) ? 1 : 0,
+				(unsigned long __user *)arg);
 
 	case TIOCSSOFTCAR:
 
@@ -2720,8 +2727,8 @@ static int dgnc_tty_ioctl(struct tty_struct *tty, unsigned int cmd,
 
 	case DIGI_GETCUSTOMBAUD:
 		spin_unlock_irqrestore(&ch->ch_lock, flags);
-		rc = put_user(ch->ch_custom_speed, (unsigned int __user *)arg);
-		return rc;
+		return put_user(ch->ch_custom_speed,
+				(unsigned int __user *)arg);
 
 	case DIGI_SETCUSTOMBAUD:
 	{
@@ -2807,8 +2814,7 @@ static int dgnc_tty_ioctl(struct tty_struct *tty, unsigned int cmd,
 			events |= (EV_IPU | EV_IPS);
 
 		spin_unlock_irqrestore(&ch->ch_lock, flags);
-		rc = put_user(events, (unsigned int __user *)arg);
-		return rc;
+		return put_user(events, (unsigned int __user *)arg);
 	}
 
 	/*

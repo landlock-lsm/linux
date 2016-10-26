@@ -57,10 +57,15 @@ int lmv_fid_alloc(const struct lu_env *env, struct obd_export *exp,
 int lmv_unpack_md(struct obd_export *exp, struct lmv_stripe_md **lsmp,
 		  const union lmv_mds_md *lmm, int stripe_count);
 
-int lmv_revalidate_slaves(struct obd_export *exp, struct mdt_body *mbody,
-			  struct lmv_stripe_md *lsm,
+int lmv_revalidate_slaves(struct obd_export *exp,
+			  const struct lmv_stripe_md *lsm,
 			  ldlm_blocking_callback cb_blocking,
 			  int extra_lock_flags);
+
+static inline struct obd_device *lmv2obd_dev(struct lmv_obd *lmv)
+{
+	return container_of0(lmv, struct obd_device, u.lmv);
+}
 
 static inline struct lmv_tgt_desc *
 lmv_get_target(struct lmv_obd *lmv, u32 mdt_idx, int *index)
@@ -146,15 +151,9 @@ lsm_name_to_stripe_info(const struct lmv_stripe_md *lsm, const char *name,
 	return &lsm->lsm_md_oinfo[stripe_index];
 }
 
-static inline bool lmv_is_known_hash_type(const struct lmv_stripe_md *lsm)
-{
-	return lsm->lsm_md_hash_type == LMV_HASH_TYPE_FNV_1A_64 ||
-	       lsm->lsm_md_hash_type == LMV_HASH_TYPE_ALL_CHARS;
-}
-
 static inline bool lmv_need_try_all_stripes(const struct lmv_stripe_md *lsm)
 {
-	return !lmv_is_known_hash_type(lsm) ||
+	return !lmv_is_known_hash_type(lsm->lsm_md_hash_type) ||
 	       lsm->lsm_md_hash_type & LMV_HASH_FLAG_MIGRATION;
 }
 

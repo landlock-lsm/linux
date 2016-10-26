@@ -369,7 +369,7 @@ static int vidioc_s_input(struct file *file, void *priv, unsigned int index)
 	return 0;
 }
 
-static struct v4l2_file_operations aim_fops = {
+static const struct v4l2_file_operations aim_fops = {
 	.owner      = THIS_MODULE,
 	.open       = aim_vdev_open,
 	.release    = aim_vdev_close,
@@ -505,8 +505,8 @@ static int aim_probe_channel(struct most_interface *iface, int channel_idx,
 	}
 
 	if (ccfg->data_type != MOST_CH_SYNC &&
-	    ccfg->data_type != MOST_CH_ISOC_AVP) {
-		pr_err("wrong channel type, expect sync or isoc_avp\n");
+	    ccfg->data_type != MOST_CH_ISOC) {
+		pr_err("wrong channel type, expect sync or isoc\n");
 		return -EINVAL;
 	}
 

@@ -100,6 +100,7 @@ enum fw_wr_opcodes {
 	FW_RI_RECV_WR                  = 0x17,
 	FW_RI_BIND_MW_WR               = 0x18,
 	FW_RI_FR_NSMR_WR               = 0x19,
+	FW_RI_FR_NSMR_TPTE_WR	       = 0x20,
 	FW_RI_INV_LSTAG_WR             = 0x1a,
 	FW_ISCSI_TX_DATA_WR	       = 0x45,
 	FW_CRYPTO_LOOKASIDE_WR         = 0X6d,
@@ -1121,6 +1122,7 @@ enum fw_params_param_dev {
 	FW_PARAMS_PARAM_DEV_MAXIRD_ADAPTER = 0x14, /* max supported adap IRD */
 	FW_PARAMS_PARAM_DEV_ULPTX_MEMWRITE_DSGL = 0x17,
 	FW_PARAMS_PARAM_DEV_FWCACHE = 0x18,
+	FW_PARAMS_PARAM_DEV_RI_FR_NSMR_TPTE_WR	= 0x1C,
 };
 
 /*
@@ -2266,6 +2268,12 @@ enum fw_port_cap {
 	FW_PORT_CAP_802_3_PAUSE		= 0x4000,
 	FW_PORT_CAP_802_3_ASM_DIR	= 0x8000,
 };
+
+#define FW_PORT_CAP_SPEED_S     0
+#define FW_PORT_CAP_SPEED_M     0x3f
+#define FW_PORT_CAP_SPEED_V(x)  ((x) << FW_PORT_CAP_SPEED_S)
+#define FW_PORT_CAP_SPEED_G(x) \
+	(((x) >> FW_PORT_CAP_SPEED_S) & FW_PORT_CAP_SPEED_M)
 
 enum fw_port_mdi {
 	FW_PORT_CAP_MDI_UNCHANGED,

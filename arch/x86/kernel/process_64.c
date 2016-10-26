@@ -49,6 +49,7 @@
 #include <asm/debugreg.h>
 #include <asm/switch_to.h>
 #include <asm/xen/hypervisor.h>
+#include <asm/vdso.h>
 
 __visible DEFINE_PER_CPU(unsigned long, rsp_scratch);
 
@@ -108,12 +109,13 @@ void __show_regs(struct pt_regs *regs, int all)
 	get_debugreg(d7, 7);
 
 	/* Only print out debug registers if they are in their non-default state. */
-	if ((d0 == 0) && (d1 == 0) && (d2 == 0) && (d3 == 0) &&
-	    (d6 == DR6_RESERVED) && (d7 == 0x400))
-		return;
-
-	printk(KERN_DEFAULT "DR0: %016lx DR1: %016lx DR2: %016lx\n", d0, d1, d2);
-	printk(KERN_DEFAULT "DR3: %016lx DR6: %016lx DR7: %016lx\n", d3, d6, d7);
+	if (!((d0 == 0) && (d1 == 0) && (d2 == 0) && (d3 == 0) &&
+	    (d6 == DR6_RESERVED) && (d7 == 0x400))) {
+		printk(KERN_DEFAULT "DR0: %016lx DR1: %016lx DR2: %016lx\n",
+		       d0, d1, d2);
+		printk(KERN_DEFAULT "DR3: %016lx DR6: %016lx DR7: %016lx\n",
+		       d3, d6, d7);
+	}
 
 	if (boot_cpu_has(X86_FEATURE_OSPKE))
 		printk(KERN_DEFAULT "PKRU: %08x\n", read_pkru());
@@ -510,7 +512,7 @@ void set_personality_ia32(bool x32)
 		current->personality &= ~READ_IMPLIES_EXEC;
 		/* in_compat_syscall() uses the presence of the x32
 		   syscall bit flag to determine compat status */
-		current_thread_info()->status &= ~TS_COMPAT;
+		current->thread.status &= ~TS_COMPAT;
 	} else {
 		set_thread_flag(TIF_IA32);
 		clear_thread_flag(TIF_X32);
@@ -518,10 +520,23 @@ void set_personality_ia32(bool x32)
 			current->mm->context.ia32_compat = TIF_IA32;
 		current->personality |= force_personality32;
 		/* Prepare the first "return" to user space */
-		current_thread_info()->status |= TS_COMPAT;
+		current->thread.status |= TS_COMPAT;
 	}
 }
 EXPORT_SYMBOL_GPL(set_personality_ia32);
+
+#ifdef CONFIG_CHECKPOINT_RESTORE
+static long prctl_map_vdso(const struct vdso_image *image, unsigned long addr)
+{
+	int ret;
+
+	ret = map_vdso_once(image, addr);
+	if (ret)
+		return ret;
+
+	return (long)image->size;
+}
+#endif
 
 long do_arch_prctl(struct task_struct *task, int code, unsigned long addr)
 {
@@ -575,6 +590,19 @@ long do_arch_prctl(struct task_struct *task, int code, unsigned long addr)
 		ret = put_user(base, (unsigned long __user *)addr);
 		break;
 	}
+
+#ifdef CONFIG_CHECKPOINT_RESTORE
+# ifdef CONFIG_X86_X32_ABI
+	case ARCH_MAP_VDSO_X32:
+		return prctl_map_vdso(&vdso_image_x32, addr);
+# endif
+# if defined CONFIG_X86_32 || defined CONFIG_IA32_EMULATION
+	case ARCH_MAP_VDSO_32:
+		return prctl_map_vdso(&vdso_image_32, addr);
+# endif
+	case ARCH_MAP_VDSO_64:
+		return prctl_map_vdso(&vdso_image_64, addr);
+#endif
 
 	default:
 		ret = -EINVAL;

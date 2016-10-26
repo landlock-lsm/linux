@@ -1484,15 +1484,15 @@ static void uart_tty_port_shutdown(struct tty_port *port)
 	struct uart_state *state = container_of(port, struct uart_state, port);
 	struct uart_port *uport = uart_port_check(state);
 
-	spin_lock_irq(&uport->lock);
 	/*
 	 * At this point, we stop accepting input.  To do this, we
 	 * disable the receive line status interrupts.
 	 */
-	WARN(!uport, "detached port still initialized!\n");
+	if (WARN(!uport, "detached port still initialized!\n"))
+		return;
 
+	spin_lock_irq(&uport->lock);
 	uport->ops->stop_rx(uport);
-
 	spin_unlock_irq(&uport->lock);
 
 	uart_port_shutdown(port);
@@ -1892,14 +1892,11 @@ uart_get_console(struct uart_port *ports, int nr, struct console *co)
  *	   console=<name>,0x<addr>,<options>
  *	is also accepted; the returned @iotype will be UPIO_MEM.
  *
- *	Returns 0 on success, -EINVAL or -ERANGE on failure
+ *	Returns 0 on success or -EINVAL on failure
  */
 int uart_parse_earlycon(char *p, unsigned char *iotype, resource_size_t *addr,
 			char **options)
 {
-	int ret;
-	unsigned long long tmp;
-
 	if (strncmp(p, "mmio,", 5) == 0) {
 		*iotype = UPIO_MEM;
 		p += 5;
@@ -1925,10 +1922,11 @@ int uart_parse_earlycon(char *p, unsigned char *iotype, resource_size_t *addr,
 		return -EINVAL;
 	}
 
-	ret = kstrtoull(p, 0, &tmp);
-	if (ret)
-		return ret;
-	*addr = tmp;
+	/*
+	 * Before you replace it with kstrtoull(), think about options separator
+	 * (',') it will not tolerate
+	 */
+	*addr = simple_strtoull(p, NULL, 0);
 	p = strchr(p, ',');
 	if (p)
 		p++;

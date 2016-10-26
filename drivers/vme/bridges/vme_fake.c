@@ -48,7 +48,7 @@ struct fake_slave_window {
 	int enabled;
 	unsigned long long vme_base;
 	unsigned long long size;
-	dma_addr_t buf_base;
+	void *buf_base;
 	u32 aspace;
 	u32 cycle;
 };
@@ -112,6 +112,16 @@ static void fake_irq_set(struct vme_bridge *fake_bridge, int level,
 		int state, int sync)
 {
 	/* Nothing to do */
+}
+
+static void *fake_pci_to_ptr(dma_addr_t addr)
+{
+	return (void *)(uintptr_t)addr;
+}
+
+static dma_addr_t fake_ptr_to_pci(void *addr)
+{
+	return (dma_addr_t)(uintptr_t)addr;
 }
 
 /*
@@ -202,7 +212,7 @@ static int fake_slave_set(struct vme_slave_resource *image, int enabled,
 	bridge->slaves[i].enabled = enabled;
 	bridge->slaves[i].vme_base = vme_base;
 	bridge->slaves[i].size = size;
-	bridge->slaves[i].buf_base = buf_base;
+	bridge->slaves[i].buf_base = fake_pci_to_ptr(buf_base);
 	bridge->slaves[i].aspace = aspace;
 	bridge->slaves[i].cycle = cycle;
 
@@ -230,7 +240,7 @@ static int fake_slave_get(struct vme_slave_resource *image, int *enabled,
 	*enabled = bridge->slaves[i].enabled;
 	*vme_base = bridge->slaves[i].vme_base;
 	*size = bridge->slaves[i].size;
-	*buf_base = bridge->slaves[i].buf_base;
+	*buf_base = fake_ptr_to_pci(bridge->slaves[i].buf_base);
 	*aspace = bridge->slaves[i].aspace;
 	*cycle = bridge->slaves[i].cycle;
 
@@ -263,7 +273,6 @@ static int fake_master_set(struct vme_master_resource *image, int enabled,
 	}
 
 	if (size & 0xFFFF) {
-		spin_unlock(&image->lock);
 		pr_err("Invalid size alignment\n");
 		retval = -EINVAL;
 		goto err_window;
@@ -282,7 +291,6 @@ static int fake_master_set(struct vme_master_resource *image, int enabled,
 	case VME_D32:
 		break;
 	default:
-		spin_unlock(&image->lock);
 		pr_err("Invalid data width\n");
 		retval = -EINVAL;
 		goto err_dwidth;
@@ -301,7 +309,6 @@ static int fake_master_set(struct vme_master_resource *image, int enabled,
 	case VME_USER4:
 		break;
 	default:
-		spin_unlock(&image->lock);
 		pr_err("Invalid address space\n");
 		retval = -EINVAL;
 		goto err_aspace;
@@ -371,8 +378,8 @@ static int fake_master_get(struct vme_master_resource *image, int *enabled,
 }
 
 
-void fake_lm_check(struct fake_driver *bridge, unsigned long long addr,
-		u32 aspace, u32 cycle)
+static void fake_lm_check(struct fake_driver *bridge, unsigned long long addr,
+			  u32 aspace, u32 cycle)
 {
 	struct vme_bridge *fake_bridge;
 	unsigned long long lm_base;
@@ -431,7 +438,7 @@ static u8 fake_vmeread8(struct fake_driver *bridge, unsigned long long addr,
 
 		if ((addr >= start) && (addr < end)) {
 			offset = addr - bridge->slaves[i].vme_base;
-			loc = (u8 *)((void *)bridge->slaves[i].buf_base + offset);
+			loc = (u8 *)(bridge->slaves[i].buf_base + offset);
 			retval = *loc;
 
 			break;
@@ -463,7 +470,7 @@ static u16 fake_vmeread16(struct fake_driver *bridge, unsigned long long addr,
 
 		if ((addr >= start) && ((addr + 1) < end)) {
 			offset = addr - bridge->slaves[i].vme_base;
-			loc = (u16 *)((void *)bridge->slaves[i].buf_base + offset);
+			loc = (u16 *)(bridge->slaves[i].buf_base + offset);
 			retval = *loc;
 
 			break;
@@ -495,7 +502,7 @@ static u32 fake_vmeread32(struct fake_driver *bridge, unsigned long long addr,
 
 		if ((addr >= start) && ((addr + 3) < end)) {
 			offset = addr - bridge->slaves[i].vme_base;
-			loc = (u32 *)((void *)bridge->slaves[i].buf_base + offset);
+			loc = (u32 *)(bridge->slaves[i].buf_base + offset);
 			retval = *loc;
 
 			break;
@@ -606,8 +613,8 @@ out:
 	return retval;
 }
 
-void fake_vmewrite8(struct fake_driver *bridge, u8 *buf,
-		 unsigned long long addr, u32 aspace, u32 cycle)
+static void fake_vmewrite8(struct fake_driver *bridge, u8 *buf,
+			   unsigned long long addr, u32 aspace, u32 cycle)
 {
 	int i;
 	unsigned long long start, end, offset;
@@ -636,8 +643,8 @@ void fake_vmewrite8(struct fake_driver *bridge, u8 *buf,
 
 }
 
-void fake_vmewrite16(struct fake_driver *bridge, u16 *buf,
-		unsigned long long addr, u32 aspace, u32 cycle)
+static void fake_vmewrite16(struct fake_driver *bridge, u16 *buf,
+			    unsigned long long addr, u32 aspace, u32 cycle)
 {
 	int i;
 	unsigned long long start, end, offset;
@@ -666,8 +673,8 @@ void fake_vmewrite16(struct fake_driver *bridge, u16 *buf,
 
 }
 
-void fake_vmewrite32(struct fake_driver *bridge, u32 *buf,
-		unsigned long long addr, u32 aspace, u32 cycle)
+static void fake_vmewrite32(struct fake_driver *bridge, u32 *buf,
+			    unsigned long long addr, u32 aspace, u32 cycle)
 {
 	int i;
 	unsigned long long start, end, offset;
@@ -997,7 +1004,7 @@ static void *fake_alloc_consistent(struct device *parent, size_t size,
 	void *alloc = kmalloc(size, GFP_KERNEL);
 
 	if (alloc != NULL)
-		*dma = (dma_addr_t)(unsigned long)alloc;
+		*dma = fake_ptr_to_pci(alloc);
 
 	return alloc;
 }
@@ -1031,7 +1038,7 @@ static int fake_crcsr_init(struct vme_bridge *fake_bridge)
 
 	/* Allocate mem for CR/CSR image */
 	bridge->crcsr_kernel = kzalloc(VME_CRCSR_BUF_SIZE, GFP_KERNEL);
-	bridge->crcsr_bus = (dma_addr_t)bridge->crcsr_kernel;
+	bridge->crcsr_bus = fake_ptr_to_pci(bridge->crcsr_kernel);
 	if (bridge->crcsr_kernel == NULL)
 		return -ENOMEM;
 

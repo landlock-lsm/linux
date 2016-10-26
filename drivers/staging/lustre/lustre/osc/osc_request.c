@@ -103,36 +103,6 @@ static void osc_release_ppga(struct brw_page **ppga, u32 count);
 static int brw_interpret(const struct lu_env *env,
 			 struct ptlrpc_request *req, void *data, int rc);
 
-/* Pack OSC object metadata for disk storage (LE byte order). */
-static int osc_packmd(struct obd_export *exp, struct lov_mds_md **lmmp,
-		      struct lov_stripe_md *lsm)
-{
-	int lmm_size;
-
-	lmm_size = sizeof(**lmmp);
-	if (!lmmp)
-		return lmm_size;
-
-	if (*lmmp && !lsm) {
-		kfree(*lmmp);
-		*lmmp = NULL;
-		return 0;
-	} else if (unlikely(lsm && ostid_id(&lsm->lsm_oi) == 0)) {
-		return -EBADF;
-	}
-
-	if (!*lmmp) {
-		*lmmp = kzalloc(lmm_size, GFP_NOFS);
-		if (!*lmmp)
-			return -ENOMEM;
-	}
-
-	if (lsm)
-		ostid_cpu_to_le(&lsm->lsm_oi, &(*lmmp)->lmm_oi);
-
-	return lmm_size;
-}
-
 /* Unpack OSC object metadata from disk storage (LE byte order). */
 static int osc_unpackmd(struct obd_export *exp, struct lov_stripe_md **lsmp,
 			struct lov_mds_md *lmm, int lmm_bytes)
@@ -190,7 +160,7 @@ static int osc_unpackmd(struct obd_export *exp, struct lov_stripe_md **lsmp,
 	    (imp->imp_connect_data.ocd_connect_flags & OBD_CONNECT_MAXBYTES))
 		(*lsmp)->lsm_maxbytes = imp->imp_connect_data.ocd_maxbytes;
 	else
-		(*lsmp)->lsm_maxbytes = LUSTRE_STRIPE_MAXBYTES;
+		(*lsmp)->lsm_maxbytes = LUSTRE_EXT3_STRIPE_MAXBYTES;
 
 	return lsm_size;
 }
@@ -428,24 +398,16 @@ static int osc_setattr_async(struct obd_export *exp, struct obd_info *oinfo,
 				      oinfo->oi_cb_up, oinfo, rqset);
 }
 
-static int osc_real_create(struct obd_export *exp, struct obdo *oa,
-			   struct lov_stripe_md **ea,
-			   struct obd_trans_info *oti)
+static int osc_create(const struct lu_env *env, struct obd_export *exp,
+		      struct obdo *oa, struct obd_trans_info *oti)
 {
 	struct ptlrpc_request *req;
 	struct ost_body *body;
-	struct lov_stripe_md *lsm;
 	int rc;
 
 	LASSERT(oa);
-	LASSERT(ea);
-
-	lsm = *ea;
-	if (!lsm) {
-		rc = obd_alloc_memmd(exp, &lsm);
-		if (rc < 0)
-			return rc;
-	}
+	LASSERT(oa->o_valid & OBD_MD_FLGROUP);
+	LASSERT(fid_seq_is_echo(ostid_seq(&oa->o_oi)));
 
 	req = ptlrpc_request_alloc(class_exp2cliimp(exp), &RQF_OST_CREATE);
 	if (!req) {
@@ -491,13 +453,6 @@ static int osc_real_create(struct obd_export *exp, struct obdo *oa,
 	oa->o_blksize = cli_brw_size(exp->exp_obd);
 	oa->o_valid |= OBD_MD_FLBLKSZ;
 
-	/* XXX LOV STACKING: the lsm that is passed to us from LOV does not
-	 * have valid lsm_oinfo data structs, so don't go touching that.
-	 * This needs to be fixed in a big way.
-	 */
-	lsm->lsm_oi = oa->o_oi;
-	*ea = lsm;
-
 	if (oti && oa->o_valid & OBD_MD_FLCOOKIE) {
 		if (!oti->oti_logcookies)
 			oti->oti_logcookies = &oti->oti_onecookie;
@@ -509,8 +464,6 @@ static int osc_real_create(struct obd_export *exp, struct obdo *oa,
 out_req:
 	ptlrpc_req_finished(req);
 out:
-	if (rc && !*ea)
-		obd_free_memmd(exp, &lsm);
 	return rc;
 }
 
@@ -686,30 +639,6 @@ static int osc_can_send_destroy(struct client_obd *cli)
 	return 0;
 }
 
-static int osc_create(const struct lu_env *env, struct obd_export *exp,
-		      struct obdo *oa, struct lov_stripe_md **ea,
-		      struct obd_trans_info *oti)
-{
-	int rc = 0;
-
-	LASSERT(oa);
-	LASSERT(ea);
-	LASSERT(oa->o_valid & OBD_MD_FLGROUP);
-
-	if ((oa->o_valid & OBD_MD_FLFLAGS) &&
-	    oa->o_flags == OBD_FL_RECREATE_OBJS) {
-		return osc_real_create(exp, oa, ea, oti);
-	}
-
-	if (!fid_seq_is_mdt(ostid_seq(&oa->o_oi)))
-		return osc_real_create(exp, oa, ea, oti);
-
-	/* we should not get here anymore */
-	LBUG();
-
-	return rc;
-}
-
 /* Destroy requests can be async always on the client, and we don't even really
  * care about the return code since the client cannot do anything at all about
  * a destroy failure.
@@ -722,8 +651,7 @@ static int osc_create(const struct lu_env *env, struct obd_export *exp,
  * cookies to the MDS after committing destroy transactions.
  */
 static int osc_destroy(const struct lu_env *env, struct obd_export *exp,
-		       struct obdo *oa, struct lov_stripe_md *ea,
-		       struct obd_trans_info *oti, struct obd_export *md_export)
+		       struct obdo *oa, struct obd_trans_info *oti)
 {
 	struct client_obd *cli = &exp->exp_obd->u.cli;
 	struct ptlrpc_request *req;
@@ -804,17 +732,17 @@ static void osc_announce_cached(struct client_obd *cli, struct obdo *oa,
 		       cli->cl_dirty_pages, cli->cl_dirty_transit,
 		       cli->cl_dirty_max_pages);
 		oa->o_undirty = 0;
-	} else if (unlikely(atomic_read(&obd_dirty_pages) -
-			    atomic_read(&obd_dirty_transit_pages) >
-			    (long)(obd_max_dirty_pages + 1))) {
+	} else if (unlikely(atomic_long_read(&obd_dirty_pages) -
+			    atomic_long_read(&obd_dirty_transit_pages) >
+			    (obd_max_dirty_pages + 1))) {
 		/* The atomic_read() allowing the atomic_inc() are
 		 * not covered by a lock thus they may safely race and trip
 		 * this CERROR() unless we add in a small fudge factor (+1).
 		 */
-		CERROR("%s: dirty %d + %d > system dirty_max %d\n",
+		CERROR("%s: dirty %ld + %ld > system dirty_max %lu\n",
 		       cli->cl_import->imp_obd->obd_name,
-		       atomic_read(&obd_dirty_pages),
-		       atomic_read(&obd_dirty_transit_pages),
+		       atomic_long_read(&obd_dirty_pages),
+		       atomic_long_read(&obd_dirty_transit_pages),
 		       obd_max_dirty_pages);
 		oa->o_undirty = 0;
 	} else if (unlikely(cli->cl_dirty_max_pages - cli->cl_dirty_pages >
@@ -823,9 +751,10 @@ static void osc_announce_cached(struct client_obd *cli, struct obdo *oa,
 		       cli->cl_dirty_pages, cli->cl_dirty_max_pages);
 		oa->o_undirty = 0;
 	} else {
-		long max_in_flight = (cli->cl_max_pages_per_rpc <<
-				      PAGE_SHIFT) *
-				     (cli->cl_max_rpcs_in_flight + 1);
+		unsigned long max_in_flight;
+
+		max_in_flight = (cli->cl_max_pages_per_rpc << PAGE_SHIFT) *
+				(cli->cl_max_rpcs_in_flight + 1);
 		oa->o_undirty = max(cli->cl_dirty_max_pages << PAGE_SHIFT,
 				    max_in_flight);
 	}
@@ -1181,7 +1110,7 @@ static u32 osc_checksum_bulk(int nob, u32 pg_count,
 	}
 
 	while (nob > 0 && pg_count > 0) {
-		int count = pga[i]->count > nob ? nob : pga[i]->count;
+		unsigned int count = pga[i]->count > nob ? nob : pga[i]->count;
 
 		/* corrupt the data before we compute the checksum, to
 		 * simulate an OST->client data error
@@ -1191,7 +1120,7 @@ static u32 osc_checksum_bulk(int nob, u32 pg_count,
 			unsigned char *ptr = kmap(pga[i]->pg);
 			int off = pga[i]->off & ~PAGE_MASK;
 
-			memcpy(ptr + off, "bad1", min(4, nob));
+			memcpy(ptr + off, "bad1", min_t(typeof(nob), 4, nob));
 			kunmap(pga[i]->pg);
 		}
 		cfs_crypto_hash_update_page(hdesc, pga[i]->pg,
@@ -1335,11 +1264,11 @@ static int osc_brw_prep_request(int cmd, struct client_obd *cli,
 
 		if (i > 0 && can_merge_pages(pg_prev, pg)) {
 			niobuf--;
-			niobuf->len += pg->count;
+			niobuf->rnb_len += pg->count;
 		} else {
-			niobuf->offset = pg->off;
-			niobuf->len = pg->count;
-			niobuf->flags = pg->flag;
+			niobuf->rnb_offset = pg->off;
+			niobuf->rnb_len = pg->count;
+			niobuf->rnb_flags = pg->flag;
 		}
 		pg_prev = pg;
 	}
@@ -1418,6 +1347,11 @@ static int osc_brw_prep_request(int cmd, struct client_obd *cli,
 	INIT_LIST_HEAD(&aa->aa_oaps);
 
 	*reqp = req;
+	niobuf = req_capsule_client_get(pill, &RMF_NIOBUF_REMOTE);
+	CDEBUG(D_RPCTRACE, "brw rpc %p - object " DOSTID " offset %lld<>%lld\n",
+	       req, POSTID(&oa->o_oi), niobuf[0].rnb_offset,
+	       niobuf[niocount - 1].rnb_offset + niobuf[niocount - 1].rnb_len);
+
 	return 0;
 
  out:
@@ -1796,7 +1730,8 @@ static int brw_interpret(const struct lu_env *env,
 
 		if (lustre_msg_get_opc(req->rq_reqmsg) == OST_WRITE) {
 			struct lov_oinfo *loi = cl2osc(obj)->oo_oinfo;
-			loff_t last_off = last->oap_count + last->oap_obj_off;
+			loff_t last_off = last->oap_count + last->oap_obj_off +
+					  last->oap_page_off;
 
 			/* Change file size if this is an out of quota or
 			 * direct IO write and it extends the file size
@@ -1814,7 +1749,7 @@ static int brw_interpret(const struct lu_env *env,
 		}
 
 		if (valid != 0)
-			cl_object_attr_set(env, obj, attr, valid);
+			cl_object_attr_update(env, obj, attr, valid);
 		cl_object_attr_unlock(obj);
 	}
 	kmem_cache_free(obdo_cachep, aa->aa_oa);
@@ -2047,7 +1982,7 @@ int osc_build_rpc(const struct lu_env *env, struct client_obd *cli,
 	}
 	spin_unlock(&cli->cl_loi_list_lock);
 
-	DEBUG_REQ(D_INODE, req, "%d pages, aa %p. now %dr/%dw in flight",
+	DEBUG_REQ(D_INODE, req, "%d pages, aa %p. now %ur/%dw in flight",
 		  page_count, aa, cli->cl_r_in_flight,
 		  cli->cl_w_in_flight);
 
@@ -2568,71 +2503,6 @@ static int osc_statfs(const struct lu_env *env, struct obd_export *exp,
 	return rc;
 }
 
-/* Retrieve object striping information.
- *
- * @lmmu is a pointer to an in-core struct with lmm_ost_count indicating
- * the maximum number of OST indices which will fit in the user buffer.
- * lmm_magic must be LOV_MAGIC (we only use 1 slot here).
- */
-static int osc_getstripe(struct lov_stripe_md *lsm,
-			 struct lov_user_md __user *lump)
-{
-	/* we use lov_user_md_v3 because it is larger than lov_user_md_v1 */
-	struct lov_user_md_v3 lum, *lumk;
-	struct lov_user_ost_data_v1 *lmm_objects;
-	int rc = 0, lum_size;
-
-	if (!lsm)
-		return -ENODATA;
-
-	/* we only need the header part from user space to get lmm_magic and
-	 * lmm_stripe_count, (the header part is common to v1 and v3)
-	 */
-	lum_size = sizeof(struct lov_user_md_v1);
-	if (copy_from_user(&lum, lump, lum_size))
-		return -EFAULT;
-
-	if ((lum.lmm_magic != LOV_USER_MAGIC_V1) &&
-	    (lum.lmm_magic != LOV_USER_MAGIC_V3))
-		return -EINVAL;
-
-	/* lov_user_md_vX and lov_mds_md_vX must have the same size */
-	LASSERT(sizeof(struct lov_user_md_v1) == sizeof(struct lov_mds_md_v1));
-	LASSERT(sizeof(struct lov_user_md_v3) == sizeof(struct lov_mds_md_v3));
-	LASSERT(sizeof(lum.lmm_objects[0]) == sizeof(lumk->lmm_objects[0]));
-
-	/* we can use lov_mds_md_size() to compute lum_size
-	 * because lov_user_md_vX and lov_mds_md_vX have the same size
-	 */
-	if (lum.lmm_stripe_count > 0) {
-		lum_size = lov_mds_md_size(lum.lmm_stripe_count, lum.lmm_magic);
-		lumk = kzalloc(lum_size, GFP_NOFS);
-		if (!lumk)
-			return -ENOMEM;
-
-		if (lum.lmm_magic == LOV_USER_MAGIC_V1)
-			lmm_objects =
-			    &(((struct lov_user_md_v1 *)lumk)->lmm_objects[0]);
-		else
-			lmm_objects = &lumk->lmm_objects[0];
-		lmm_objects->l_ost_oi = lsm->lsm_oi;
-	} else {
-		lum_size = lov_mds_md_size(0, lum.lmm_magic);
-		lumk = &lum;
-	}
-
-	lumk->lmm_oi = lsm->lsm_oi;
-	lumk->lmm_stripe_count = 1;
-
-	if (copy_to_user(lump, lumk, lum_size))
-		rc = -EFAULT;
-
-	if (lumk != &lum)
-		kfree(lumk);
-
-	return rc;
-}
-
 static int osc_iocontrol(unsigned int cmd, struct obd_export *exp, int len,
 			 void *karg, void __user *uarg)
 {
@@ -2646,57 +2516,6 @@ static int osc_iocontrol(unsigned int cmd, struct obd_export *exp, int len,
 		return -EINVAL;
 	}
 	switch (cmd) {
-	case OBD_IOC_LOV_GET_CONFIG: {
-		char *buf;
-		struct lov_desc *desc;
-		struct obd_uuid uuid;
-
-		buf = NULL;
-		len = 0;
-		if (obd_ioctl_getdata(&buf, &len, uarg)) {
-			err = -EINVAL;
-			goto out;
-		}
-
-		data = (struct obd_ioctl_data *)buf;
-
-		if (sizeof(*desc) > data->ioc_inllen1) {
-			obd_ioctl_freedata(buf, len);
-			err = -EINVAL;
-			goto out;
-		}
-
-		if (data->ioc_inllen2 < sizeof(uuid)) {
-			obd_ioctl_freedata(buf, len);
-			err = -EINVAL;
-			goto out;
-		}
-
-		desc = (struct lov_desc *)data->ioc_inlbuf1;
-		desc->ld_tgt_count = 1;
-		desc->ld_active_tgt_count = 1;
-		desc->ld_default_stripe_count = 1;
-		desc->ld_default_stripe_size = 0;
-		desc->ld_default_stripe_offset = 0;
-		desc->ld_pattern = 0;
-		memcpy(&desc->ld_uuid, &obd->obd_uuid, sizeof(uuid));
-
-		memcpy(data->ioc_inlbuf2, &obd->obd_uuid, sizeof(uuid));
-
-		err = copy_to_user(uarg, buf, len);
-		if (err)
-			err = -EFAULT;
-		obd_ioctl_freedata(buf, len);
-		goto out;
-	}
-	case LL_IOC_LOV_SETSTRIPE:
-		err = obd_alloc_memmd(exp, karg);
-		if (err > 0)
-			err = 0;
-		goto out;
-	case LL_IOC_LOV_GETSTRIPE:
-		err = osc_getstripe(karg, uarg);
-		goto out;
 	case OBD_IOC_CLIENT_RECOVER:
 		err = ptlrpc_recover_import(obd->u.cli.cl_import,
 					    data->ioc_inlbuf1, 0);
@@ -2731,51 +2550,7 @@ static int osc_get_info(const struct lu_env *env, struct obd_export *exp,
 	if (!vallen || !val)
 		return -EFAULT;
 
-	if (KEY_IS(KEY_LOCK_TO_STRIPE)) {
-		__u32 *stripe = val;
-		*vallen = sizeof(*stripe);
-		*stripe = 0;
-		return 0;
-	} else if (KEY_IS(KEY_LAST_ID)) {
-		struct ptlrpc_request *req;
-		u64 *reply;
-		char *tmp;
-		int rc;
-
-		req = ptlrpc_request_alloc(class_exp2cliimp(exp),
-					   &RQF_OST_GET_INFO_LAST_ID);
-		if (!req)
-			return -ENOMEM;
-
-		req_capsule_set_size(&req->rq_pill, &RMF_SETINFO_KEY,
-				     RCL_CLIENT, keylen);
-		rc = ptlrpc_request_pack(req, LUSTRE_OST_VERSION, OST_GET_INFO);
-		if (rc) {
-			ptlrpc_request_free(req);
-			return rc;
-		}
-
-		tmp = req_capsule_client_get(&req->rq_pill, &RMF_SETINFO_KEY);
-		memcpy(tmp, key, keylen);
-
-		req->rq_no_delay = 1;
-		req->rq_no_resend = 1;
-		ptlrpc_request_set_replen(req);
-		rc = ptlrpc_queue_wait(req);
-		if (rc)
-			goto out;
-
-		reply = req_capsule_server_get(&req->rq_pill, &RMF_OBD_ID);
-		if (!reply) {
-			rc = -EPROTO;
-			goto out;
-		}
-
-		*((u64 *)val) = *reply;
-out:
-		ptlrpc_req_finished(req);
-		return rc;
-	} else if (KEY_IS(KEY_FIEMAP)) {
+	if (KEY_IS(KEY_FIEMAP)) {
 		struct ll_fiemap_info_key *fm_key = key;
 		struct ldlm_res_id res_id;
 		ldlm_policy_data_t policy;
@@ -2913,11 +2688,11 @@ static int osc_set_info_async(const struct lu_env *env, struct obd_export *exp,
 
 	if (KEY_IS(KEY_CACHE_LRU_SHRINK)) {
 		struct client_obd *cli = &obd->u.cli;
-		int nr = atomic_read(&cli->cl_lru_in_list) >> 1;
-		int target = *(int *)val;
+		long nr = atomic_long_read(&cli->cl_lru_in_list) >> 1;
+		long target = *(long *)val;
 
 		nr = osc_lru_shrink(env, cli, min(nr, target), true);
-		*(int *)val -= nr;
+		*(long *)val -= nr;
 		return 0;
 	}
 
@@ -3329,7 +3104,6 @@ static struct obd_ops osc_obd_ops = {
 	.disconnect     = osc_disconnect,
 	.statfs         = osc_statfs,
 	.statfs_async   = osc_statfs_async,
-	.packmd         = osc_packmd,
 	.unpackmd       = osc_unpackmd,
 	.create         = osc_create,
 	.destroy        = osc_destroy,

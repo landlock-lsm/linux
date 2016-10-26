@@ -117,7 +117,7 @@ enum bpf_prog_type {
 	BPF_PROG_TYPE_TRACEPOINT,
 	BPF_PROG_TYPE_XDP,
 	BPF_PROG_TYPE_PERF_EVENT,
-	BPF_PROG_TYPE_CGROUP_SOCKET,
+	BPF_PROG_TYPE_CGROUP_SKB,
 	BPF_PROG_TYPE_LANDLOCK,
 };
 
@@ -141,10 +141,10 @@ enum bpf_attach_type {
 
 union bpf_prog_subtype {
 	struct {
-		__u32		id; /* enum landlock_hook_id */
-		__u16		origin; /* LANDLOCK_FLAG_ORIGIN_* */
-		__aligned_u64	access; /* LANDLOCK_FLAG_ACCESS_* */
-	} landlock_hook;
+		__u32		hook; /* enum landlock_hook */
+		__aligned_u64	access; /* LANDLOCK_SUBTYPE_ACCESS_* */
+		__aligned_u64	option; /* LANDLOCK_SUBTYPE_OPTION_* */
+	} landlock_rule;
 } __attribute__((aligned(8)));
 
 union bpf_attr {
@@ -175,7 +175,7 @@ union bpf_attr {
 		__u32		log_size;	/* size of user buffer */
 		__aligned_u64	log_buf;	/* user supplied buffer */
 		__u32		kern_version;	/* checked when prog_type=kprobe */
-		union bpf_prog_subtype prog_subtype;	/* checked when prog_type=landlock */
+		union bpf_prog_subtype prog_subtype;
 	};
 
 	struct { /* anonymous struct used by BPF_OBJ_* commands */
@@ -446,32 +446,56 @@ enum bpf_func_id {
 	BPF_FUNC_skb_change_tail,
 
 	/**
-	 * bpf_landlock_cmp_fs_prop_with_struct_file(prop, map, map_op, file)
-	 * Compare file system handles with a struct file
-	 *
-	 * @prop: properties to check against (e.g. LANDLOCK_FLAG_FS_DENTRY)
-	 * @map: handles to compare against
-	 * @map_op: which elements of the map to use (e.g. BPF_MAP_ARRAY_OP_OR)
-	 * @file: struct file address to compare with (taken from the context)
-	 *
-	 * Return: 0 if the file match the handles, 1 otherwise, or a negative
-	 * value if an error occurred.
+	 * bpf_skb_pull_data(skb, len)
+	 * The helper will pull in non-linear data in case the
+	 * skb is non-linear and not all of len are part of the
+	 * linear section. Only needed for read/write with direct
+	 * packet access.
+	 * @skb: pointer to skb
+	 * @len: len to make read/writeable
+	 * Return: 0 on success or negative error
 	 */
-	BPF_FUNC_landlock_cmp_fs_prop_with_struct_file,
+	BPF_FUNC_skb_pull_data,
 
 	/**
-	 * bpf_landlock_cmp_fs_beneath_with_struct_file(opt, map, map_op, file)
-	 * Check if a struct file is a leaf of file system handles
+	 * bpf_csum_update(skb, csum)
+	 * Adds csum into skb->csum in case of CHECKSUM_COMPLETE.
+	 * @skb: pointer to skb
+	 * @csum: csum to add
+	 * Return: csum on success or negative error
+	 */
+	BPF_FUNC_csum_update,
+
+	/**
+	 * bpf_set_hash_invalid(skb)
+	 * Invalidate current skb>hash.
+	 * @skb: pointer to skb
+	 */
+	BPF_FUNC_set_hash_invalid,
+
+	/**
+	 * bpf_landlock_cmp_fs_beneath(opt, map, map_op, arg_fs)
+	 * Check if a struct inode is a leaf of file system handles
 	 *
 	 * @opt: check options (e.g. LANDLOCK_FLAG_OPT_REVERSE)
 	 * @map: handles to compare against
 	 * @map_op: which elements of the map to use (e.g. BPF_MAP_ARRAY_OP_OR)
-	 * @file: struct file address to compare with (taken from the context)
+	 * @arg_fs: struct landlock_arg_fs address to compare with
 	 *
 	 * Return: 0 if the file is the same or beneath the handles,
 	 * 1 otherwise, or a negative value if an error occurred.
 	 */
-	BPF_FUNC_landlock_cmp_fs_beneath_with_struct_file,
+	BPF_FUNC_landlock_cmp_fs_beneath,
+
+	/**
+	 * bpf_landlock_get_fs_mode(arg_fs)
+	 * Get the mode of a struct landlock_arg_fs
+	 *
+	 * @arg_fs: struct landlock_arg_fs address
+	 *
+	 * Return: the file mode
+	 */
+	BPF_FUNC_landlock_get_fs_mode,
 
 	__BPF_FUNC_MAX_ID,
 };
@@ -569,33 +593,29 @@ struct xdp_md {
 };
 
 /* LSM hooks */
-enum landlock_hook_id {
+enum landlock_hook {
 	LANDLOCK_HOOK_UNSPEC,
 	LANDLOCK_HOOK_FILE_OPEN,
 	LANDLOCK_HOOK_FILE_PERMISSION,
 	LANDLOCK_HOOK_MMAP_FILE,
+	LANDLOCK_HOOK_INODE_CREATE,
+	LANDLOCK_HOOK_INODE_LINK,
+	LANDLOCK_HOOK_INODE_UNLINK,
+	LANDLOCK_HOOK_INODE_PERMISSION,
+	LANDLOCK_HOOK_INODE_GETATTR,
 };
-#define _LANDLOCK_HOOK_LAST LANDLOCK_HOOK_MMAP_FILE
+#define _LANDLOCK_HOOK_LAST LANDLOCK_HOOK_INODE_GETATTR
 
-/* Trigger type */
-#define LANDLOCK_FLAG_ORIGIN_SYSCALL	(1 << 0)
-#define LANDLOCK_FLAG_ORIGIN_SECCOMP	(1 << 1)
-#define LANDLOCK_FLAG_ORIGIN_INTERRUPT	(1 << 2)
-#define _LANDLOCK_FLAG_ORIGIN_MASK	((1 << 3) - 1)
+/* eBPF context and functions allowed for a rule */
+#define LANDLOCK_SUBTYPE_ACCESS_UPDATE		(1 << 0)
+#define LANDLOCK_SUBTYPE_ACCESS_DEBUG		(1 << 1)
+#define _LANDLOCK_SUBTYPE_ACCESS_MASK		((1ULL << 2) - 1)
 
-/* context of function access flags */
-#define LANDLOCK_FLAG_ACCESS_UPDATE	(1 << 0)
-#define LANDLOCK_FLAG_ACCESS_DEBUG	(1 << 1)
-#define LANDLOCK_FLAG_ACCESS_SKB_READ	(1 << 2)
-#define LANDLOCK_FLAG_ACCESS_SKB_WRITE	(1 << 3)
-#define _LANDLOCK_FLAG_ACCESS_MASK	((1ULL << 4) - 1)
-
-/* Handle check flags */
-#define LANDLOCK_FLAG_FS_DENTRY		(1 << 0)
-#define LANDLOCK_FLAG_FS_INODE		(1 << 1)
-#define LANDLOCK_FLAG_FS_DEVICE		(1 << 2)
-#define LANDLOCK_FLAG_FS_MOUNT		(1 << 3)
-#define _LANDLOCK_FLAG_FS_MASK		((1ULL << 4) - 1)
+/*
+ * (future) options for a Landlock rule (e.g. run even if a previous rule
+ * returned an errno code)
+ */
+#define _LANDLOCK_SUBTYPE_OPTION_MASK	((1ULL << 0) - 1)
 
 /* Handle option flags */
 #define LANDLOCK_FLAG_OPT_REVERSE	(1<<0)
@@ -614,22 +634,13 @@ struct landlock_handle {
  * struct landlock_data
  *
  * @hook: LSM hook ID (e.g. BPF_PROG_TYPE_LANDLOCK_FILE_OPEN)
- * @origin: bit indicating for which reason the program is running
- * @cookie: value set by a seccomp-filter return value RET_LANDLOCK. This come
- *          from a trusted seccomp-bpf program: the same process that loaded
- *          this Landlock hook program.
  * @args: LSM hook arguments, see include/linux/lsm_hooks.h for there
  *        description and the LANDLOCK_HOOK* definitions from
  *        security/landlock/lsm.c for their types.
- * @opt_skb: optional skb pointer, accessible with the
- *           LANDLOCK_FLAG_ACCESS_SKB_* flags for network-related hooks.
  */
 struct landlock_data {
-	__u32 hook; /* enum landlock_hook_id */
-	__u16 origin; /* LANDLOCK_FLAG_ORIGIN_* */
-	__u16 cookie; /* seccomp RET_LANDLOCK */
+	__u32 hook; /* enum landlock_hook */
 	__u64 args[6];
-	__u64 opt_skb;
 };
 
 #endif /* _UAPI__LINUX_BPF_H__ */

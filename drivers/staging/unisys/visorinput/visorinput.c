@@ -29,7 +29,6 @@
 #include <linux/kernel.h>
 #include <linux/uuid.h>
 
-#include "version.h"
 #include "visorbus.h"
 #include "ultrainputreport.h"
 
@@ -582,7 +581,7 @@ visorinput_channel_interrupt(struct visor_device *dev)
 
 	visorinput_dev = devdata->visorinput_dev;
 
-	while (visorchannel_signalremove(dev->visorchannel, 0, &r)) {
+	while (!visorchannel_signalremove(dev->visorchannel, 0, &r)) {
 		scancode = r.activity.arg1;
 		keycode = scancode_to_keycode(scancode);
 		switch (r.activity.action) {
@@ -735,7 +734,6 @@ static struct visor_channeltype_descriptor visorinput_channel_types[] = {
 
 static struct visor_driver visorinput_driver = {
 	.name = "visorinput",
-	.vertag = NULL,
 	.owner = THIS_MODULE,
 	.channel_types = visorinput_channel_types,
 	.probe = visorinput_probe,
@@ -764,8 +762,7 @@ MODULE_DEVICE_TABLE(visorbus, visorinput_channel_types);
 
 MODULE_AUTHOR("Unisys");
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("s-Par human input driver for guest Linux");
-MODULE_VERSION(VERSION);
+MODULE_DESCRIPTION("s-Par human input driver for virtual keyboard/mouse");
 
 MODULE_ALIAS("visorbus:" SPAR_MOUSE_CHANNEL_PROTOCOL_UUID_STR);
 MODULE_ALIAS("visorbus:" SPAR_KEYBOARD_CHANNEL_PROTOCOL_UUID_STR);

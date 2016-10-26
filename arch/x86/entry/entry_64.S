@@ -180,7 +180,8 @@ GLOBAL(entry_SYSCALL_64_after_swapgs)
 	 * If we need to do entry work or if we guess we'll need to do
 	 * exit work, go straight to the slow path.
 	 */
-	testl	$_TIF_WORK_SYSCALL_ENTRY|_TIF_ALLWORK_MASK, ASM_THREAD_INFO(TI_flags, %rsp, SIZEOF_PTREGS)
+	movq	PER_CPU_VAR(current_task), %r11
+	testl	$_TIF_WORK_SYSCALL_ENTRY|_TIF_ALLWORK_MASK, TASK_TI_flags(%r11)
 	jnz	entry_SYSCALL64_slow_path
 
 entry_SYSCALL_64_fastpath:
@@ -218,7 +219,8 @@ entry_SYSCALL_64_fastpath:
 	 */
 	DISABLE_INTERRUPTS(CLBR_NONE)
 	TRACE_IRQS_OFF
-	testl	$_TIF_ALLWORK_MASK, ASM_THREAD_INFO(TI_flags, %rsp, SIZEOF_PTREGS)
+	movq	PER_CPU_VAR(current_task), %r11
+	testl	$_TIF_ALLWORK_MASK, TASK_TI_flags(%r11)
 	jnz	1f
 
 	LOCKDEP_SYS_EXIT
@@ -587,27 +589,69 @@ native_irq_return_iret:
 
 #ifdef CONFIG_X86_ESPFIX64
 native_irq_return_ldt:
-	pushq	%rax
-	pushq	%rdi
+	/*
+	 * We are running with user GSBASE.  All GPRs contain their user
+	 * values.  We have a percpu ESPFIX stack that is eight slots
+	 * long (see ESPFIX_STACK_SIZE).  espfix_waddr points to the bottom
+	 * of the ESPFIX stack.
+	 *
+	 * We clobber RAX and RDI in this code.  We stash RDI on the
+	 * normal stack and RAX on the ESPFIX stack.
+	 *
+	 * The ESPFIX stack layout we set up looks like this:
+	 *
+	 * --- top of ESPFIX stack ---
+	 * SS
+	 * RSP
+	 * RFLAGS
+	 * CS
+	 * RIP  <-- RSP points here when we're done
+	 * RAX  <-- espfix_waddr points here
+	 * --- bottom of ESPFIX stack ---
+	 */
+
+	pushq	%rdi				/* Stash user RDI */
 	SWAPGS
 	movq	PER_CPU_VAR(espfix_waddr), %rdi
-	movq	%rax, (0*8)(%rdi)		/* RAX */
-	movq	(2*8)(%rsp), %rax		/* RIP */
+	movq	%rax, (0*8)(%rdi)		/* user RAX */
+	movq	(1*8)(%rsp), %rax		/* user RIP */
 	movq	%rax, (1*8)(%rdi)
-	movq	(3*8)(%rsp), %rax		/* CS */
+	movq	(2*8)(%rsp), %rax		/* user CS */
 	movq	%rax, (2*8)(%rdi)
-	movq	(4*8)(%rsp), %rax		/* RFLAGS */
+	movq	(3*8)(%rsp), %rax		/* user RFLAGS */
 	movq	%rax, (3*8)(%rdi)
-	movq	(6*8)(%rsp), %rax		/* SS */
+	movq	(5*8)(%rsp), %rax		/* user SS */
 	movq	%rax, (5*8)(%rdi)
-	movq	(5*8)(%rsp), %rax		/* RSP */
+	movq	(4*8)(%rsp), %rax		/* user RSP */
 	movq	%rax, (4*8)(%rdi)
-	andl	$0xffff0000, %eax
-	popq	%rdi
+	/* Now RAX == RSP. */
+
+	andl	$0xffff0000, %eax		/* RAX = (RSP & 0xffff0000) */
+	popq	%rdi				/* Restore user RDI */
+
+	/*
+	 * espfix_stack[31:16] == 0.  The page tables are set up such that
+	 * (espfix_stack | (X & 0xffff0000)) points to a read-only alias of
+	 * espfix_waddr for any X.  That is, there are 65536 RO aliases of
+	 * the same page.  Set up RSP so that RSP[31:16] contains the
+	 * respective 16 bits of the /userspace/ RSP and RSP nonetheless
+	 * still points to an RO alias of the ESPFIX stack.
+	 */
 	orq	PER_CPU_VAR(espfix_stack), %rax
 	SWAPGS
 	movq	%rax, %rsp
-	popq	%rax
+
+	/*
+	 * At this point, we cannot write to the stack any more, but we can
+	 * still read.
+	 */
+	popq	%rax				/* Restore user RAX */
+
+	/*
+	 * RSP now points to an ordinary IRET frame, except that the page
+	 * is read-only and RSP[31:16] are preloaded with the userspace
+	 * values.  We can now IRET back to userspace.
+	 */
 	jmp	native_irq_return_iret
 #endif
 END(common_interrupt)
@@ -1035,7 +1079,6 @@ ENTRY(error_entry)
 	testb	$3, CS+8(%rsp)
 	jz	.Lerror_kernelspace
 
-.Lerror_entry_from_usermode_swapgs:
 	/*
 	 * We entered from user mode or we're pretending to have entered
 	 * from user mode due to an IRET fault.
@@ -1078,7 +1121,8 @@ ENTRY(error_entry)
 	 * gsbase and proceed.  We'll fix up the exception and land in
 	 * .Lgs_change's error handler with kernel gsbase.
 	 */
-	jmp	.Lerror_entry_from_usermode_swapgs
+	SWAPGS
+	jmp .Lerror_entry_done
 
 .Lbstep_iret:
 	/* Fix truncated RIP */
@@ -1106,7 +1150,7 @@ END(error_entry)
 
 
 /*
- * On entry, EBS is a "return to kernel mode" flag:
+ * On entry, EBX is a "return to kernel mode" flag:
  *   1: already in kernel mode, don't need SWAPGS
  *   0: user gsbase is loaded, we need SWAPGS and standard preparation for return to usermode
  */

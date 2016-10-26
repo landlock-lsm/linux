@@ -34,7 +34,6 @@
 
 #include <linux/module.h>
 #include <linux/types.h>
-#include "../include/lustre_lite.h"
 #include "../include/lustre_ha.h"
 #include "../include/lustre_dlm.h"
 #include <linux/init.h>
@@ -82,8 +81,6 @@ struct super_operations lustre_super_operations = {
 	.show_options  = ll_show_options,
 };
 MODULE_ALIAS_FS("lustre");
-
-void lustre_register_client_process_config(int (*cpc)(struct lustre_cfg *lcfg));
 
 static int __init lustre_init(void)
 {

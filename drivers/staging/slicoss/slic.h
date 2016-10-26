@@ -92,6 +92,7 @@ struct slic_rcvbuf_info {
 	u32     lasttime;
 	u32     lastid;
 };
+
 /*
  * SLIC Handle structure.  Used to restrict handle values to
  * 32 bits by using an index rather than an address.
@@ -223,8 +224,8 @@ struct mcast_address {
 
 struct slic_iface_stats {
 	/*
-	* Stats
-	*/
+	 * Stats
+	 */
 	u64        xmt_bytes;
 	u64        xmt_ucast;
 	u64        xmt_mcast;
@@ -468,8 +469,8 @@ struct adapter {
 	struct slic_cmdqueue     cmdq_all;
 	struct slic_cmdqmem      cmdqmem;
 	/*
-	*  SLIC Handles
-	*/
+	 * SLIC Handles
+	 */
 	/* Object handles*/
 	struct slic_handle slic_handles[SLIC_CMDQ_MAXCMDS + 1];
 	/* Free object handles*/

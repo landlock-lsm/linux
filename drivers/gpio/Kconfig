@@ -66,6 +66,7 @@ config GPIO_SYSFS
 	  exported to userspace; this can be useful when debugging.
 
 config GPIO_GENERIC
+	depends on HAS_IOMEM # Only for IOMEM drivers
 	tristate
 
 # put drivers in the right section, in alphabetical order
@@ -75,6 +76,7 @@ config GPIO_MAX730X
 	tristate
 
 menu "Memory mapped GPIO drivers"
+	depends on HAS_IOMEM
 
 config GPIO_74XX_MMIO
 	tristate "GPIO driver for 74xx-ICs with MMIO access"
@@ -279,6 +281,18 @@ config GPIO_MM_LANTIQ
 	  This enables support for memory mapped GPIOs on the External Bus Unit
 	  (EBU) found on Lantiq SoCs. The gpios are output only as they are
 	  created by attaching a 16bit latch to the bus.
+
+config GPIO_MOCKUP
+	tristate "GPIO Testing Driver"
+	depends on GPIOLIB
+	select GPIO_SYSFS
+	help
+	  This enables GPIO Testing driver, which provides a way to test GPIO
+	  subsystem through sysfs(or char device) and debugfs. GPIO_SYSFS
+	  must be selected for this test.
+	  User could use it through the script in
+	  tools/testing/selftests/gpio/gpio-mockup.sh. Reference the usage in
+	  it.
 
 config GPIO_MOXART
 	bool "MOXART GPIO support"
@@ -861,6 +875,14 @@ config GPIO_DLN2
 
 	  This driver can also be built as a module. If so, the module
 	  will be called gpio-dln2.
+
+config HTC_EGPIO
+	bool "HTC EGPIO support"
+	depends on GPIOLIB && ARM
+	help
+	    This driver supports the CPLD egpio chip present on
+	    several HTC phones.  It provides basic support for input
+	    pins, output pins, and irqs.
 
 config GPIO_JANZ_TTL
 	tristate "Janz VMOD-TTL Digital IO Module"

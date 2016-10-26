@@ -10,127 +10,41 @@
 
 #include <linux/bpf.h> /* enum bpf_map_array_op */
 #include <linux/errno.h>
+#include <linux/filter.h> /* BPF_CALL*() */
 #include <linux/fs.h> /* path_is_under() */
 #include <linux/path.h> /* struct path */
 
+#include "common.h" /* struct landlock_arg_fs */
 #include "checker_fs.h"
 
-#define EQUAL_NOT_NULL(a, b) (a && a == b)
-
 /*
- * bpf_landlock_cmp_fs_prop_with_struct_file
+ * bpf_landlock_cmp_fs_beneath
  *
  * Cf. include/uapi/linux/bpf.h
  */
-static inline u64 bpf_landlock_cmp_fs_prop_with_struct_file(u64 r1_property,
-		u64 r2_map, u64 r3_map_op, u64 r4_file, u64 r5)
+BPF_CALL_4(bpf_landlock_cmp_fs_beneath, u8, option, struct bpf_map *, map,
+		enum bpf_map_array_op, map_op,
+		struct landlock_arg_fs *, arg_fs)
 {
-	u8 property = (u8) r1_property;
-	struct bpf_map *map = (struct bpf_map *) (unsigned long) r2_map;
-	enum bpf_map_array_op map_op = r3_map_op;
-	struct file *file = (struct file *) (unsigned long) r4_file;
 	struct bpf_array *array = container_of(map, struct bpf_array, map);
-	struct path *p1, *p2;
+	const struct path *p1 = NULL, *p2 = NULL;
+	struct dentry *d1 = NULL, *d2 = NULL;
 	struct map_landlock_handle *handle;
-	int i;
+	size_t i;
 
-	/* ARG_CONST_PTR_TO_LANDLOCK_HANDLE_FS is an arraymap */
-	if (unlikely(!map)) {
-		WARN_ON(1);
+	if (WARN_ON(!map))
 		return -EFAULT;
-	}
-	if (unlikely(!file))
-		return -ENOENT;
-	if (unlikely((property | _LANDLOCK_FLAG_FS_MASK) != _LANDLOCK_FLAG_FS_MASK))
-		return -EINVAL;
-
-	/* for now, only handle OP_OR */
-	switch (map_op) {
-	case BPF_MAP_ARRAY_OP_OR:
-		break;
-	case BPF_MAP_ARRAY_OP_UNSPEC:
-	case BPF_MAP_ARRAY_OP_AND:
-	case BPF_MAP_ARRAY_OP_XOR:
-	default:
-		return -EINVAL;
-	}
-	p2 = &file->f_path;
-
-	synchronize_rcu();
-
-	for (i = 0; i < array->n_entries; i++) {
-		bool result_dentry = !(property & LANDLOCK_FLAG_FS_DENTRY);
-		bool result_inode = !(property & LANDLOCK_FLAG_FS_INODE);
-		bool result_device = !(property & LANDLOCK_FLAG_FS_DEVICE);
-		bool result_mount = !(property & LANDLOCK_FLAG_FS_MOUNT);
-
-		handle = (struct map_landlock_handle *)
-				(array->value + array->elem_size * i);
-
-		if (handle->type != BPF_MAP_HANDLE_TYPE_LANDLOCK_FS_FD) {
-			WARN_ON(1);
-			return -EFAULT;
-		}
-		p1 = &handle->path;
-
-		if (!result_dentry && p1->dentry == p2->dentry)
-			result_dentry = true;
-		/* TODO: use d_inode_rcu() instead? */
-		if (!result_inode
-		    && EQUAL_NOT_NULL(d_inode(p1->dentry)->i_ino,
-				      d_inode(p2->dentry)->i_ino))
-			result_inode = true;
-		/* check superblock instead of device major/minor */
-		if (!result_device
-		    && EQUAL_NOT_NULL(d_inode(p1->dentry)->i_sb,
-				      d_inode(p2->dentry)->i_sb))
-			result_device = true;
-		if (!result_mount && EQUAL_NOT_NULL(p1->mnt, p2->mnt))
-			result_mount = true;
-		if (result_dentry && result_inode && result_device && result_mount)
-			return 0;
-	}
-	return 1;
-}
-
-const struct bpf_func_proto bpf_landlock_cmp_fs_prop_with_struct_file_proto = {
-	.func		= bpf_landlock_cmp_fs_prop_with_struct_file,
-	.gpl_only	= true,
-	.ret_type	= RET_INTEGER,
-	.arg1_type	= ARG_ANYTHING,
-	.arg2_type	= ARG_CONST_PTR_TO_LANDLOCK_HANDLE_FS,
-	.arg3_type	= ARG_ANYTHING,
-	.arg4_type	= ARG_PTR_TO_STRUCT_FILE,
-};
-
-/*
- * bpf_landlock_cmp_fs_beneath_with_struct_file
- *
- * Cf. include/uapi/linux/bpf.h
- */
-static inline u64 bpf_landlock_cmp_fs_beneath_with_struct_file(u64 r1_option,
-		u64 r2_map, u64 r3_map_op, u64 r4_file, u64 r5)
-{
-	u8 option = (u8) r1_option;
-	struct bpf_map *map = (struct bpf_map *) (unsigned long) r2_map;
-	enum bpf_map_array_op map_op = r3_map_op;
-	struct file *file = (struct file *) (unsigned long) r4_file;
-	struct bpf_array *array = container_of(map, struct bpf_array, map);
-	struct path *p1, *p2;
-	struct map_landlock_handle *handle;
-	int i;
-
-	/* ARG_CONST_PTR_TO_LANDLOCK_HANDLE_FS is an arraymap */
-	if (unlikely(!map)) {
-		WARN_ON(1);
+	if (WARN_ON(!arg_fs))
 		return -EFAULT;
-	}
-	/* @file can be null for anonymous mmap */
-	if (unlikely(!file))
-		return -ENOENT;
 	if (unlikely((option | _LANDLOCK_FLAG_OPT_MASK) != _LANDLOCK_FLAG_OPT_MASK))
 		return -EINVAL;
 
+	if (!arg_fs->file) {
+		/* file can be null for anonymous mmap */
+		WARN_ON(arg_fs->type != LANDLOCK_ARGTYPE_FILE);
+		return -ENOENT;
+	}
+
 	/* for now, only handle OP_OR */
 	switch (map_op) {
 	case BPF_MAP_ARRAY_OP_OR:
@@ -141,39 +55,98 @@ static inline u64 bpf_landlock_cmp_fs_beneath_with_struct_file(u64 r1_option,
 	default:
 		return -EINVAL;
 	}
-	/* p1 and p2 will be set correctly in the loop */
-	p1 = &file->f_path;
-	p2 = p1;
-
-	synchronize_rcu();
-
-	for (i = 0; i < array->n_entries; i++) {
-		handle = (struct map_landlock_handle *)
-				(array->value + array->elem_size * i);
-
-		/* protected by the proto types, should not happen */
-		if (unlikely(handle->type != BPF_MAP_HANDLE_TYPE_LANDLOCK_FS_FD)) {
+	switch (arg_fs->type) {
+		case LANDLOCK_ARGTYPE_FILE:
+			p1 = &arg_fs->file->f_path;
+			break;
+		case LANDLOCK_ARGTYPE_PATH:
+			p1 = arg_fs->path;
+			break;
+		case LANDLOCK_ARGTYPE_INODE:
+			d1 = d_find_alias(arg_fs->inode);
+			if (WARN_ON(!d1))
+				return -ENOENT;
+			break;
+		case LANDLOCK_ARGTYPE_NONE:
+		default:
 			WARN_ON(1);
-			return -EINVAL;
+			return -EFAULT;
+	}
+	/* {p,d}1 and {p,d}2 will be set correctly in the loop */
+	p2 = p1;
+	d2 = d1;
+
+	if (p1) {
+		for_each_handle(i, handle, array) {
+			if (WARN_ON(handle->type != BPF_MAP_HANDLE_TYPE_LANDLOCK_FS_FD))
+				return -EINVAL;
+
+			if (option & LANDLOCK_FLAG_OPT_REVERSE)
+				p2 = &handle->path;
+			else
+				p1 = &handle->path;
+
+			if (path_is_under(p2, p1))
+				return 0;
 		}
+	} else if (d1) {
+		for_each_handle(i, handle, array) {
+			if (WARN_ON(handle->type != BPF_MAP_HANDLE_TYPE_LANDLOCK_FS_FD))
+				return -EINVAL;
 
-		if (option & LANDLOCK_FLAG_OPT_REVERSE)
-			p2 = &handle->path;
-		else
-			p1 = &handle->path;
+			if (option & LANDLOCK_FLAG_OPT_REVERSE)
+				d2 = handle->path.dentry;
+			else
+				d1 = handle->path.dentry;
 
-		if (path_is_under(p2, p1))
-			return 0;
+			if (is_subdir(d2, d1))
+				return 0;
+		}
 	}
 	return 1;
 }
 
-const struct bpf_func_proto bpf_landlock_cmp_fs_beneath_with_struct_file_proto = {
-	.func		= bpf_landlock_cmp_fs_beneath_with_struct_file,
+const struct bpf_func_proto bpf_landlock_cmp_fs_beneath_proto = {
+	.func		= bpf_landlock_cmp_fs_beneath,
 	.gpl_only	= true,
 	.ret_type	= RET_INTEGER,
 	.arg1_type	= ARG_ANYTHING,
 	.arg2_type	= ARG_CONST_PTR_TO_LANDLOCK_HANDLE_FS,
 	.arg3_type	= ARG_ANYTHING,
-	.arg4_type	= ARG_PTR_TO_STRUCT_FILE,
+	.arg4_type	= ARG_CONST_PTR_TO_LANDLOCK_ARG_FS,
+};
+
+BPF_CALL_1(bpf_landlock_get_fs_mode, struct landlock_arg_fs *, arg_fs)
+{
+	if (WARN_ON(!arg_fs))
+		return -EFAULT;
+	if (!arg_fs->file) {
+		/* file can be null for anonymous mmap */
+		WARN_ON(arg_fs->type != LANDLOCK_ARGTYPE_FILE);
+		return -ENOENT;
+	}
+	switch (arg_fs->type) {
+		case LANDLOCK_ARGTYPE_FILE:
+			if (WARN_ON(!arg_fs->file->f_inode))
+				return -ENOENT;
+			return arg_fs->file->f_inode->i_mode;
+		case LANDLOCK_ARGTYPE_INODE:
+			return arg_fs->inode->i_mode;
+		case LANDLOCK_ARGTYPE_PATH:
+			if (WARN_ON(!arg_fs->path->dentry ||
+					!arg_fs->path->dentry->d_inode))
+				return -ENOENT;
+			return arg_fs->path->dentry->d_inode->i_mode;
+		case LANDLOCK_ARGTYPE_NONE:
+		default:
+			WARN_ON(1);
+			return -EFAULT;
+	}
+}
+
+const struct bpf_func_proto bpf_landlock_get_fs_mode_proto = {
+	.func		= bpf_landlock_get_fs_mode,
+	.gpl_only	= true,
+	.ret_type	= RET_INTEGER,
+	.arg1_type	= ARG_CONST_PTR_TO_LANDLOCK_ARG_FS,
 };

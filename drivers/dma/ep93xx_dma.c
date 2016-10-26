@@ -262,10 +262,8 @@ static void ep93xx_dma_set_active(struct ep93xx_dma_chan *edmac,
 static struct ep93xx_dma_desc *
 ep93xx_dma_get_active(struct ep93xx_dma_chan *edmac)
 {
-	if (list_empty(&edmac->active))
-		return NULL;
-
-	return list_first_entry(&edmac->active, struct ep93xx_dma_desc, node);
+	return list_first_entry_or_null(&edmac->active,
+					struct ep93xx_dma_desc, node);
 }
 
 /**
@@ -1045,11 +1043,11 @@ ep93xx_dma_prep_slave_sg(struct dma_chan *chan, struct scatterlist *sgl,
 
 	first = NULL;
 	for_each_sg(sgl, sg, sg_len, i) {
-		size_t sg_len = sg_dma_len(sg);
+		size_t len = sg_dma_len(sg);
 
-		if (sg_len > DMA_MAX_CHAN_BYTES) {
-			dev_warn(chan2dev(edmac), "too big transfer size %d\n",
-				 sg_len);
+		if (len > DMA_MAX_CHAN_BYTES) {
+			dev_warn(chan2dev(edmac), "too big transfer size %zu\n",
+				 len);
 			goto fail;
 		}
 
@@ -1066,7 +1064,7 @@ ep93xx_dma_prep_slave_sg(struct dma_chan *chan, struct scatterlist *sgl,
 			desc->src_addr = edmac->runtime_addr;
 			desc->dst_addr = sg_dma_address(sg);
 		}
-		desc->size = sg_len;
+		desc->size = len;
 
 		if (!first)
 			first = desc;
@@ -1123,7 +1121,7 @@ ep93xx_dma_prep_dma_cyclic(struct dma_chan *chan, dma_addr_t dma_addr,
 	}
 
 	if (period_len > DMA_MAX_CHAN_BYTES) {
-		dev_warn(chan2dev(edmac), "too big period length %d\n",
+		dev_warn(chan2dev(edmac), "too big period length %zu\n",
 			 period_len);
 		return NULL;
 	}

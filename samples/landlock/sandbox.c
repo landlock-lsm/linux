@@ -15,6 +15,7 @@
 #include <linux/filter.h>
 #include <linux/prctl.h>
 #include <linux/seccomp.h>
+#include <linux/stat.h> /* S_IFDIR() */
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,7 +37,7 @@ static int seccomp(unsigned int op, unsigned int flags, void *args)
 #endif
 
 static int landlock_prog_load(const struct bpf_insn *insns, int prog_len,
-		enum landlock_hook_id hook_id, __u64 access)
+		enum landlock_hook hook, __u64 access)
 {
 	union bpf_attr attr = {
 		.prog_type = BPF_PROG_TYPE_LANDLOCK,
@@ -46,11 +47,8 @@ static int landlock_prog_load(const struct bpf_insn *insns, int prog_len,
 		.log_buf = ptr_to_u64(bpf_log_buf),
 		.log_size = LOG_BUF_SIZE,
 		.log_level = 1,
-		.prog_subtype.landlock_hook = {
-			.id = hook_id,
-			.origin = LANDLOCK_FLAG_ORIGIN_SECCOMP |
-				LANDLOCK_FLAG_ORIGIN_SYSCALL |
-				LANDLOCK_FLAG_ORIGIN_INTERRUPT,
+		.prog_subtype.landlock_rule = {
+			.hook = hook,
 			.access = access,
 		},
 	};
@@ -66,33 +64,25 @@ static int landlock_prog_load(const struct bpf_insn *insns, int prog_len,
 }
 
 #define ARRAY_SIZE(a)	(sizeof(a) / sizeof(a[0]))
+#define MAX_ERRNO	4095
+#define MAY_EXEC	0x00000001
+
+struct landlock_rule {
+	enum landlock_hook hook;
+	struct bpf_insn *bpf;
+	size_t size;
+};
 
 static int apply_sandbox(const char **allowed_paths, int path_nb, const char
 		**cgroup_paths, int cgroup_nb)
 {
 	__u32 key;
-	int i, ret = 0, map_fs = -1, offset;
+	int i, ret = 0, map_fs = -1;
 
 	/* set up the test sandbox */
 	if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) {
 		perror("prctl(no_new_priv)");
 		return 1;
-	}
-
-	/* register a new syscall filter */
-	struct sock_filter filter0[] = {
-		/* pass a cookie containing 5 to the LSM hook filter */
-		BPF_STMT(BPF_RET|BPF_K, SECCOMP_RET_LANDLOCK | 5),
-	};
-	struct sock_fprog prog0 = {
-		.len = (unsigned short)ARRAY_SIZE(filter0),
-		.filter = filter0,
-	};
-	if (!cgroup_nb) {
-		if (seccomp(SECCOMP_SET_MODE_FILTER, 0, &prog0)) {
-			perror("seccomp(set_filter)");
-			return 1;
-		}
 	}
 
 	if (path_nb) {
@@ -130,32 +120,20 @@ static int apply_sandbox(const char **allowed_paths, int path_nb, const char
 		}
 	}
 
-	/* load a LSM filter hook (eBPF) */
-	struct bpf_insn hook_pre[] = {
+	/* Landlock rule for file-based and path-based hooks */
+	struct bpf_insn hook_file[] = {
 		/* save context */
 		BPF_MOV64_REG(BPF_REG_6, BPF_REG_1),
-
-#if 0
-		/* check our cookie (not used in this example) */
-		BPF_LDX_MEM(BPF_H, BPF_REG_0, BPF_REG_6, offsetof(struct
-					landlock_data, cookie)),
-		BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 5, 2),
-		BPF_MOV32_IMM(BPF_REG_0, 0),
-		BPF_EXIT_INSN(),
-#endif
-	};
-	struct bpf_insn hook_path[] = {
 		/* specify an option, if any */
 		BPF_MOV32_IMM(BPF_REG_1, 0),
 		/* handles to compare with */
 		BPF_LD_MAP_FD(BPF_REG_2, map_fs),
 		BPF_MOV64_IMM(BPF_REG_3, BPF_MAP_ARRAY_OP_OR),
-		/* hook argument (struct file) */
+		/* hook argument */
 		BPF_LDX_MEM(BPF_DW, BPF_REG_4, BPF_REG_6, offsetof(struct
 					landlock_data, args[0])),
 		/* checker function */
-		BPF_EMIT_CALL(BPF_FUNC_landlock_cmp_fs_beneath_with_struct_file),
-
+		BPF_EMIT_CALL(BPF_FUNC_landlock_cmp_fs_beneath),
 		/* if the checked path is beneath the handle */
 		BPF_JMP_IMM(BPF_JNE, BPF_REG_0, 0, 2),
 		BPF_MOV32_IMM(BPF_REG_0, 0),
@@ -165,40 +143,162 @@ static int apply_sandbox(const char **allowed_paths, int path_nb, const char
 		BPF_MOV32_IMM(BPF_REG_0, 0),
 		BPF_EXIT_INSN(),
 		/* deny by default, if any error */
-		BPF_JMP_IMM(BPF_JGE, BPF_REG_0, 0, 2),
-		BPF_MOV32_IMM(BPF_REG_0, EACCES),
-		BPF_EXIT_INSN(),
-	};
-	struct bpf_insn hook_post[] = {
 		BPF_MOV32_IMM(BPF_REG_0, EACCES),
 		BPF_EXIT_INSN(),
 	};
 
-	unsigned long hook_size = sizeof(hook_pre) + sizeof(hook_path) *
-		(path_nb ? 1 : 0) + sizeof(hook_post);
+	/* Landlock rule for inode-based hooks */
+	struct bpf_insn hook_inode[] = {
+		/* save context */
+		BPF_MOV64_REG(BPF_REG_6, BPF_REG_1),
+		/* specify an option, if any */
+		BPF_MOV32_IMM(BPF_REG_1, 0),
+		/* handles to compare with */
+		BPF_LD_MAP_FD(BPF_REG_2, map_fs),
+		BPF_MOV64_IMM(BPF_REG_3, BPF_MAP_ARRAY_OP_OR),
+		/* hook argument */
+		BPF_LDX_MEM(BPF_DW, BPF_REG_4, BPF_REG_6, offsetof(struct
+					landlock_data, args[0])),
+		/* checker function */
+		BPF_EMIT_CALL(BPF_FUNC_landlock_cmp_fs_beneath),
+		/* if the checked path is beneath the handle */
+		BPF_JMP_IMM(BPF_JNE, BPF_REG_0, 0, 2),
+		BPF_MOV32_IMM(BPF_REG_0, 0),
+		BPF_EXIT_INSN(),
 
-	struct bpf_insn *hook0 = malloc(hook_size);
-	if (!hook0) {
-		perror("malloc");
-		ret = 1;
-		goto err_alloc;
-	}
-	memcpy(hook0, hook_pre, sizeof(hook_pre));
-	offset = sizeof(hook_pre) / sizeof(hook0[0]);
-	if (path_nb) {
-		memcpy(hook0 + offset, hook_path, sizeof(hook_path));
-		offset += sizeof(hook_path) / sizeof(hook0[0]);
-	}
-	memcpy(hook0 + offset, hook_post, sizeof(hook_post));
+		/*
+		 * We must allow MAY_EXEC access on directories from the root to the
+		 * handles, otherwise they are not reachable.
+		 */
 
-	/* TODO: handle inode_permission hook (e.g. chdir) */
-	enum landlock_hook_id hooks[] = {
-		LANDLOCK_HOOK_FILE_OPEN,
-		LANDLOCK_HOOK_FILE_PERMISSION,
-		LANDLOCK_HOOK_MMAP_FILE,
+		/* hook argument */
+		BPF_LDX_MEM(BPF_DW, BPF_REG_1, BPF_REG_6, offsetof(struct
+					landlock_data, args[0])),
+		/* checker function */
+		BPF_EMIT_CALL(BPF_FUNC_landlock_get_fs_mode),
+		/* check if it returned an error */
+		BPF_MOV64_IMM(BPF_REG_7, 0),
+		BPF_ALU64_IMM(BPF_SUB, BPF_REG_7, MAX_ERRNO),
+		BPF_JMP_REG(BPF_JGE, BPF_REG_0, BPF_REG_7, 2),
+		/* check if the inode is a directory */
+		BPF_ALU64_IMM(BPF_AND, BPF_REG_0, S_IFMT),
+		BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, S_IFDIR, 2),
+		/* no entry by default, if any error */
+		BPF_MOV32_IMM(BPF_REG_0, ENOENT),
+		BPF_EXIT_INSN(),
+
+		/* specify an option, if any */
+		BPF_MOV32_IMM(BPF_REG_1, LANDLOCK_FLAG_OPT_REVERSE),
+		/* handles to compare with */
+		BPF_LD_MAP_FD(BPF_REG_2, map_fs),
+		BPF_MOV64_IMM(BPF_REG_3, BPF_MAP_ARRAY_OP_OR),
+		/* hook argument */
+		BPF_LDX_MEM(BPF_DW, BPF_REG_4, BPF_REG_6, offsetof(struct
+					landlock_data, args[0])),
+		/* checker function */
+		BPF_EMIT_CALL(BPF_FUNC_landlock_cmp_fs_beneath),
+		/* if one handle is not beneath the checked path */
+		BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 2),
+		BPF_MOV32_IMM(BPF_REG_0, ENOENT),
+		BPF_EXIT_INSN(),
+
+		/* check access mask */
+		BPF_LDX_MEM(BPF_DW, BPF_REG_7, BPF_REG_6, offsetof(struct
+					landlock_data, args[1])),
+		BPF_JMP_IMM(BPF_JNE, BPF_REG_7, MAY_EXEC, 2),
+		BPF_MOV32_IMM(BPF_REG_0, 0),
+		BPF_EXIT_INSN(),
+		BPF_MOV32_IMM(BPF_REG_0, EACCES),
+		BPF_EXIT_INSN(),
 	};
-	for (i = 0; i < ARRAY_SIZE(hooks) && !ret; i++) {
-		int bpf0 = landlock_prog_load(hook0, hook_size, hooks[i], 0);
+
+	/* Landlock rule for the stat hook */
+	struct bpf_insn hook_stat[] = {
+		/* save context */
+		BPF_MOV64_REG(BPF_REG_6, BPF_REG_1),
+		/* specify an option, if any */
+		BPF_MOV32_IMM(BPF_REG_1, 0),
+		/* handles to compare with */
+		BPF_LD_MAP_FD(BPF_REG_2, map_fs),
+		BPF_MOV64_IMM(BPF_REG_3, BPF_MAP_ARRAY_OP_OR),
+		/* hook argument */
+		BPF_LDX_MEM(BPF_DW, BPF_REG_4, BPF_REG_6, offsetof(struct
+					landlock_data, args[0])),
+		/* checker function */
+		BPF_EMIT_CALL(BPF_FUNC_landlock_cmp_fs_beneath),
+		/* if the checked path is beneath the handle */
+		BPF_JMP_IMM(BPF_JNE, BPF_REG_0, 0, 2),
+		BPF_MOV32_IMM(BPF_REG_0, 0),
+		BPF_EXIT_INSN(),
+
+		/*
+		 * We may want to allow discovery of the directories hierarchy
+		 * (from the root to the handles).
+		 */
+
+		/* hook argument */
+		BPF_LDX_MEM(BPF_DW, BPF_REG_1, BPF_REG_6, offsetof(struct
+					landlock_data, args[0])),
+		/* checker function */
+		BPF_EMIT_CALL(BPF_FUNC_landlock_get_fs_mode),
+		/* check if it returned an error */
+		BPF_MOV64_IMM(BPF_REG_7, 0),
+		BPF_ALU64_IMM(BPF_SUB, BPF_REG_7, MAX_ERRNO),
+		BPF_JMP_REG(BPF_JGE, BPF_REG_0, BPF_REG_7, 2),
+		/* check if the inode is a directory */
+		BPF_ALU64_IMM(BPF_AND, BPF_REG_0, S_IFMT),
+		BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, S_IFDIR, 2),
+		/* no entry by default, if any error */
+		BPF_MOV32_IMM(BPF_REG_0, ENOENT),
+		BPF_EXIT_INSN(),
+
+		/* specify an option, if any */
+		BPF_MOV32_IMM(BPF_REG_1, LANDLOCK_FLAG_OPT_REVERSE),
+		/* handles to compare with */
+		BPF_LD_MAP_FD(BPF_REG_2, map_fs),
+		BPF_MOV64_IMM(BPF_REG_3, BPF_MAP_ARRAY_OP_OR),
+		/* hook argument) */
+		BPF_LDX_MEM(BPF_DW, BPF_REG_4, BPF_REG_6, offsetof(struct
+					landlock_data, args[0])),
+		/* checker function */
+		BPF_EMIT_CALL(BPF_FUNC_landlock_cmp_fs_beneath),
+		/* if one handle is not beneath the checked path */
+		BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 2),
+		BPF_MOV32_IMM(BPF_REG_0, ENOENT),
+		BPF_EXIT_INSN(),
+		BPF_MOV32_IMM(BPF_REG_0, 0),
+		BPF_EXIT_INSN(),
+	};
+
+	struct landlock_rule rules[] = {
+		{
+			.hook = LANDLOCK_HOOK_FILE_OPEN,
+			.bpf = hook_file,
+			.size = sizeof(hook_file),
+		},
+		{
+			.hook = LANDLOCK_HOOK_FILE_PERMISSION,
+			.bpf = hook_file,
+			.size = sizeof(hook_file),
+		},
+		{
+			.hook = LANDLOCK_HOOK_MMAP_FILE,
+			.bpf = hook_file,
+			.size = sizeof(hook_file),
+		},
+		{
+			.hook = LANDLOCK_HOOK_INODE_PERMISSION,
+			.bpf = hook_inode,
+			.size = sizeof(hook_inode),
+		},
+		{
+			.hook = LANDLOCK_HOOK_INODE_GETATTR,
+			.bpf = hook_stat,
+			.size = sizeof(hook_stat),
+		},
+	};
+	for (i = 0; i < ARRAY_SIZE(rules) && !ret; i++) {
+		int bpf0 = landlock_prog_load(rules[i].bpf, rules[i].size, rules[i].hook, 0);
 		if (bpf0 == -1) {
 			perror("prog_load");
 			fprintf(stderr, "%s", bpf_log_buf);
@@ -206,7 +306,7 @@ static int apply_sandbox(const char **allowed_paths, int path_nb, const char
 			break;
 		}
 		if (!cgroup_nb) {
-			if (seccomp(SECCOMP_SET_LANDLOCK_HOOK, 0, &bpf0)) {
+			if (seccomp(SECCOMP_ADD_LANDLOCK_RULE, 0, &bpf0)) {
 				perror("seccomp(set_hook)");
 				ret = 1;
 			}
@@ -231,8 +331,6 @@ static int apply_sandbox(const char **allowed_paths, int path_nb, const char
 		close(bpf0);
 	}
 
-	free(hook0);
-err_alloc:
 	if (path_nb) {
 		close(map_fs);
 	}
@@ -288,7 +386,7 @@ int main(int argc, char * const argv[], char * const *envp)
 				ENV_FS_PATH_NAME);
 		fprintf(stderr, "* %s (optional cgroup paths for which the sandbox is enabled)\n",
 				ENV_CGROUP_PATH_NAME);
-		fprintf(stderr, "\nexample:\n%s='/bin:/lib:/usr:/tmp:/proc/self/fd/0' %s /bin/sh -i\n",
+		fprintf(stderr, "\nexample:\n%s='/bin:/lib:/lib64:/usr:/tmp:/proc/self/fd/0' %s /bin/sh -i\n",
 				ENV_FS_PATH_NAME, argv[0]);
 		return 1;
 	}

@@ -48,7 +48,6 @@
 #include "../include/obd_class.h"
 #include "../include/lustre/lustre_ioctl.h"
 #include "../include/lustre_lib.h"
-#include "../include/lustre_lite.h"
 #include "../include/lustre_dlm.h"
 #include "../include/lustre_fid.h"
 #include "../include/lustre_kernelcomm.h"
@@ -135,7 +134,7 @@
  *
  */
 struct page *ll_get_dir_page(struct inode *dir, struct md_op_data *op_data,
-			     __u64 offset, struct ll_dir_chain *chain)
+			     __u64 offset)
 {
 	struct md_callback cb_op;
 	struct page *page;
@@ -202,13 +201,10 @@ int ll_dir_read(struct inode *inode, __u64 *ppos, struct md_op_data *op_data,
 	int		   is_api32 = ll_need_32bit_api(sbi);
 	int		   is_hash64 = sbi->ll_flags & LL_SBI_64BIT_HASH;
 	struct page	  *page;
-	struct ll_dir_chain   chain;
 	bool		   done = false;
 	int		   rc = 0;
 
-	ll_dir_chain_init(&chain);
-
-	page = ll_get_dir_page(inode, op_data, pos, &chain);
+	page = ll_get_dir_page(inode, op_data, pos);
 
 	while (rc == 0 && !done) {
 		struct lu_dirpage *dp;
@@ -286,13 +282,11 @@ int ll_dir_read(struct inode *inode, __u64 *ppos, struct md_op_data *op_data,
 					le32_to_cpu(dp->ldp_flags) &
 					LDF_COLLIDE);
 			next = pos;
-			page = ll_get_dir_page(inode, op_data, pos,
-					       &chain);
+			page = ll_get_dir_page(inode, op_data, pos);
 		}
 	}
 
 	ctx->pos = pos;
-	ll_dir_chain_fini(&chain);
 	return rc;
 }
 
@@ -625,6 +619,10 @@ int ll_dir_getstripe(struct inode *inode, void **plmm, int *plmm_size,
 	case LOV_MAGIC_V3:
 		if (cpu_to_le32(LOV_MAGIC) != LOV_MAGIC)
 			lustre_swab_lov_user_md_v3((struct lov_user_md_v3 *)lmm);
+		break;
+	case LMV_MAGIC_V1:
+		if (cpu_to_le32(LMV_MAGIC) != LMV_MAGIC)
+			lustre_swab_lmv_mds_md((union lmv_mds_md *)lmm);
 		break;
 	case LMV_USER_MAGIC:
 		if (cpu_to_le32(LMV_USER_MAGIC) != LMV_USER_MAGIC)
@@ -1252,16 +1250,16 @@ lmv_out_free:
 		tmp->lum_stripe_count = 0;
 		tmp->lum_stripe_offset = mdt_index;
 		for (i = 0; i < stripe_count; i++) {
-			struct lu_fid   *fid;
+			struct lu_fid fid;
 
-			fid = &lmm->lmv_md_v1.lmv_stripe_fids[i];
-			mdt_index = ll_get_mdt_idx_by_fid(sbi, fid);
+			fid_le_to_cpu(&fid, &lmm->lmv_md_v1.lmv_stripe_fids[i]);
+			mdt_index = ll_get_mdt_idx_by_fid(sbi, &fid);
 			if (mdt_index < 0) {
 				rc = mdt_index;
 				goto out_tmp;
 			}
 			tmp->lum_objects[i].lum_mds = mdt_index;
-			tmp->lum_objects[i].lum_fid = *fid;
+			tmp->lum_objects[i].lum_fid = fid;
 			tmp->lum_stripe_count++;
 		}
 
@@ -1568,6 +1566,25 @@ out_quotactl:
 		return rc;
 	case OBD_IOC_FID2PATH:
 		return ll_fid2path(inode, (void __user *)arg);
+	case LL_IOC_GETPARENT:
+		return ll_getparent(file, (void __user *)arg);
+	case LL_IOC_FID2MDTIDX: {
+		struct obd_export *exp = ll_i2mdexp(inode);
+		struct lu_fid fid;
+		__u32 index;
+
+		if (copy_from_user(&fid, (const struct lu_fid __user *)arg,
+				   sizeof(fid)))
+			return -EFAULT;
+
+		/* Call mdc_iocontrol */
+		rc = obd_iocontrol(LL_IOC_FID2MDTIDX, exp, sizeof(fid), &fid,
+				   &index);
+		if (rc)
+			return rc;
+
+		return index;
+	}
 	case LL_IOC_HSM_REQUEST: {
 		struct hsm_user_request	*hur;
 		ssize_t			 totalsize;

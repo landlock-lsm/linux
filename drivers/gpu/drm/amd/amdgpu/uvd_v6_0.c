@@ -725,6 +725,31 @@ static void uvd_v6_0_ring_emit_pipeline_sync(struct amdgpu_ring *ring)
 	amdgpu_ring_write(ring, 0xE);
 }
 
+static unsigned uvd_v6_0_ring_get_emit_ib_size(struct amdgpu_ring *ring)
+{
+	return
+		8; /* uvd_v6_0_ring_emit_ib */
+}
+
+static unsigned uvd_v6_0_ring_get_dma_frame_size(struct amdgpu_ring *ring)
+{
+	return
+		2 + /* uvd_v6_0_ring_emit_hdp_flush */
+		2 + /* uvd_v6_0_ring_emit_hdp_invalidate */
+		10 + /* uvd_v6_0_ring_emit_pipeline_sync */
+		14; /* uvd_v6_0_ring_emit_fence x1 no user fence */
+}
+
+static unsigned uvd_v6_0_ring_get_dma_frame_size_vm(struct amdgpu_ring *ring)
+{
+	return
+		2 + /* uvd_v6_0_ring_emit_hdp_flush */
+		2 + /* uvd_v6_0_ring_emit_hdp_invalidate */
+		10 + /* uvd_v6_0_ring_emit_pipeline_sync */
+		20 + /* uvd_v6_0_ring_emit_vm_flush */
+		14 + 14; /* uvd_v6_0_ring_emit_fence x2 vm fence */
+}
+
 static bool uvd_v6_0_is_idle(void *handle)
 {
 	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
@@ -745,7 +770,7 @@ static int uvd_v6_0_wait_for_idle(void *handle)
 }
 
 #define AMDGPU_UVD_STATUS_BUSY_MASK    0xfd
-static int uvd_v6_0_check_soft_reset(void *handle)
+static bool uvd_v6_0_check_soft_reset(void *handle)
 {
 	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 	u32 srbm_soft_reset = 0;
@@ -757,19 +782,19 @@ static int uvd_v6_0_check_soft_reset(void *handle)
 		srbm_soft_reset = REG_SET_FIELD(srbm_soft_reset, SRBM_SOFT_RESET, SOFT_RESET_UVD, 1);
 
 	if (srbm_soft_reset) {
-		adev->ip_block_status[AMD_IP_BLOCK_TYPE_UVD].hang = true;
 		adev->uvd.srbm_soft_reset = srbm_soft_reset;
+		return true;
 	} else {
-		adev->ip_block_status[AMD_IP_BLOCK_TYPE_UVD].hang = false;
 		adev->uvd.srbm_soft_reset = 0;
+		return false;
 	}
-	return 0;
 }
+
 static int uvd_v6_0_pre_soft_reset(void *handle)
 {
 	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 
-	if (!adev->ip_block_status[AMD_IP_BLOCK_TYPE_UVD].hang)
+	if (!adev->uvd.srbm_soft_reset)
 		return 0;
 
 	uvd_v6_0_stop(adev);
@@ -781,7 +806,7 @@ static int uvd_v6_0_soft_reset(void *handle)
 	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 	u32 srbm_soft_reset;
 
-	if (!adev->ip_block_status[AMD_IP_BLOCK_TYPE_UVD].hang)
+	if (!adev->uvd.srbm_soft_reset)
 		return 0;
 	srbm_soft_reset = adev->uvd.srbm_soft_reset;
 
@@ -811,7 +836,7 @@ static int uvd_v6_0_post_soft_reset(void *handle)
 {
 	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 
-	if (!adev->ip_block_status[AMD_IP_BLOCK_TYPE_UVD].hang)
+	if (!adev->uvd.srbm_soft_reset)
 		return 0;
 
 	mdelay(5);
@@ -1037,6 +1062,8 @@ static const struct amdgpu_ring_funcs uvd_v6_0_ring_phys_funcs = {
 	.pad_ib = amdgpu_ring_generic_pad_ib,
 	.begin_use = amdgpu_uvd_ring_begin_use,
 	.end_use = amdgpu_uvd_ring_end_use,
+	.get_emit_ib_size = uvd_v6_0_ring_get_emit_ib_size,
+	.get_dma_frame_size = uvd_v6_0_ring_get_dma_frame_size,
 };
 
 static const struct amdgpu_ring_funcs uvd_v6_0_ring_vm_funcs = {
@@ -1056,6 +1083,8 @@ static const struct amdgpu_ring_funcs uvd_v6_0_ring_vm_funcs = {
 	.pad_ib = amdgpu_ring_generic_pad_ib,
 	.begin_use = amdgpu_uvd_ring_begin_use,
 	.end_use = amdgpu_uvd_ring_end_use,
+	.get_emit_ib_size = uvd_v6_0_ring_get_emit_ib_size,
+	.get_dma_frame_size = uvd_v6_0_ring_get_dma_frame_size_vm,
 };
 
 static void uvd_v6_0_set_ring_funcs(struct amdgpu_device *adev)

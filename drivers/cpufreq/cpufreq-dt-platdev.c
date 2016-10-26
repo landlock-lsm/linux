@@ -11,6 +11,8 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 
+#include "cpufreq-dt.h"
+
 static const struct of_device_id machines[] __initconst = {
 	{ .compatible = "allwinner,sun4i-a10", },
 	{ .compatible = "allwinner,sun5i-a10s", },
@@ -52,6 +54,7 @@ static const struct of_device_id machines[] __initconst = {
 	{ .compatible = "renesas,r8a7779", },
 	{ .compatible = "renesas,r8a7790", },
 	{ .compatible = "renesas,r8a7791", },
+	{ .compatible = "renesas,r8a7792", },
 	{ .compatible = "renesas,r8a7793", },
 	{ .compatible = "renesas,r8a7794", },
 	{ .compatible = "renesas,sh73a0", },
@@ -69,6 +72,8 @@ static const struct of_device_id machines[] __initconst = {
 
 	{ .compatible = "sigma,tango4" },
 
+	{ .compatible = "ti,am33xx", },
+	{ .compatible = "ti,dra7", },
 	{ .compatible = "ti,omap2", },
 	{ .compatible = "ti,omap3", },
 	{ .compatible = "ti,omap4", },
@@ -92,7 +97,8 @@ static int __init cpufreq_dt_platdev_init(void)
 	if (!match)
 		return -ENODEV;
 
-	return PTR_ERR_OR_ZERO(platform_device_register_simple("cpufreq-dt", -1,
-							       NULL, 0));
+	return PTR_ERR_OR_ZERO(platform_device_register_data(NULL, "cpufreq-dt",
+			       -1, match->data,
+			       sizeof(struct cpufreq_dt_platform_data)));
 }
 device_initcall(cpufreq_dt_platdev_init);

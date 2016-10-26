@@ -1013,12 +1013,12 @@ static inline struct lu_dirent *lu_dirent_next(struct lu_dirent *ent)
 	return next;
 }
 
-static inline int lu_dirent_calc_size(int namelen, __u16 attr)
+static inline size_t lu_dirent_calc_size(size_t namelen, __u16 attr)
 {
-	int size;
+	size_t size;
 
 	if (attr & LUDA_TYPE) {
-		const unsigned align = sizeof(struct luda_type) - 1;
+		const size_t align = sizeof(struct luda_type) - 1;
 
 		size = (sizeof(struct lu_dirent) + namelen + align) & ~align;
 		size += sizeof(struct luda_type);
@@ -1027,15 +1027,6 @@ static inline int lu_dirent_calc_size(int namelen, __u16 attr)
 	}
 
 	return (size + 7) & ~7;
-}
-
-static inline int lu_dirent_size(const struct lu_dirent *ent)
-{
-	if (le16_to_cpu(ent->lde_reclen) == 0) {
-		return lu_dirent_calc_size(le16_to_cpu(ent->lde_namelen),
-					   le32_to_cpu(ent->lde_attrs));
-	}
-	return le16_to_cpu(ent->lde_reclen);
 }
 
 #define MDS_DIR_END_OFF 0xfffffffffffffffeULL
@@ -1101,7 +1092,7 @@ struct lustre_msg_v2 {
 
 /* without gss, ptlrpc_body is put at the first buffer. */
 #define PTLRPC_NUM_VERSIONS     4
-#define JOBSTATS_JOBID_SIZE     32  /* 32 bytes string */
+
 struct ptlrpc_body_v3 {
 	struct lustre_handle pb_handle;
 	__u32 pb_type;
@@ -1123,7 +1114,7 @@ struct ptlrpc_body_v3 {
 	__u64 pb_pre_versions[PTLRPC_NUM_VERSIONS];
 	/* padding for future needs */
 	__u64 pb_padding[4];
-	char  pb_jobid[JOBSTATS_JOBID_SIZE];
+	char  pb_jobid[LUSTRE_JOBID_SIZE];
 };
 
 #define ptlrpc_body     ptlrpc_body_v3
@@ -1483,6 +1474,8 @@ enum obdo_flags {
 #define LOV_MAGIC_JOIN_V1	(0x0BD20000 | LOV_MAGIC_MAGIC)
 #define LOV_MAGIC_V3		(0x0BD30000 | LOV_MAGIC_MAGIC)
 #define LOV_MAGIC_MIGRATE	(0x0BD40000 | LOV_MAGIC_MAGIC)
+/* reserved for specifying OSTs */
+#define LOV_MAGIC_SPECIFIC	(0x0BD50000 | LOV_MAGIC_MAGIC)
 #define LOV_MAGIC		LOV_MAGIC_V1
 
 /*
@@ -1620,7 +1613,7 @@ struct lov_mds_md_v3 {	    /* LOV EA mds/wire data (little-endian) */
 	/* lmm_stripe_count used to be __u32 */
 	__u16 lmm_stripe_count;   /* num stripes in use for this object */
 	__u16 lmm_layout_gen;     /* layout generation number */
-	char  lmm_pool_name[LOV_MAXPOOLNAME]; /* must be 32bit aligned */
+	char  lmm_pool_name[LOV_MAXPOOLNAME + 1]; /* must be 32bit aligned */
 	struct lov_ost_data_v1 lmm_objects[0]; /* per-stripe data */
 };
 
@@ -1803,9 +1796,9 @@ void lustre_swab_obd_ioobj(struct obd_ioobj *ioo);
 
 /* multiple of 8 bytes => can array */
 struct niobuf_remote {
-	__u64 offset;
-	__u32 len;
-	__u32 flags;
+	__u64	rnb_offset;
+	__u32	rnb_len;
+	__u32	rnb_flags;
 };
 
 void lustre_swab_niobuf_remote(struct niobuf_remote *nbr);
@@ -1994,6 +1987,7 @@ void lustre_swab_generic_32s(__u32 *val);
 #define DISP_OPEN_LOCK       0x02000000
 #define DISP_OPEN_LEASE      0x04000000
 #define DISP_OPEN_STRIPE     0x08000000
+#define DISP_OPEN_DENY		0x10000000
 
 /* INODE LOCK PARTS */
 #define MDS_INODELOCK_LOOKUP 0x000001	/* For namespace, dentry etc, and also
@@ -2498,7 +2492,7 @@ struct lmv_mds_md_v1 {
 	__u32 lmv_padding1;
 	__u64 lmv_padding2;
 	__u64 lmv_padding3;
-	char lmv_pool_name[LOV_MAXPOOLNAME];	/* pool name */
+	char lmv_pool_name[LOV_MAXPOOLNAME + 1];/* pool name */
 	struct lu_fid lmv_stripe_fids[0];	/* FIDs for each stripe */
 };
 
@@ -2722,8 +2716,6 @@ struct ldlm_extent {
 	__u64 end;
 	__u64 gid;
 };
-
-#define LDLM_GID_ANY ((__u64)-1)
 
 static inline int ldlm_extent_overlap(const struct ldlm_extent *ex1,
 				      const struct ldlm_extent *ex2)
@@ -3088,15 +3080,9 @@ struct changelog_setinfo {
 
 /** changelog record */
 struct llog_changelog_rec {
-	struct llog_rec_hdr  cr_hdr;
-	struct changelog_rec cr;
-	struct llog_rec_tail cr_tail; /**< for_sizezof_only */
-} __packed;
-
-struct llog_changelog_ext_rec {
-	struct llog_rec_hdr      cr_hdr;
-	struct changelog_ext_rec cr;
-	struct llog_rec_tail     cr_tail; /**< for_sizezof_only */
+	struct llog_rec_hdr	cr_hdr;
+	struct changelog_rec	cr;		/**< Variable length field */
+	struct llog_rec_tail	cr_do_not_use;	/**< for_sizezof_only */
 } __packed;
 
 struct llog_changelog_user_rec {
@@ -3181,6 +3167,9 @@ enum llog_flag {
 	LLOG_F_ZAP_WHEN_EMPTY	= 0x1,
 	LLOG_F_IS_CAT		= 0x2,
 	LLOG_F_IS_PLAIN		= 0x4,
+	LLOG_F_EXT_JOBID        = BIT(3),
+
+	LLOG_F_EXT_MASK = LLOG_F_EXT_JOBID,
 };
 
 struct llog_log_hdr {
@@ -3470,6 +3459,14 @@ struct getinfo_fid2path {
 } __packed;
 
 void lustre_swab_fid2path(struct getinfo_fid2path *gf);
+
+/** path2parent request/reply structures */
+struct getparent {
+	struct lu_fid	gp_fid;		/**< parent FID */
+	__u32		gp_linkno;	/**< hardlink number */
+	__u32		gp_name_size;	/**< size of the name field */
+	char		gp_name[0];	/**< zero-terminated link name */
+} __packed;
 
 enum {
 	LAYOUT_INTENT_ACCESS    = 0,

@@ -71,10 +71,10 @@ struct omap_type2_desc {
 	uint32_t addr; /* src or dst */
 	uint16_t fn;
 	uint16_t cicr;
-	uint16_t cdei;
-	uint16_t csei;
-	uint32_t cdfi;
-	uint32_t csfi;
+	int16_t cdei;
+	int16_t csei;
+	int32_t cdfi;
+	int32_t csfi;
 } __packed;
 
 struct omap_sg {
@@ -904,13 +904,16 @@ static struct dma_async_tx_descriptor *omap_dma_prep_slave_sg(
 	d->es = es;
 
 	d->ccr = c->ccr | CCR_SYNC_FRAME;
-	if (dir == DMA_DEV_TO_MEM)
+	if (dir == DMA_DEV_TO_MEM) {
 		d->ccr |= CCR_DST_AMODE_POSTINC | CCR_SRC_AMODE_CONSTANT;
-	else
+		d->csdp = CSDP_DST_BURST_64 | CSDP_DST_PACKED;
+	} else {
 		d->ccr |= CCR_DST_AMODE_CONSTANT | CCR_SRC_AMODE_POSTINC;
+		d->csdp = CSDP_SRC_BURST_64 | CSDP_SRC_PACKED;
+	}
 
 	d->cicr = CICR_DROP_IE | CICR_BLOCK_IE;
-	d->csdp = es;
+	d->csdp |= es;
 
 	if (dma_omap1()) {
 		d->cicr |= CICR_TOUT_IE;
