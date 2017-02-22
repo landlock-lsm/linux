@@ -4,6 +4,7 @@ config ARM
 	select ARCH_CLOCKSOURCE_DATA
 	select ARCH_HAS_DEVMEM_IS_ALLOWED
 	select ARCH_HAS_ELF_RANDOMIZE
+	select ARCH_HAS_SET_MEMORY
 	select ARCH_HAS_TICK_BROADCAST if GENERIC_CLOCKEVENTS_BROADCAST
 	select ARCH_HAVE_CUSTOM_GPIO_H
 	select ARCH_HAS_GCOV_PROFILE_ALL
@@ -703,6 +704,7 @@ config ARCH_VIRT
 	select ARM_GIC
 	select ARM_GIC_V2M if PCI
 	select ARM_GIC_V3
+	select ARM_GIC_V3_ITS if PCI
 	select ARM_PSCI
 	select HAVE_ARM_ARCH_TIMER
 
@@ -884,6 +886,11 @@ config ARCH_STM32
 
 config MACH_STM32F429
 	bool "STMicrolectronics STM32F429"
+	depends on ARCH_STM32
+	default y
+
+config MACH_STM32F746
+	bool "STMicrolectronics STM32F746"
 	depends on ARCH_STM32
 	default y
 
@@ -1496,8 +1503,7 @@ source kernel/Kconfig.preempt
 
 config HZ_FIXED
 	int
-	default 200 if ARCH_EBSA110 || ARCH_S3C24XX || \
-		ARCH_S5PV210 || ARCH_EXYNOS4
+	default 200 if ARCH_EBSA110
 	default 128 if SOC_AT91RM9200
 	default 0
 

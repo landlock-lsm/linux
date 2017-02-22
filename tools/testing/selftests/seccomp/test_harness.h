@@ -397,7 +397,7 @@ struct __test_metadata {
 	const char *name;
 	void (*fn)(struct __test_metadata *);
 	int termsig;
-	int passed;
+	__s8 passed;
 	int trigger; /* extra handler after the evaluation */
 	struct __test_metadata *prev, *next;
 };
@@ -476,6 +476,12 @@ void __run_test(struct __test_metadata *t)
 					"instead of by signal (code: %d)\n",
 					t->name,
 					WEXITSTATUS(status));
+			} else if (t->passed < 0) {
+				fprintf(TH_LOG_STREAM,
+					"%s: Failed at step #%d\n",
+					t->name,
+					t->passed * -1);
+				t->passed = 0;
 			}
 		} else if (WIFSIGNALED(status)) {
 			t->passed = 0;

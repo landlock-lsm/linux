@@ -1,4 +1,5 @@
-TARGETS = breakpoints
+TARGETS =  bpf
+TARGETS += breakpoints
 TARGETS += capabilities
 TARGETS += cpu-hotplug
 TARGETS += efivarfs
@@ -6,8 +7,10 @@ TARGETS += exec
 TARGETS += firmware
 TARGETS += ftrace
 TARGETS += futex
+TARGETS += gpio
 TARGETS += ipc
 TARGETS += kcmp
+TARGETS += landlock
 TARGETS += lib
 TARGETS += membarrier
 TARGETS += memfd
@@ -23,6 +26,7 @@ TARGETS += seccomp
 TARGETS += sigaltstack
 TARGETS += size
 TARGETS += static_keys
+TARGETS += sync
 TARGETS += sysctl
 ifneq (1, $(quicktest))
 TARGETS += timers
@@ -87,7 +91,7 @@ ifdef INSTALL_PATH
 	done;
 
 	@# Ask all targets to emit their test scripts
-	echo "#!/bin/bash" > $(ALL_SCRIPT)
+	echo "#!/bin/sh" > $(ALL_SCRIPT)
 	echo "cd \$$(dirname \$$0)" >> $(ALL_SCRIPT)
 	echo "ROOT=\$$PWD" >> $(ALL_SCRIPT)
 

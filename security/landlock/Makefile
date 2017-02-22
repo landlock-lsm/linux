@@ -1,3 +1,5 @@
+ccflags-$(CONFIG_SECURITY_LANDLOCK) += -Werror=unused-function
+
 obj-$(CONFIG_SECURITY_LANDLOCK) := landlock.o
 
-landlock-y := lsm.o checker_fs.o manager.o
+landlock-y := hooks.o manager.o

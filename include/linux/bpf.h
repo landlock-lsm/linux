@@ -8,15 +8,17 @@
 #define _LINUX_BPF_H 1
 
 #include <uapi/linux/bpf.h>
+
 #include <linux/workqueue.h>
 #include <linux/file.h>
 #include <linux/percpu.h>
 #include <linux/err.h>
+#include <linux/rbtree_latch.h>
 
-#ifdef CONFIG_SECURITY_LANDLOCK
-#include <linux/fs.h> /* struct file */
-#include <linux/spinlock_types.h> /* spinlock_t */
-#endif /* CONFIG_SECURITY_LANDLOCK */
+/* FS helpers */
+#include <linux/dcache.h> /* struct dentry */
+#include <linux/fs.h> /* struct file, struct inode */
+#include <linux/path.h> /* struct path */
 
 struct perf_event;
 struct bpf_map;
@@ -43,7 +45,6 @@ struct bpf_map_ops {
 struct bpf_map {
 	atomic_t refcnt;
 	enum bpf_map_type map_type;
-	enum bpf_map_array_type map_array_type;
 	u32 key_size;
 	u32 value_size;
 	u32 max_entries;
@@ -75,20 +76,19 @@ enum bpf_arg_type {
 	/* the following constraints used to prototype bpf_memcmp() and other
 	 * functions that access data on eBPF program stack
 	 */
-	ARG_PTR_TO_STACK,	/* any pointer to eBPF program stack */
-	ARG_PTR_TO_RAW_STACK,	/* any pointer to eBPF program stack, area does not
-				 * need to be initialized, helper function must fill
-				 * all bytes or clear them in error case.
+	ARG_PTR_TO_MEM,		/* pointer to valid memory (stack, packet, map value) */
+	ARG_PTR_TO_UNINIT_MEM,	/* pointer to memory does not need to be initialized,
+				 * helper function must fill all bytes or clear
+				 * them in error case.
 				 */
 
-	ARG_CONST_STACK_SIZE,	/* number of bytes accessed from stack */
-	ARG_CONST_STACK_SIZE_OR_ZERO, /* number of bytes accessed from stack or 0 */
+	ARG_CONST_SIZE,		/* number of bytes accessed from memory */
+	ARG_CONST_SIZE_OR_ZERO,	/* number of bytes accessed from memory or 0 */
 
 	ARG_PTR_TO_CTX,		/* pointer to context */
 	ARG_ANYTHING,		/* any (initialized) argument is ok */
 
-	ARG_CONST_PTR_TO_LANDLOCK_HANDLE_FS,	/* pointer to Landlock FS map handle */
-	ARG_CONST_PTR_TO_LANDLOCK_ARG_FS,	/* pointer to Landlock FS hook argument */
+	ARG_CONST_PTR_TO_HANDLE_FS,	/* pointer to an abstract FS struct */
 };
 
 /* type of values returned from helper functions */
@@ -156,9 +156,8 @@ enum bpf_reg_type {
 	 */
 	PTR_TO_MAP_VALUE_ADJ,
 
-	/* Landlock */
-	CONST_PTR_TO_LANDLOCK_HANDLE_FS,
-	CONST_PTR_TO_LANDLOCK_ARG_FS,
+	/* FS helpers */
+	CONST_PTR_TO_HANDLE_FS,
 };
 
 struct bpf_prog;
@@ -166,7 +165,7 @@ struct bpf_prog;
 struct bpf_verifier_ops {
 	/* return eBPF function prototype for verification */
 	const struct bpf_func_proto *(*get_func_proto)(enum bpf_func_id func_id,
-			union bpf_prog_subtype *prog_subtype);
+				      union bpf_prog_subtype *prog_subtype);
 
 	/* return true if 'size' wide access at offset 'off' within bpf_context
 	 * with 'type' (read or write) is allowed
@@ -176,9 +175,10 @@ struct bpf_verifier_ops {
 				union bpf_prog_subtype *prog_subtype);
 	int (*gen_prologue)(struct bpf_insn *insn, bool direct_write,
 			    const struct bpf_prog *prog);
-	u32 (*convert_ctx_access)(enum bpf_access_type type, int dst_reg,
-				  int src_reg, int ctx_off,
-				  struct bpf_insn *insn, struct bpf_prog *prog);
+	u32 (*convert_ctx_access)(enum bpf_access_type type,
+				  const struct bpf_insn *src,
+				  struct bpf_insn *dst,
+				  struct bpf_prog *prog);
 	bool (*is_valid_subtype)(union bpf_prog_subtype *prog_subtype);
 };
 
@@ -192,6 +192,8 @@ struct bpf_prog_aux {
 	atomic_t refcnt;
 	u32 used_map_cnt;
 	u32 max_ctx_offset;
+	struct latch_tree_node ksym_tnode;
+	struct list_head ksym_lnode;
 	const struct bpf_verifier_ops *ops;
 	struct bpf_map **used_maps;
 	struct bpf_prog *prog;
@@ -212,25 +214,12 @@ struct bpf_array {
 	 */
 	enum bpf_prog_type owner_prog_type;
 	bool owner_jited;
-#ifdef CONFIG_SECURITY_LANDLOCK
-	atomic_t n_entries;	/* number of entries in a handle array */
-	raw_spinlock_t update;	/* protect n_entries consistency */
-#endif /* CONFIG_SECURITY_LANDLOCK */
 	union {
 		char value[0] __aligned(8);
 		void *ptrs[0] __aligned(8);
 		void __percpu *pptrs[0] __aligned(8);
 	};
 };
-
-#ifdef CONFIG_SECURITY_LANDLOCK
-struct map_landlock_handle {
-	u32 type; /* enum bpf_map_handle_type */
-	union {
-		struct path path;
-	};
-};
-#endif /* CONFIG_SECURITY_LANDLOCK */
 
 #define MAX_TAIL_CALL_CNT 32
 
@@ -241,10 +230,31 @@ struct bpf_event_entry {
 	struct rcu_head rcu;
 };
 
+/* FS helpers */
+enum bpf_handle_fs_type {
+	BPF_HANDLE_FS_TYPE_NONE,
+	BPF_HANDLE_FS_TYPE_FILE,
+	BPF_HANDLE_FS_TYPE_INODE,
+	BPF_HANDLE_FS_TYPE_PATH,
+	BPF_HANDLE_FS_TYPE_DENTRY,
+};
+
+struct bpf_handle_fs {
+	enum bpf_handle_fs_type type;
+	union {
+		struct file *file;
+		struct inode *inode;
+		const struct path *path;
+		struct dentry *dentry;
+	};
+};
+
+
 u64 bpf_tail_call(u64 ctx, u64 r2, u64 index, u64 r4, u64 r5);
 u64 bpf_get_stackid(u64 r1, u64 r2, u64 r3, u64 r4, u64 r5);
 
 bool bpf_prog_array_compatible(struct bpf_array *array, const struct bpf_prog *fp);
+int bpf_prog_calc_tag(struct bpf_prog *fp);
 
 const struct bpf_func_proto *bpf_get_trace_printk_proto(void);
 
@@ -262,16 +272,21 @@ void bpf_register_map_type(struct bpf_map_type_list *tl);
 
 struct bpf_prog *bpf_prog_get(u32 ufd);
 struct bpf_prog *bpf_prog_get_type(u32 ufd, enum bpf_prog_type type);
-struct bpf_prog *bpf_prog_add(struct bpf_prog *prog, int i);
-struct bpf_prog *bpf_prog_inc(struct bpf_prog *prog);
+struct bpf_prog * __must_check bpf_prog_add(struct bpf_prog *prog, int i);
+void bpf_prog_sub(struct bpf_prog *prog, int i);
+struct bpf_prog * __must_check bpf_prog_inc(struct bpf_prog *prog);
 void bpf_prog_put(struct bpf_prog *prog);
+int __bpf_prog_charge(struct user_struct *user, u32 pages);
+void __bpf_prog_uncharge(struct user_struct *user, u32 pages);
 
 struct bpf_map *bpf_map_get_with_uref(u32 ufd);
 struct bpf_map *__bpf_map_get(struct fd f);
-struct bpf_map *bpf_map_inc(struct bpf_map *map, bool uref);
+struct bpf_map * __must_check bpf_map_inc(struct bpf_map *map, bool uref);
 void bpf_map_put_with_uref(struct bpf_map *map);
 void bpf_map_put(struct bpf_map *map);
 int bpf_map_precharge_memlock(u32 pages);
+void *bpf_map_area_alloc(size_t size);
+void bpf_map_area_free(void *base);
 
 extern int sysctl_unprivileged_bpf_disabled;
 
@@ -312,12 +327,6 @@ static inline void bpf_long_memcpy(void *dst, const void *src, u32 size)
 
 /* verify correctness of eBPF program */
 int bpf_check(struct bpf_prog **fp, union bpf_attr *attr);
-
-/* helper to convert user pointers passed inside __aligned_u64 fields */
-static inline void __user *u64_to_ptr(__u64 val)
-{
-	return (void __user *) (unsigned long) val;
-}
 #else
 static inline void bpf_register_prog_type(struct bpf_prog_type_list *tl)
 {
@@ -333,17 +342,32 @@ static inline struct bpf_prog *bpf_prog_get_type(u32 ufd,
 {
 	return ERR_PTR(-EOPNOTSUPP);
 }
-static inline struct bpf_prog *bpf_prog_add(struct bpf_prog *prog, int i)
+static inline struct bpf_prog * __must_check bpf_prog_add(struct bpf_prog *prog,
+							  int i)
 {
 	return ERR_PTR(-EOPNOTSUPP);
+}
+
+static inline void bpf_prog_sub(struct bpf_prog *prog, int i)
+{
 }
 
 static inline void bpf_prog_put(struct bpf_prog *prog)
 {
 }
-static inline struct bpf_prog *bpf_prog_inc(struct bpf_prog *prog)
+
+static inline struct bpf_prog * __must_check bpf_prog_inc(struct bpf_prog *prog)
 {
 	return ERR_PTR(-EOPNOTSUPP);
+}
+
+static inline int __bpf_prog_charge(struct user_struct *user, u32 pages)
+{
+	return 0;
+}
+
+static inline void __bpf_prog_uncharge(struct user_struct *user, u32 pages)
+{
 }
 #endif /* CONFIG_BPF_SYSCALL */
 
@@ -354,6 +378,7 @@ extern const struct bpf_func_proto bpf_map_delete_elem_proto;
 
 extern const struct bpf_func_proto bpf_get_prandom_u32_proto;
 extern const struct bpf_func_proto bpf_get_smp_processor_id_proto;
+extern const struct bpf_func_proto bpf_get_numa_node_id_proto;
 extern const struct bpf_func_proto bpf_tail_call_proto;
 extern const struct bpf_func_proto bpf_ktime_get_ns_proto;
 extern const struct bpf_func_proto bpf_get_current_pid_tgid_proto;
@@ -363,10 +388,8 @@ extern const struct bpf_func_proto bpf_skb_vlan_push_proto;
 extern const struct bpf_func_proto bpf_skb_vlan_pop_proto;
 extern const struct bpf_func_proto bpf_get_stackid_proto;
 
-#ifdef CONFIG_SECURITY_LANDLOCK
-extern const struct bpf_func_proto bpf_landlock_cmp_fs_beneath_proto;
-extern const struct bpf_func_proto bpf_landlock_get_fs_mode_proto;
-#endif /* CONFIG_SECURITY_LANDLOCK */
+/* FS helpers */
+extern const struct bpf_func_proto bpf_handle_fs_get_mode_proto;
 
 /* Shared helpers among cBPF and eBPF. */
 void bpf_user_rnd_init_once(void);

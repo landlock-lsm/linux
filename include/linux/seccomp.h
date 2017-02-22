@@ -11,7 +11,7 @@
 #include <asm/seccomp.h>
 
 #if defined(CONFIG_SECCOMP_FILTER) && defined(CONFIG_SECURITY_LANDLOCK)
-#include <linux/landlock.h>
+struct landlock_events;
 #endif /* CONFIG_SECCOMP_FILTER && CONFIG_SECURITY_LANDLOCK */
 
 struct seccomp_filter;
@@ -22,7 +22,7 @@ struct seccomp_filter;
  *         system calls available to a process.
  * @filter: must always point to a valid seccomp-filter or NULL as it is
  *          accessed without locking during system call entry.
- * @landlock_hooks: contains an array of Landlock programs.
+ * @landlock_events: contains an array of Landlock rules.
  *
  *          @filter must only be accessed from the context of current as there
  *          is no read locking.
@@ -31,7 +31,7 @@ struct seccomp {
 	int mode;
 	struct seccomp_filter *filter;
 #if defined(CONFIG_SECCOMP_FILTER) && defined(CONFIG_SECURITY_LANDLOCK)
-	struct landlock_hooks *landlock_hooks;
+	struct landlock_events *landlock_events;
 #endif /* CONFIG_SECCOMP_FILTER && CONFIG_SECURITY_LANDLOCK */
 };
 

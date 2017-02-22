@@ -798,7 +798,7 @@ static ssize_t iwl_dbgfs_drv_rx_stats_read(struct file *file,
 static ssize_t iwl_dbgfs_fw_restart_write(struct iwl_mvm *mvm, char *buf,
 					  size_t count, loff_t *ppos)
 {
-	int ret;
+	int __maybe_unused ret;
 
 	mutex_lock(&mvm->mutex);
 
@@ -1529,8 +1529,8 @@ static ssize_t iwl_dbgfs_mem_read(struct file *file, char __user *user_buf,
 		.data = { &cmd, },
 		.len = { sizeof(cmd) },
 	};
-	size_t delta, len;
-	ssize_t ret;
+	size_t delta;
+	ssize_t ret, len;
 
 	hcmd.id = iwl_cmd_id(*ppos >> 24 ? UMAC_RD_WR : LMAC_RD_WR,
 			     DEBUG_GROUP, 0);

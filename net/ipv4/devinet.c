@@ -26,7 +26,7 @@
  */
 
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/bitops.h>
 #include <linux/capability.h>
 #include <linux/module.h>
@@ -64,8 +64,6 @@
 #include <net/rtnetlink.h>
 #include <net/net_namespace.h>
 #include <net/addrconf.h>
-
-#include "fib_lookup.h"
 
 static struct ipv4_devconf ipv4_devconf = {
 	.data = {

@@ -42,8 +42,7 @@
  *         outside of a lifetime-guarded section.  In general, this
  *         is only needed for handling filters shared across tasks.
  * @prev: points to a previously installed, or inherited, filter
- * @len: the number of instructions in the program
- * @insnsi: the BPF program instructions to evaluate
+ * @prog: the BPF program to evaluate
  *
  * seccomp_filter objects are organized in a tree linked via the @prev
  * pointer.  For any task, it appears to be a singly-linked list starting
@@ -171,8 +170,8 @@ static int seccomp_check_filter(struct sock_filter *filter, unsigned int flen)
 }
 
 /**
- * seccomp_run_filters - evaluates all seccomp filters against @syscall
- * @syscall: number of the current system call
+ * seccomp_run_filters - evaluates all seccomp filters against @sd
+ * @sd: optional seccomp data to be passed to filters
  *
  * Returns valid seccomp BPF response codes.
  */
@@ -198,7 +197,7 @@ static u32 seccomp_run_filters(const struct seccomp_data *sd)
 	 * value always takes priority (ignoring the DATA).
 	 */
 	for (; f; f = f->prev) {
-		u32 cur_ret = BPF_PROG_RUN(f->prog, (void *)sd);
+		u32 cur_ret = BPF_PROG_RUN(f->prog, sd);
 
 		if ((cur_ret & SECCOMP_RET_ACTION) < (ret & SECCOMP_RET_ACTION))
 			ret = cur_ret;
@@ -495,7 +494,7 @@ void put_seccomp(struct task_struct *tsk)
 {
 	put_seccomp_filter(tsk->seccomp.filter);
 #ifdef CONFIG_SECURITY_LANDLOCK
-	put_landlock_hooks(tsk->seccomp.landlock_hooks);
+	put_landlock_events(tsk->seccomp.landlock_events);
 #endif /* CONFIG_SECURITY_LANDLOCK */
 }
 

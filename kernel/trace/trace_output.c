@@ -162,15 +162,27 @@ trace_print_bitmask_seq(struct trace_seq *p, void *bitmask_ptr,
 }
 EXPORT_SYMBOL_GPL(trace_print_bitmask_seq);
 
+/**
+ * trace_print_hex_seq - print buffer as hex sequence
+ * @p: trace seq struct to write to
+ * @buf: The buffer to print
+ * @buf_len: Length of @buf in bytes
+ * @concatenate: Print @buf as single hex string or with spacing
+ *
+ * Prints the passed buffer as a hex sequence either as a whole,
+ * single hex string if @concatenate is true or with spacing after
+ * each byte in case @concatenate is false.
+ */
 const char *
-trace_print_hex_seq(struct trace_seq *p, const unsigned char *buf, int buf_len)
+trace_print_hex_seq(struct trace_seq *p, const unsigned char *buf, int buf_len,
+		    bool concatenate)
 {
 	int i;
 	const char *ret = trace_seq_buffer_ptr(p);
 
 	for (i = 0; i < buf_len; i++)
-		trace_seq_printf(p, "%s%2.2x", i == 0 ? "" : " ", buf[i]);
-
+		trace_seq_printf(p, "%s%2.2x", concatenate || i == 0 ? "" : " ",
+				 buf[i]);
 	trace_seq_putc(p, 0);
 
 	return ret;
@@ -1288,6 +1300,35 @@ static struct trace_event trace_print_event = {
 	.funcs		= &trace_print_funcs,
 };
 
+static enum print_line_t trace_raw_data(struct trace_iterator *iter, int flags,
+					 struct trace_event *event)
+{
+	struct raw_data_entry *field;
+	int i;
+
+	trace_assign_type(field, iter->ent);
+
+	trace_seq_printf(&iter->seq, "# %x buf:", field->id);
+
+	for (i = 0; i < iter->ent_size - offsetof(struct raw_data_entry, buf); i++)
+		trace_seq_printf(&iter->seq, " %02x",
+				 (unsigned char)field->buf[i]);
+
+	trace_seq_putc(&iter->seq, '\n');
+
+	return trace_handle_return(&iter->seq);
+}
+
+static struct trace_event_functions trace_raw_data_funcs = {
+	.trace		= trace_raw_data,
+	.raw		= trace_raw_data,
+};
+
+static struct trace_event trace_raw_data_event = {
+	.type	 	= TRACE_RAW_DATA,
+	.funcs		= &trace_raw_data_funcs,
+};
+
 
 static struct trace_event *events[] __initdata = {
 	&trace_fn_event,
@@ -1299,6 +1340,7 @@ static struct trace_event *events[] __initdata = {
 	&trace_bprint_event,
 	&trace_print_event,
 	&trace_hwlat_event,
+	&trace_raw_data_event,
 	NULL
 };
 

@@ -43,24 +43,6 @@ const char *const rxrpc_call_completions[NR__RXRPC_CALL_COMPLETIONS] = {
 	[RXRPC_CALL_NETWORK_ERROR]		= "NetError",
 };
 
-const char rxrpc_call_traces[rxrpc_call__nr_trace][4] = {
-	[rxrpc_call_new_client]		= "NWc",
-	[rxrpc_call_new_service]	= "NWs",
-	[rxrpc_call_queued]		= "QUE",
-	[rxrpc_call_queued_ref]		= "QUR",
-	[rxrpc_call_connected]		= "CON",
-	[rxrpc_call_release]		= "RLS",
-	[rxrpc_call_seen]		= "SEE",
-	[rxrpc_call_got]		= "GOT",
-	[rxrpc_call_got_userid]		= "Gus",
-	[rxrpc_call_got_kernel]		= "Gke",
-	[rxrpc_call_put]		= "PUT",
-	[rxrpc_call_put_userid]		= "Pus",
-	[rxrpc_call_put_kernel]		= "Pke",
-	[rxrpc_call_put_noqueue]	= "PNQ",
-	[rxrpc_call_error]		= "*E*",
-};
-
 struct kmem_cache *rxrpc_call_jar;
 LIST_HEAD(rxrpc_calls);
 DEFINE_RWLOCK(rxrpc_call_lock);
@@ -276,7 +258,7 @@ struct rxrpc_call *rxrpc_new_client_call(struct rxrpc_sock *rx,
 		goto error;
 
 	trace_rxrpc_call(call, rxrpc_call_connected, atomic_read(&call->usage),
-			 here, ERR_PTR(ret));
+			 here, NULL);
 
 	spin_lock_bh(&call->conn->params.peer->lock);
 	hlist_add_head(&call->error_link,

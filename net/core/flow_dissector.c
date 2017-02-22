@@ -58,6 +58,28 @@ void skb_flow_dissector_init(struct flow_dissector *flow_dissector,
 EXPORT_SYMBOL(skb_flow_dissector_init);
 
 /**
+ * skb_flow_get_be16 - extract be16 entity
+ * @skb: sk_buff to extract from
+ * @poff: offset to extract at
+ * @data: raw buffer pointer to the packet
+ * @hlen: packet header length
+ *
+ * The function will try to retrieve a be32 entity at
+ * offset poff
+ */
+static __be16 skb_flow_get_be16(const struct sk_buff *skb, int poff,
+				void *data, int hlen)
+{
+	__be16 *u, _u;
+
+	u = __skb_header_pointer(skb, poff, sizeof(_u), data, hlen, &_u);
+	if (u)
+		return *u;
+
+	return 0;
+}
+
+/**
  * __skb_flow_get_ports - extract the upper layer ports and return them
  * @skb: sk_buff to extract the ports from
  * @thoff: transport header offset
@@ -116,13 +138,15 @@ bool __skb_flow_dissect(const struct sk_buff *skb,
 	struct flow_dissector_key_control *key_control;
 	struct flow_dissector_key_basic *key_basic;
 	struct flow_dissector_key_addrs *key_addrs;
+	struct flow_dissector_key_arp *key_arp;
 	struct flow_dissector_key_ports *key_ports;
+	struct flow_dissector_key_icmp *key_icmp;
 	struct flow_dissector_key_tags *key_tags;
 	struct flow_dissector_key_vlan *key_vlan;
 	struct flow_dissector_key_keyid *key_keyid;
 	bool skip_vlan = false;
 	u8 ip_proto = 0;
-	bool ret = false;
+	bool ret;
 
 	if (!data) {
 		data = skb->data;
@@ -246,15 +270,13 @@ ipv6:
 	case htons(ETH_P_8021AD):
 	case htons(ETH_P_8021Q): {
 		const struct vlan_hdr *vlan;
+		struct vlan_hdr _vlan;
+		bool vlan_tag_present = skb && skb_vlan_tag_present(skb);
 
-		if (skb_vlan_tag_present(skb))
+		if (vlan_tag_present)
 			proto = skb->protocol;
 
-		if (!skb_vlan_tag_present(skb) ||
-		    proto == cpu_to_be16(ETH_P_8021Q) ||
-		    proto == cpu_to_be16(ETH_P_8021AD)) {
-			struct vlan_hdr _vlan;
-
+		if (!vlan_tag_present || eth_type_vlan(skb->protocol)) {
 			vlan = __skb_header_pointer(skb, nhoff, sizeof(_vlan),
 						    data, hlen, &_vlan);
 			if (!vlan)
@@ -272,7 +294,7 @@ ipv6:
 							     FLOW_DISSECTOR_KEY_VLAN,
 							     target_container);
 
-			if (skb_vlan_tag_present(skb)) {
+			if (vlan_tag_present) {
 				key_vlan->vlan_id = skb_vlan_tag_get_id(skb);
 				key_vlan->vlan_priority =
 					(skb_vlan_tag_get_prio(skb) >> VLAN_PRIO_SHIFT);
@@ -358,6 +380,62 @@ mpls:
 
 		nhoff += FCOE_HEADER_LEN;
 		goto out_good;
+
+	case htons(ETH_P_ARP):
+	case htons(ETH_P_RARP): {
+		struct {
+			unsigned char ar_sha[ETH_ALEN];
+			unsigned char ar_sip[4];
+			unsigned char ar_tha[ETH_ALEN];
+			unsigned char ar_tip[4];
+		} *arp_eth, _arp_eth;
+		const struct arphdr *arp;
+		struct arphdr *_arp;
+
+		arp = __skb_header_pointer(skb, nhoff, sizeof(_arp), data,
+					   hlen, &_arp);
+		if (!arp)
+			goto out_bad;
+
+		if (arp->ar_hrd != htons(ARPHRD_ETHER) ||
+		    arp->ar_pro != htons(ETH_P_IP) ||
+		    arp->ar_hln != ETH_ALEN ||
+		    arp->ar_pln != 4 ||
+		    (arp->ar_op != htons(ARPOP_REPLY) &&
+		     arp->ar_op != htons(ARPOP_REQUEST)))
+			goto out_bad;
+
+		arp_eth = __skb_header_pointer(skb, nhoff + sizeof(_arp),
+					       sizeof(_arp_eth), data,
+					       hlen,
+					       &_arp_eth);
+		if (!arp_eth)
+			goto out_bad;
+
+		if (dissector_uses_key(flow_dissector,
+				       FLOW_DISSECTOR_KEY_ARP)) {
+
+			key_arp = skb_flow_dissector_target(flow_dissector,
+							    FLOW_DISSECTOR_KEY_ARP,
+							    target_container);
+
+			memcpy(&key_arp->sip, arp_eth->ar_sip,
+			       sizeof(key_arp->sip));
+			memcpy(&key_arp->tip, arp_eth->ar_tip,
+			       sizeof(key_arp->tip));
+
+			/* Only store the lower byte of the opcode;
+			 * this covers ARPOP_REPLY and ARPOP_REQUEST.
+			 */
+			key_arp->op = ntohs(arp->ar_op) & 0xff;
+
+			ether_addr_copy(key_arp->sha, arp_eth->ar_sha);
+			ether_addr_copy(key_arp->tha, arp_eth->ar_tha);
+		}
+
+		goto out_good;
+	}
+
 	default:
 		goto out_bad;
 	}
@@ -447,8 +525,9 @@ ip_proto_again:
 			if (hdr->flags & GRE_ACK)
 				offset += sizeof(((struct pptp_gre_header *)0)->ack);
 
-			ppp_hdr = skb_header_pointer(skb, nhoff + offset,
-						     sizeof(_ppp_hdr), _ppp_hdr);
+			ppp_hdr = __skb_header_pointer(skb, nhoff + offset,
+						     sizeof(_ppp_hdr),
+						     data, hlen, _ppp_hdr);
 			if (!ppp_hdr)
 				goto out_bad;
 
@@ -548,15 +627,28 @@ ip_proto_again:
 							data, hlen);
 	}
 
+	if (dissector_uses_key(flow_dissector,
+			       FLOW_DISSECTOR_KEY_ICMP)) {
+		key_icmp = skb_flow_dissector_target(flow_dissector,
+						     FLOW_DISSECTOR_KEY_ICMP,
+						     target_container);
+		key_icmp->icmp = skb_flow_get_be16(skb, nhoff, data, hlen);
+	}
+
 out_good:
 	ret = true;
 
-out_bad:
+	key_control->thoff = (u16)nhoff;
+out:
 	key_basic->n_proto = proto;
 	key_basic->ip_proto = ip_proto;
-	key_control->thoff = (u16)nhoff;
 
 	return ret;
+
+out_bad:
+	ret = false;
+	key_control->thoff = min_t(u16, nhoff, skb ? skb->len : hlen);
+	goto out;
 }
 EXPORT_SYMBOL(__skb_flow_dissect);
 
@@ -723,7 +815,7 @@ EXPORT_SYMBOL(make_flow_keys_digest);
 
 static struct flow_dissector flow_keys_dissector_symmetric __read_mostly;
 
-u32 __skb_get_hash_symmetric(struct sk_buff *skb)
+u32 __skb_get_hash_symmetric(const struct sk_buff *skb)
 {
 	struct flow_keys keys;
 
@@ -1010,4 +1102,4 @@ static int __init init_default_flow_dissectors(void)
 	return 0;
 }
 
-late_initcall_sync(init_default_flow_dissectors);
+core_initcall(init_default_flow_dissectors);

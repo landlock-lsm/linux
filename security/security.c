@@ -61,12 +61,16 @@ int __init security_init(void)
 	capability_add_hooks();
 	yama_add_hooks();
 	loadpin_add_hooks();
-	landlock_add_hooks();
 
 	/*
-	 * Load all the remaining security modules.
+	 * Load all remaining privileged security modules.
 	 */
 	do_security_initcalls();
+
+	/*
+	 * Load potentially-unprivileged security modules at the end.
+	 */
+	landlock_add_hooks();
 
 	return 0;
 }

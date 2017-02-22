@@ -15,32 +15,23 @@
 #include <linux/bpf.h>
 #include <linux/bpf-cgroup.h>
 #include <net/sock.h>
-#include <linux/landlock.h>
 
 DEFINE_STATIC_KEY_FALSE(cgroup_bpf_enabled_key);
 EXPORT_SYMBOL(cgroup_bpf_enabled_key);
 
 /**
- * cgroup_bpf_put() - put references of all bpf objects
+ * cgroup_bpf_put() - put references of all bpf programs
  * @cgrp: the cgroup to modify
  */
 void cgroup_bpf_put(struct cgroup *cgrp)
 {
 	unsigned int type;
 
-	for (type = 0; type < ARRAY_SIZE(cgrp->bpf.pinned); type++) {
-		struct bpf_object pinned = cgrp->bpf.pinned[type];
+	for (type = 0; type < ARRAY_SIZE(cgrp->bpf.prog); type++) {
+		struct bpf_prog *prog = cgrp->bpf.prog[type];
 
-		if (pinned.prog) {
-			switch (type) {
-			case BPF_CGROUP_LANDLOCK:
-#ifdef CONFIG_SECURITY_LANDLOCK
-				put_landlock_hooks(pinned.hooks);
-				break;
-#endif /* CONFIG_SECURITY_LANDLOCK */
-			default:
-				bpf_prog_put(pinned.prog);
-			}
+		if (prog) {
+			bpf_prog_put(prog);
 			static_branch_dec(&cgroup_bpf_enabled_key);
 		}
 	}
@@ -56,31 +47,12 @@ void cgroup_bpf_inherit(struct cgroup *cgrp, struct cgroup *parent)
 	unsigned int type;
 
 	for (type = 0; type < ARRAY_SIZE(cgrp->bpf.effective); type++) {
-		struct bpf_prog *prog;
-#ifdef CONFIG_SECURITY_LANDLOCK
-		struct landlock_hooks *hooks;
-#endif /* CONFIG_SECURITY_LANDLOCK */
+		struct bpf_prog *e;
 
-		switch (type) {
-		case BPF_CGROUP_INET_INGRESS:
-		case BPF_CGROUP_INET_EGRESS:
-			prog = rcu_dereference_protected(
-					parent->bpf.effective[type].prog,
-					lockdep_is_held(&cgroup_mutex));
-			rcu_assign_pointer(cgrp->bpf.effective[type].prog, prog);
-			break;
-		case BPF_CGROUP_LANDLOCK:
-#ifdef CONFIG_SECURITY_LANDLOCK
-			hooks = rcu_dereference_protected(
-					parent->bpf.effective[type].hooks,
-					lockdep_is_held(&cgroup_mutex));
-			rcu_assign_pointer(cgrp->bpf.effective[type].hooks, hooks);
-			get_landlock_hooks(hooks);
-			break;
-#endif /* CONFIG_SECURITY_LANDLOCK */
-		default:
-			WARN_ON(1);
-		}
+		e = rcu_dereference_protected(parent->bpf.effective[type],
+					      lockdep_is_held(&cgroup_mutex));
+		rcu_assign_pointer(cgrp->bpf.effective[type], e);
+		cgrp->bpf.disallow_override[type] = parent->bpf.disallow_override[type];
 	}
 }
 
@@ -95,8 +67,8 @@ void cgroup_bpf_inherit(struct cgroup *cgrp, struct cgroup *parent)
  * Each cgroup has a set of two pointers for bpf programs; one for eBPF
  * programs it owns, and which is effective for execution.
  *
- * If @prog is %NULL, this function attaches a new program to the cgroup and
- * releases the one that is currently attached, if any. @prog is then made
+ * If @prog is not %NULL, this function attaches a new program to the cgroup
+ * and releases the one that is currently attached, if any. @prog is then made
  * the effective program of type @type in that cgroup.
  *
  * If @prog is %NULL, the currently attached program of type @type is released,
@@ -111,93 +83,77 @@ void cgroup_bpf_inherit(struct cgroup *cgrp, struct cgroup *parent)
  *
  * Must be called with cgroup_mutex held.
  */
-int __cgroup_bpf_update(struct cgroup *cgrp,
-			 struct cgroup *parent,
-			 struct bpf_prog *prog,
-			 enum bpf_attach_type type)
+int __cgroup_bpf_update(struct cgroup *cgrp, struct cgroup *parent,
+			struct bpf_prog *prog, enum bpf_attach_type type,
+			bool new_overridable)
 {
-	struct bpf_prog *old_prog = NULL, *effective_prog;
-#ifdef CONFIG_SECURITY_LANDLOCK
-	struct landlock_hooks *effective_hooks;
-#endif /* CONFIG_SECURITY_LANDLOCK */
+	struct bpf_prog *old_prog, *effective = NULL;
 	struct cgroup_subsys_state *pos;
-	bool had_obj = false;
+	bool overridable = true;
 
-	switch (type) {
-	case BPF_CGROUP_INET_INGRESS:
-	case BPF_CGROUP_INET_EGRESS:
-		old_prog = xchg(&cgrp->bpf.pinned[type].prog, prog);
-		if (old_prog)
-			had_obj = true;
-		effective_prog = (!prog && parent) ? rcu_dereference_protected(
-				parent->bpf.effective[type].prog,
-				lockdep_is_held(&cgroup_mutex)) : prog;
-		break;
-	case BPF_CGROUP_LANDLOCK:
-#ifdef CONFIG_SECURITY_LANDLOCK
-		/* append hook */
-		had_obj = !!rcu_dereference_protected(
-				cgrp->bpf.pinned[type].hooks,
-				lockdep_is_held(&cgroup_mutex));
-		effective_hooks = landlock_cgroup_append_prog(cgrp, prog);
-		if (IS_ERR(effective_hooks))
-			return PTR_ERR(effective_hooks);
-		break;
-#endif /* CONFIG_SECURITY_LANDLOCK */
-	default:
-		return -EINVAL;
+	if (parent) {
+		overridable = !parent->bpf.disallow_override[type];
+		effective = rcu_dereference_protected(parent->bpf.effective[type],
+						      lockdep_is_held(&cgroup_mutex));
 	}
+
+	if (prog && effective && !overridable)
+		/* if parent has non-overridable prog attached, disallow
+		 * attaching new programs to descendent cgroup
+		 */
+		return -EPERM;
+
+	if (prog && effective && overridable != new_overridable)
+		/* if parent has overridable prog attached, only
+		 * allow overridable programs in descendent cgroup
+		 */
+		return -EPERM;
+
+	old_prog = cgrp->bpf.prog[type];
+
+	if (prog) {
+		overridable = new_overridable;
+		effective = prog;
+		if (old_prog &&
+		    cgrp->bpf.disallow_override[type] == new_overridable)
+			/* disallow attaching non-overridable on top
+			 * of existing overridable in this cgroup
+			 * and vice versa
+			 */
+			return -EPERM;
+	}
+
+	if (!prog && !old_prog)
+		/* report error when trying to detach and nothing is attached */
+		return -ENOENT;
+
+	cgrp->bpf.prog[type] = prog;
 
 	css_for_each_descendant_pre(pos, &cgrp->self) {
 		struct cgroup *desc = container_of(pos, struct cgroup, self);
 
-		switch (type) {
-		case BPF_CGROUP_INET_INGRESS:
-		case BPF_CGROUP_INET_EGRESS:
-			/*
-			 * skip the subtree if the descendant has its own
-			 * program
-			 */
-			if (desc->bpf.pinned[type].prog && desc != cgrp) {
-				pos = css_rightmost_descendant(pos);
-				break;
-			}
-			rcu_assign_pointer(desc->bpf.effective[type].prog,
-					   effective_prog);
-			break;
-		case BPF_CGROUP_LANDLOCK:
-#ifdef CONFIG_SECURITY_LANDLOCK
-			/*
-			 * extend the subtree hooks if the descendant has its
-			 * own hooks
-			 */
-			if (desc->bpf.pinned[type].hooks && desc != cgrp) {
-				landlock_insert_node(desc->bpf.pinned[type].hooks,
-						prog->subtype.landlock_rule.hook,
-						effective_hooks);
-				break;
-			}
-			rcu_assign_pointer(desc->bpf.effective[type].hooks,
-					effective_hooks);
-			break;
-#endif /* CONFIG_SECURITY_LANDLOCK */
-		default:
-			WARN_ON(1);
+		/* skip the subtree if the descendant has its own program */
+		if (desc->bpf.prog[type] && desc != cgrp) {
+			pos = css_rightmost_descendant(pos);
+		} else {
+			rcu_assign_pointer(desc->bpf.effective[type],
+					   effective);
+			desc->bpf.disallow_override[type] = !overridable;
 		}
 	}
 
 	if (prog)
 		static_branch_inc(&cgroup_bpf_enabled_key);
-	if (had_obj) {
-		if (old_prog)
-			bpf_prog_put(old_prog);
+
+	if (old_prog) {
+		bpf_prog_put(old_prog);
 		static_branch_dec(&cgroup_bpf_enabled_key);
 	}
 	return 0;
 }
 
 /**
- * __cgroup_bpf_run_filter() - Run a program for packet filtering
+ * __cgroup_bpf_run_filter_skb() - Run a program for packet filtering
  * @sk: The socken sending or receiving traffic
  * @skb: The skb that is being sent or received
  * @type: The type of program to be exectuted
@@ -211,9 +167,9 @@ int __cgroup_bpf_update(struct cgroup *cgrp,
  * This function will return %-EPERM if any if an attached program was found
  * and if it returned != 1 during execution. In all other cases, 0 is returned.
  */
-int __cgroup_bpf_run_filter(struct sock *sk,
-			    struct sk_buff *skb,
-			    enum bpf_attach_type type)
+int __cgroup_bpf_run_filter_skb(struct sock *sk,
+				struct sk_buff *skb,
+				enum bpf_attach_type type)
 {
 	struct bpf_prog *prog;
 	struct cgroup *cgrp;
@@ -230,7 +186,7 @@ int __cgroup_bpf_run_filter(struct sock *sk,
 
 	rcu_read_lock();
 
-	prog = rcu_dereference(cgrp->bpf.effective[type].prog);
+	prog = rcu_dereference(cgrp->bpf.effective[type]);
 	if (prog) {
 		unsigned int offset = skb->data - skb_network_header(skb);
 
@@ -243,4 +199,37 @@ int __cgroup_bpf_run_filter(struct sock *sk,
 
 	return ret;
 }
-EXPORT_SYMBOL(__cgroup_bpf_run_filter);
+EXPORT_SYMBOL(__cgroup_bpf_run_filter_skb);
+
+/**
+ * __cgroup_bpf_run_filter_sk() - Run a program on a sock
+ * @sk: sock structure to manipulate
+ * @type: The type of program to be exectuted
+ *
+ * socket is passed is expected to be of type INET or INET6.
+ *
+ * The program type passed in via @type must be suitable for sock
+ * filtering. No further check is performed to assert that.
+ *
+ * This function will return %-EPERM if any if an attached program was found
+ * and if it returned != 1 during execution. In all other cases, 0 is returned.
+ */
+int __cgroup_bpf_run_filter_sk(struct sock *sk,
+			       enum bpf_attach_type type)
+{
+	struct cgroup *cgrp = sock_cgroup_ptr(&sk->sk_cgrp_data);
+	struct bpf_prog *prog;
+	int ret = 0;
+
+
+	rcu_read_lock();
+
+	prog = rcu_dereference(cgrp->bpf.effective[type]);
+	if (prog)
+		ret = BPF_PROG_RUN(prog, sk) == 1 ? 0 : -EPERM;
+
+	rcu_read_unlock();
+
+	return ret;
+}
+EXPORT_SYMBOL(__cgroup_bpf_run_filter_sk);

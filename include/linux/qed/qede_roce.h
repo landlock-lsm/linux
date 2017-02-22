@@ -1,5 +1,5 @@
 /* QLogic qedr NIC Driver
- * Copyright (c) 2015-2016  QLogic Corporation
+ * Copyright (c) 2015-2017  QLogic Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -68,7 +68,7 @@ void qede_roce_unregister_driver(struct qedr_driver *drv);
 
 bool qede_roce_supported(struct qede_dev *dev);
 
-#if IS_ENABLED(CONFIG_INFINIBAND_QEDR)
+#if IS_ENABLED(CONFIG_QED_RDMA)
 int qede_roce_dev_add(struct qede_dev *dev);
 void qede_roce_dev_event_open(struct qede_dev *dev);
 void qede_roce_dev_event_close(struct qede_dev *dev);
