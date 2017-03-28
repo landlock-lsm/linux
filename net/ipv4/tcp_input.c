@@ -5541,6 +5541,7 @@ void tcp_finish_connect(struct sock *sk, struct sk_buff *skb)
 	struct inet_connection_sock *icsk = inet_csk(sk);
 
 	tcp_set_state(sk, TCP_ESTABLISHED);
+	icsk->icsk_ack.lrcvtime = tcp_time_stamp;
 
 	if (skb) {
 		icsk->icsk_af_ops->sk_rx_dst_set(sk, skb);
@@ -5759,7 +5760,6 @@ static int tcp_rcv_synsent_state_process(struct sock *sk, struct sk_buff *skb,
 			 * to stand against the temptation 8)     --ANK
 			 */
 			inet_csk_schedule_ack(sk);
-			icsk->icsk_ack.lrcvtime = tcp_time_stamp;
 			tcp_enter_quickack_mode(sk);
 			inet_csk_reset_xmit_timer(sk, ICSK_TIME_DACK,
 						  TCP_DELACK_MAX, TCP_RTO_MAX);
@@ -5886,9 +5886,15 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
 		if (th->syn) {
 			if (th->fin)
 				goto discard;
-			if (icsk->icsk_af_ops->conn_request(sk, skb) < 0)
-				return 1;
+			/* It is possible that we process SYN packets from backlog,
+			 * so we need to make sure to disable BH right there.
+			 */
+			local_bh_disable();
+			acceptable = icsk->icsk_af_ops->conn_request(sk, skb) >= 0;
+			local_bh_enable();
 
+			if (!acceptable)
+				return 1;
 			consume_skb(skb);
 			return 0;
 		}
@@ -6318,36 +6324,14 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 		goto drop_and_free;
 
 	if (isn && tmp_opt.tstamp_ok)
-		af_ops->init_seq(skb, &tcp_rsk(req)->ts_off);
+		af_ops->init_seq_tsoff(skb, &tcp_rsk(req)->ts_off);
 
 	if (!want_cookie && !isn) {
-		/* VJ's idea. We save last timestamp seen
-		 * from the destination in peer table, when entering
-		 * state TIME-WAIT, and check against it before
-		 * accepting new connection request.
-		 *
-		 * If "isn" is not zero, this request hit alive
-		 * timewait bucket, so that all the necessary checks
-		 * are made in the function processing timewait state.
-		 */
-		if (net->ipv4.tcp_death_row.sysctl_tw_recycle) {
-			bool strict;
-
-			dst = af_ops->route_req(sk, &fl, req, &strict);
-
-			if (dst && strict &&
-			    !tcp_peer_is_proven(req, dst, true,
-						tmp_opt.saw_tstamp)) {
-				NET_INC_STATS(sock_net(sk), LINUX_MIB_PAWSPASSIVEREJECTED);
-				goto drop_and_release;
-			}
-		}
 		/* Kill the following clause, if you dislike this way. */
-		else if (!net->ipv4.sysctl_tcp_syncookies &&
-			 (net->ipv4.sysctl_max_syn_backlog - inet_csk_reqsk_queue_len(sk) <
-			  (net->ipv4.sysctl_max_syn_backlog >> 2)) &&
-			 !tcp_peer_is_proven(req, dst, false,
-					     tmp_opt.saw_tstamp)) {
+		if (!net->ipv4.sysctl_tcp_syncookies &&
+		    (net->ipv4.sysctl_max_syn_backlog - inet_csk_reqsk_queue_len(sk) <
+		     (net->ipv4.sysctl_max_syn_backlog >> 2)) &&
+		    !tcp_peer_is_proven(req, dst)) {
 			/* Without syncookies last quarter of
 			 * backlog is filled with destinations,
 			 * proven to be alive.
@@ -6360,10 +6344,10 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 			goto drop_and_release;
 		}
 
-		isn = af_ops->init_seq(skb, &tcp_rsk(req)->ts_off);
+		isn = af_ops->init_seq_tsoff(skb, &tcp_rsk(req)->ts_off);
 	}
 	if (!dst) {
-		dst = af_ops->route_req(sk, &fl, req, NULL);
+		dst = af_ops->route_req(sk, &fl, req);
 		if (!dst)
 			goto drop_and_free;
 	}

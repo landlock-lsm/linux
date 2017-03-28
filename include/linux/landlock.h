@@ -1,5 +1,5 @@
 /*
- * Landlock LSM - Public headers
+ * Landlock LSM - public kernel headers
  *
  * Copyright © 2017 Mickaël Salaün <mic@digikod.net>
  *
@@ -29,44 +29,23 @@ struct landlock_rule {
 };
 
 /**
- * struct landlock_node - node in the rule hierarchy
- *
- * This is created when a task inserts its first rule in the Landlock rule
- * hierarchy. The set of Landlock rules referenced by this node is then
- * enforced for all the tasks that inherit this node. However, if a task is
- * cloned before inserting any rule, it doesn't get a dedicated node and its
- * children will not inherit any rules from this task.
- *
- * @usage: reference count to manage the node lifetime
- * @rule: list of Landlock rules managed by this node
- * @prev: reference the parent node
- * @owner: reference the address of the node in the &struct landlock_events.
- *         This is needed to know if we need to append a rule to the current
- *         node or create a new node.
- */
-struct landlock_node {
-	atomic_t usage;
-	struct landlock_rule *rule;
-	struct landlock_node *prev;
-	struct landlock_node **owner;
-};
-
-/**
  * struct landlock_events - Landlock event rules enforced on a thread
  *
  * This is used for low performance impact when forking a process. Instead of
  * copying the full array and incrementing the usage of each entries, only
- * create a pointer to &struct landlock_events and increments its usage.
+ * create a pointer to &struct landlock_events and increments its usage. When
+ * appending a new rule, if &struct landlock_events is shared with other tasks,
+ * then duplicate it and append the rule to this new &struct landlock_events.
  *
  * @usage: reference count to manage the object lifetime. When a thread need to
  *         add Landlock rules and if @usage is greater than 1, then the thread
  *         must duplicate &struct landlock_events to not change the children's
  *         rules as well.
- * @nodes: array of non-NULL &struct landlock_node pointers
+ * @rules: array of non-NULL &struct landlock_rule pointers
  */
 struct landlock_events {
 	atomic_t usage;
-	struct landlock_node *nodes[_LANDLOCK_SUBTYPE_EVENT_LAST];
+	struct landlock_rule *rules[_LANDLOCK_SUBTYPE_EVENT_LAST];
 };
 
 void put_landlock_events(struct landlock_events *events);

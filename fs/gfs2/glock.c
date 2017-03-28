@@ -658,9 +658,11 @@ int gfs2_glock_get(struct gfs2_sbd *sdp, u64 number,
 	struct kmem_cache *cachep;
 	int ret, tries = 0;
 
+	rcu_read_lock();
 	gl = rhashtable_lookup_fast(&gl_hash_table, &name, ht_parms);
 	if (gl && !lockref_get_not_dead(&gl->gl_lockref))
 		gl = NULL;
+	rcu_read_unlock();
 
 	*glp = gl;
 	if (gl)
@@ -728,15 +730,18 @@ again:
 
 	if (ret == -EEXIST) {
 		ret = 0;
+		rcu_read_lock();
 		tmp = rhashtable_lookup_fast(&gl_hash_table, &name, ht_parms);
 		if (tmp == NULL || !lockref_get_not_dead(&tmp->gl_lockref)) {
 			if (++tries < 100) {
+				rcu_read_unlock();
 				cond_resched();
 				goto again;
 			}
 			tmp = NULL;
 			ret = -ENOMEM;
 		}
+		rcu_read_unlock();
 	} else {
 		WARN_ON_ONCE(ret);
 	}
@@ -1808,16 +1813,18 @@ void gfs2_glock_exit(void)
 
 static void gfs2_glock_iter_next(struct gfs2_glock_iter *gi)
 {
-	do {
-		gi->gl = rhashtable_walk_next(&gi->hti);
+	while ((gi->gl = rhashtable_walk_next(&gi->hti))) {
 		if (IS_ERR(gi->gl)) {
 			if (PTR_ERR(gi->gl) == -EAGAIN)
 				continue;
 			gi->gl = NULL;
+			return;
 		}
-	/* Skip entries for other sb and dead entries */
-	} while ((gi->gl) && ((gi->sdp != gi->gl->gl_name.ln_sbd) ||
-			      __lockref_is_dead(&gi->gl->gl_lockref)));
+		/* Skip entries for other sb and dead entries */
+		if (gi->sdp == gi->gl->gl_name.ln_sbd &&
+		    !__lockref_is_dead(&gi->gl->gl_lockref))
+			return;
+	}
 }
 
 static void *gfs2_glock_seq_start(struct seq_file *seq, loff_t *pos)

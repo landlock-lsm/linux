@@ -1,6 +1,6 @@
-============
-Landlock LSM
-============
+=========================================
+Landlock LSM: programmatic access control
+=========================================
 
 Landlock is a stackable Linux Security Module (LSM) that makes it possible to
 create security sandboxes.  This kind of sandbox is expected to help mitigate

@@ -1,5 +1,5 @@
 /*
- * Landlock LSM - Sample 1 (userland)
+ * Landlock sandbox - partial read-only filesystem
  *
  * Copyright © 2017 Mickaël Salaün <mic@digikod.net>
  *
@@ -53,7 +53,7 @@ static int apply_sandbox(int prog_fd)
 		perror("prctl(no_new_priv)");
 		return 1;
 	}
-	if (seccomp(SECCOMP_ADD_LANDLOCK_RULE, 0, &prog_fd)) {
+	if (seccomp(SECCOMP_APPEND_LANDLOCK_RULE, 0, &prog_fd)) {
 		perror("seccomp(set_hook)");
 		ret = 1;
 	}

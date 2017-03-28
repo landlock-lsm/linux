@@ -1,5 +1,5 @@
 /*
- * Landlock LSM - Sample 1 (BPF program)
+ * Landlock rule - partial read-only filesystem
  *
  * Copyright © 2017 Mickaël Salaün <mic@digikod.net>
  *
@@ -43,4 +43,4 @@ static union bpf_prog_subtype _subtype = {
 };
 
 SEC("license")
-static char _license[] = "GPL";
+static const char _license[] = "GPL";

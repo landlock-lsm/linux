@@ -2,8 +2,8 @@
 obj- := dummy.o
 
 # Tell kbuild to always build the programs
-always := fs1.o
-always += fs2.o
+always := fs_read_only.o
+always += fs_no_open.o
 
 EXTRA_CFLAGS = -Wall -Wextra
 

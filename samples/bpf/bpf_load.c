@@ -30,6 +30,7 @@
 static char license[128];
 static int kern_version;
 static union bpf_prog_subtype subtype = {};
+static bool has_subtype;
 static bool processed_sec[128];
 char bpf_log_buf[BPF_LOG_BUF_SIZE];
 int map_fd[MAX_MAPS];
@@ -44,6 +45,7 @@ struct bpf_map_def {
 	unsigned int value_size;
 	unsigned int max_entries;
 	unsigned int map_flags;
+	unsigned int inner_map_idx;
 };
 
 static int populate_prog_array(const char *event, int prog_fd)
@@ -74,6 +76,7 @@ static int load_and_attach(const char *event, struct bpf_insn *prog, int size)
 	char buf[256];
 	int fd, efd, err, id;
 	struct perf_event_attr attr = {};
+	union bpf_prog_subtype *st = NULL;
 
 	attr.type = PERF_TYPE_TRACEPOINT;
 	attr.sample_type = PERF_SAMPLE_RAW;
@@ -96,17 +99,18 @@ static int load_and_attach(const char *event, struct bpf_insn *prog, int size)
 		prog_type = BPF_PROG_TYPE_CGROUP_SOCK;
 	} else if (is_landlock) {
 		prog_type = BPF_PROG_TYPE_LANDLOCK;
-		if (!subtype.landlock_rule.event) {
+		if (!has_subtype) {
 			printf("No subtype\n");
 			return -1;
 		}
+		st = &subtype;
 	} else {
 		printf("Unknown event '%s'\n", event);
 		return -1;
 	}
 
 	fd = bpf_load_program(prog_type, prog, insns_cnt, license, kern_version,
-			      bpf_log_buf, BPF_LOG_BUF_SIZE, &subtype);
+			      bpf_log_buf, BPF_LOG_BUF_SIZE, st);
 	if (fd < 0) {
 		printf("bpf_load_program() err=%d\n%s", errno, bpf_log_buf);
 		return -1;
@@ -114,7 +118,8 @@ static int load_and_attach(const char *event, struct bpf_insn *prog, int size)
 
 	prog_fd[prog_cnt++] = fd;
 
-	if (is_xdp || is_perf_event || is_cgroup_skb || is_cgroup_sk || is_landlock)
+	if (is_xdp || is_perf_event || is_cgroup_skb || is_cgroup_sk ||
+	    is_landlock)
 		return 0;
 
 	if (is_socket) {
@@ -206,11 +211,22 @@ static int load_maps(struct bpf_map_def *maps, int len)
 
 	for (i = 0; i < len / sizeof(struct bpf_map_def); i++) {
 
-		map_fd[i] = bpf_create_map(maps[i].type,
-					   maps[i].key_size,
-					   maps[i].value_size,
-					   maps[i].max_entries,
-					   maps[i].map_flags);
+		if (maps[i].type == BPF_MAP_TYPE_ARRAY_OF_MAPS ||
+		    maps[i].type == BPF_MAP_TYPE_HASH_OF_MAPS) {
+			int inner_map_fd = map_fd[maps[i].inner_map_idx];
+
+			map_fd[i] = bpf_create_map_in_map(maps[i].type,
+							  maps[i].key_size,
+							  inner_map_fd,
+							  maps[i].max_entries,
+							  maps[i].map_flags);
+		} else {
+			map_fd[i] = bpf_create_map(maps[i].type,
+						   maps[i].key_size,
+						   maps[i].value_size,
+						   maps[i].max_entries,
+						   maps[i].map_flags);
+		}
 		if (map_fd[i] < 0) {
 			printf("failed to create a map: %d %s\n",
 			       errno, strerror(errno));
@@ -285,7 +301,11 @@ int load_bpf_file(char *path)
 	Elf_Data *data, *data_prog, *symbols = NULL;
 	char *shname, *shname_prog;
 
-	subtype.landlock_rule.event = 0;
+	/* reset global variables */
+	kern_version = 0;
+	memset(license, 0, sizeof(license));
+	memset(processed_sec, 0, sizeof(processed_sec));
+	has_subtype = false;
 
 	if (elf_version(EV_CURRENT) == EV_NONE)
 		return 1;
@@ -338,7 +358,9 @@ int load_bpf_file(char *path)
 				       data->d_size);
 				return 1;
 			}
-			memcpy(&subtype, data->d_buf, sizeof(union bpf_prog_subtype));
+			memcpy(&subtype, data->d_buf,
+			       sizeof(union bpf_prog_subtype));
+			has_subtype = true;
 		} else if (shdr.sh_type == SHT_SYMTAB) {
 			symbols = data;
 		}
@@ -346,6 +368,8 @@ int load_bpf_file(char *path)
 
 	/* load programs that need map fixup (relocations) */
 	for (i = 1; i < ehdr.e_shnum; i++) {
+		if (processed_sec[i])
+			continue;
 
 		if (get_sec(elf, i, &ehdr, &shname, &shdr, &data))
 			continue;

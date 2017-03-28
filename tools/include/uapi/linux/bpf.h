@@ -96,6 +96,8 @@ enum bpf_map_type {
 	BPF_MAP_TYPE_LRU_HASH,
 	BPF_MAP_TYPE_LRU_PERCPU_HASH,
 	BPF_MAP_TYPE_LPM_TRIE,
+	BPF_MAP_TYPE_ARRAY_OF_MAPS,
+	BPF_MAP_TYPE_HASH_OF_MAPS,
 };
 
 enum bpf_prog_type {
@@ -162,6 +164,7 @@ union bpf_attr {
 		__u32	value_size;	/* size of value in bytes */
 		__u32	max_entries;	/* max number of entries in a map */
 		__u32	map_flags;	/* prealloc or not */
+		__u32	inner_map_fd;	/* fd pointing to the inner map */
 	};
 
 	struct { /* anonymous struct used by BPF_MAP_*_ELEM commands */
@@ -183,7 +186,8 @@ union bpf_attr {
 		__u32		log_size;	/* size of user buffer */
 		__aligned_u64	log_buf;	/* user supplied buffer */
 		__u32		kern_version;	/* checked when prog_type=kprobe */
-		union bpf_prog_subtype prog_subtype;
+		__aligned_u64	prog_subtype;	/* bpf_prog_subtype address */
+		__u32		prog_subtype_size;
 	};
 
 	struct { /* anonymous struct used by BPF_OBJ_* commands */
@@ -522,6 +526,8 @@ union bpf_attr {
 	FN(skb_change_head),		\
 	FN(xdp_adjust_head),		\
 	FN(probe_read_str),		\
+	FN(get_socket_cookie),		\
+	FN(get_socket_uid),		\
 	FN(handle_fs_get_mode),
 
 /* integer value in 'imm' field of BPF_CALL instruction selects which helper
@@ -653,7 +659,7 @@ struct xdp_md {
 };
 
 /**
- * enum landlock_subtype_event - event occuring when an action is performed on
+ * enum landlock_subtype_event - event occurring when an action is performed on
  * a particular kernel object
  *
  * An event is a policy decision point which exposes the same context type
@@ -674,7 +680,7 @@ enum landlock_subtype_event {
  * eBPF context and functions allowed for a rule
  *
  * - LANDLOCK_SUBTYPE_ABILITY_WRITE: allows to directly send notification to
- *   userland (e.g. through a map), which may leaks sensitive informations
+ *   userland (e.g. through a map), which may leaks sensitive information
  * - LANDLOCK_SUBTYPE_ABILITY_DEBUG: allows to do debug actions (e.g. writing
  *   logs), which may be dangerous and should only be used for rule testing
  */
@@ -743,8 +749,8 @@ enum landlock_subtype_event {
  * @syscall_cmd: contains the command used by a multiplexer syscall (e.g.
  *               ioctl, fcntl, flock)
  * @event: event type (&enum landlock_subtype_event)
- * @arg1: first event's optional argument
- * @arg2: second event's optional argument
+ * @arg1: event's first optional argument
+ * @arg2: event's second optional argument
  */
 struct landlock_context {
 	__u64 status;

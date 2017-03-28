@@ -133,7 +133,7 @@ nf_ct_expect_find_get(struct net *net,
 
 	rcu_read_lock();
 	i = __nf_ct_expect_find(net, zone, tuple);
-	if (i && !atomic_inc_not_zero(&i->use))
+	if (i && !refcount_inc_not_zero(&i->use))
 		i = NULL;
 	rcu_read_unlock();
 
@@ -186,7 +186,7 @@ nf_ct_find_expectation(struct net *net,
 		return NULL;
 
 	if (exp->flags & NF_CT_EXPECT_PERMANENT) {
-		atomic_inc(&exp->use);
+		refcount_inc(&exp->use);
 		return exp;
 	} else if (del_timer(&exp->timeout)) {
 		nf_ct_unlink_expect(exp);
@@ -275,7 +275,7 @@ struct nf_conntrack_expect *nf_ct_expect_alloc(struct nf_conn *me)
 		return NULL;
 
 	new->master = me;
-	atomic_set(&new->use, 1);
+	refcount_set(&new->use, 1);
 	return new;
 }
 EXPORT_SYMBOL_GPL(nf_ct_expect_alloc);
@@ -348,7 +348,7 @@ static void nf_ct_expect_free_rcu(struct rcu_head *head)
 
 void nf_ct_expect_put(struct nf_conntrack_expect *exp)
 {
-	if (atomic_dec_and_test(&exp->use))
+	if (refcount_dec_and_test(&exp->use))
 		call_rcu(&exp->rcu, nf_ct_expect_free_rcu);
 }
 EXPORT_SYMBOL_GPL(nf_ct_expect_put);
@@ -361,7 +361,7 @@ static void nf_ct_expect_insert(struct nf_conntrack_expect *exp)
 	unsigned int h = nf_ct_expect_dst_hash(net, &exp->tuple);
 
 	/* two references : one for hash insert, one for the timer */
-	atomic_add(2, &exp->use);
+	refcount_add(2, &exp->use);
 
 	hlist_add_head(&exp->lnode, &master_help->expectations);
 	master_help->expecting[exp->class]++;
@@ -410,7 +410,7 @@ static inline int __nf_ct_expect_check(struct nf_conntrack_expect *expect)
 	struct net *net = nf_ct_exp_net(expect);
 	struct hlist_node *next;
 	unsigned int h;
-	int ret = 1;
+	int ret = 0;
 
 	if (!master_help) {
 		ret = -ESHUTDOWN;
@@ -460,14 +460,14 @@ int nf_ct_expect_related_report(struct nf_conntrack_expect *expect,
 
 	spin_lock_bh(&nf_conntrack_expect_lock);
 	ret = __nf_ct_expect_check(expect);
-	if (ret <= 0)
+	if (ret < 0)
 		goto out;
 
 	nf_ct_expect_insert(expect);
 
 	spin_unlock_bh(&nf_conntrack_expect_lock);
 	nf_ct_expect_event_report(IPEXP_NEW, expect, portid, report);
-	return ret;
+	return 0;
 out:
 	spin_unlock_bh(&nf_conntrack_expect_lock);
 	return ret;

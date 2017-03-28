@@ -1,11 +1,11 @@
 /*
+ * Landlock tests - filesystem
+ *
  * Copyright © 2017 Mickaël Salaün <mic@digikod.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2, as
  * published by the Free Software Foundation.
- *
- * Tests code for Landlock
  */
 
 #define _GNU_SOURCE
@@ -23,46 +23,9 @@
 #include <sys/stat.h> /* mkdir() */
 #include <sys/mman.h> /* mmap() */
 
-#include "../seccomp/test_harness.h"
-#include "../../../../samples/bpf/bpf_load.h"
+#include "test.h"
 
 #define TMP_PREFIX "tmp_"
-
-#ifndef SECCOMP_ADD_LANDLOCK_RULE
-#define SECCOMP_ADD_LANDLOCK_RULE	2
-#endif
-
-#ifndef seccomp
-static int seccomp(unsigned int op, unsigned int flags, void *args)
-{
-	errno = 0;
-	return syscall(__NR_seccomp, op, flags, args);
-}
-#endif
-
-static unsigned int __step_count = 0;
-
-#define ASSERT_STEP(cond) \
-	{ \
-		step--; \
-		if (!(cond)) \
-			_exit(step); \
-	}
-
-TEST(seccomp_landlock)
-{
-	int ret;
-
-	ret = prctl(PR_SET_NO_NEW_PRIVS, 1, NULL, 0, 0);
-	ASSERT_EQ(0, ret) {
-		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS");
-	}
-	ret = seccomp(SECCOMP_ADD_LANDLOCK_RULE, 0, NULL);
-	EXPECT_EQ(-1, ret);
-	EXPECT_EQ(EFAULT, errno) {
-		TH_LOG("Kernel does not support CONFIG_SECURITY_LANDLOCK");
-	}
-}
 
 struct layout1 {
 	int file_ro;
@@ -74,44 +37,39 @@ static void setup_layout1(struct __test_metadata *_metadata,
 		struct layout1 *l1)
 {
 	int fd;
-	char buf[] = "fs1";
+	char buf[] = "fs_read_only";
 
 	l1->file_ro = -1;
 	l1->file_rw = -1;
 	l1->file_wo = -1;
 
 	fd = open(TMP_PREFIX "file_created",
-			O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC,
-			S_IRUSR | S_IWUSR);
+			O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0600);
 	ASSERT_GE(fd, 0);
 	ASSERT_EQ(sizeof(buf), write(fd, buf, sizeof(buf)));
 	ASSERT_EQ(0, close(fd));
 
-	fd = mkdir(TMP_PREFIX "dir_created", S_IRUSR | S_IWUSR);
+	fd = mkdir(TMP_PREFIX "dir_created", 0600);
 	ASSERT_GE(fd, 0);
 	ASSERT_EQ(0, close(fd));
 
 	l1->file_ro = open(TMP_PREFIX "file_ro",
-			O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC,
-			S_IRUSR | S_IWUSR);
+			O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0600);
 	ASSERT_LE(0, l1->file_ro);
 	ASSERT_EQ(sizeof(buf), write(l1->file_ro, buf, sizeof(buf)));
 	ASSERT_EQ(0, close(l1->file_ro));
 	l1->file_ro = open(TMP_PREFIX "file_ro",
-			O_RDONLY | O_CLOEXEC,
-			S_IRUSR | S_IWUSR);
+			O_RDONLY | O_CLOEXEC, 0600);
 	ASSERT_LE(0, l1->file_ro);
 
 	l1->file_rw = open(TMP_PREFIX "file_rw",
-			O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC,
-			S_IRUSR | S_IWUSR);
+			O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, 0600);
 	ASSERT_LE(0, l1->file_rw);
 	ASSERT_EQ(sizeof(buf), write(l1->file_rw, buf, sizeof(buf)));
 	ASSERT_EQ(0, lseek(l1->file_rw, 0, SEEK_SET));
 
 	l1->file_wo = open(TMP_PREFIX "file_wo",
-			O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC,
-			S_IRUSR | S_IWUSR);
+			O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0600);
 	ASSERT_LE(0, l1->file_wo);
 	ASSERT_EQ(sizeof(buf), write(l1->file_wo, buf, sizeof(buf)));
 	ASSERT_EQ(0, lseek(l1->file_wo, 0, SEEK_SET));
@@ -127,17 +85,17 @@ static void cleanup_layout1(void)
 	rmdir(TMP_PREFIX "dir_created");
 }
 
-FIXTURE(rule_fs1) {
+FIXTURE(fs_read_only) {
 	struct layout1 l1;
 	int prog;
 };
 
-FIXTURE_SETUP(rule_fs1)
+FIXTURE_SETUP(fs_read_only)
 {
 	cleanup_layout1();
 	setup_layout1(_metadata, &self->l1);
 
-	ASSERT_EQ(0, load_bpf_file("rules/fs1.o")) {
+	ASSERT_EQ(0, load_bpf_file("rules/fs_read_only.o")) {
 		TH_LOG("%s", bpf_log_buf);
 	}
 	self->prog = prog_fd[0];
@@ -146,15 +104,15 @@ FIXTURE_SETUP(rule_fs1)
 	}
 }
 
-FIXTURE_TEARDOWN(rule_fs1)
+FIXTURE_TEARDOWN(fs_read_only)
 {
 	EXPECT_EQ(0, close(self->prog));
 	/* cleanup_layout1() would be denied here */
 }
 
-TEST_F(rule_fs1, load_prog) {}
+TEST_F(fs_read_only, load_prog) {}
 
-TEST_F(rule_fs1, read_only_file)
+TEST_F(fs_read_only, read_only_file)
 {
 	int fd;
 	int step = 0;
@@ -167,13 +125,12 @@ TEST_F(rule_fs1, read_only_file)
 	ASSERT_EQ(-1, read(self->l1.file_wo, buf_read, sizeof(buf_read)));
 	ASSERT_EQ(EBADF, errno);
 
-	ASSERT_EQ(0, seccomp(SECCOMP_ADD_LANDLOCK_RULE, 0, &self->prog)) {
-		TH_LOG("Failed to apply rule fs1: %s", strerror(errno));
+	ASSERT_EQ(0, seccomp(SECCOMP_APPEND_LANDLOCK_RULE, 0, &self->prog)) {
+		TH_LOG("Failed to apply rule fs_read_only: %s",
+				strerror(errno));
 	}
 
-	fd = open(".",
-			O_TMPFILE | O_EXCL | O_RDWR | O_CLOEXEC,
-			S_IRUSR | S_IWUSR);
+	fd = open(".", O_TMPFILE | O_EXCL | O_RDWR | O_CLOEXEC, 0600);
 	ASSERT_STEP(fd == -1);
 	ASSERT_STEP(errno != EOPNOTSUPP)
 	ASSERT_STEP(errno == EPERM);
@@ -194,8 +151,7 @@ TEST_F(rule_fs1, read_only_file)
 	ASSERT_STEP(errno == EPERM);
 
 	fd = open(TMP_PREFIX "should_not_exist",
-			O_CREAT | O_EXCL | O_CLOEXEC,
-			S_IRUSR | S_IWUSR);
+			O_CREAT | O_EXCL | O_CLOEXEC, 0600);
 	ASSERT_STEP(fd == -1);
 	ASSERT_STEP(errno == EPERM);
 
@@ -226,7 +182,7 @@ TEST_F(rule_fs1, read_only_file)
 	ASSERT_STEP(0 == close(self->l1.file_wo));
 }
 
-TEST_F(rule_fs1, read_only_mount)
+TEST_F(fs_read_only, read_only_mount)
 {
 	int step = 0;
 
@@ -234,8 +190,9 @@ TEST_F(rule_fs1, read_only_mount)
 				NULL, MS_BIND, NULL));
 	ASSERT_EQ(0, umount2(TMP_PREFIX "dir_created", MNT_FORCE));
 
-	ASSERT_EQ(0, seccomp(SECCOMP_ADD_LANDLOCK_RULE, 0, &self->prog)) {
-		TH_LOG("Failed to apply rule fs1: %s", strerror(errno));
+	ASSERT_EQ(0, seccomp(SECCOMP_APPEND_LANDLOCK_RULE, 0, &self->prog)) {
+		TH_LOG("Failed to apply rule fs_read_only: %s",
+				strerror(errno));
 	}
 
 	ASSERT_STEP(-1 == mount(".", TMP_PREFIX "dir_created",
@@ -245,7 +202,7 @@ TEST_F(rule_fs1, read_only_mount)
 	ASSERT_STEP(errno == EPERM);
 }
 
-TEST_F(rule_fs1, read_only_mem)
+TEST_F(fs_read_only, read_only_mem)
 {
 	int step = 0;
 	void *addr;
@@ -255,8 +212,9 @@ TEST_F(rule_fs1, read_only_mem)
 	ASSERT_NE(NULL, addr);
 	ASSERT_EQ(0, munmap(addr, 1));
 
-	ASSERT_EQ(0, seccomp(SECCOMP_ADD_LANDLOCK_RULE, 0, &self->prog)) {
-		TH_LOG("Failed to apply rule fs1: %s", strerror(errno));
+	ASSERT_EQ(0, seccomp(SECCOMP_APPEND_LANDLOCK_RULE, 0, &self->prog)) {
+		TH_LOG("Failed to apply rule fs_read_only: %s",
+				strerror(errno));
 	}
 
 	addr = mmap(NULL, 1, PROT_READ, MAP_SHARED,
@@ -277,17 +235,17 @@ TEST_F(rule_fs1, read_only_mem)
 	ASSERT_STEP(0 == munmap(addr, 1));
 }
 
-FIXTURE(rule_fs2) {
+FIXTURE(fs_no_open) {
 	struct layout1 l1;
 	int prog;
 };
 
-FIXTURE_SETUP(rule_fs2)
+FIXTURE_SETUP(fs_no_open)
 {
 	cleanup_layout1();
 	setup_layout1(_metadata, &self->l1);
 
-	ASSERT_EQ(0, load_bpf_file("rules/fs2.o")) {
+	ASSERT_EQ(0, load_bpf_file("rules/fs_no_open.o")) {
 		TH_LOG("%s", bpf_log_buf);
 	}
 	self->prog = prog_fd[0];
@@ -296,7 +254,7 @@ FIXTURE_SETUP(rule_fs2)
 	}
 }
 
-FIXTURE_TEARDOWN(rule_fs2)
+FIXTURE_TEARDOWN(fs_no_open)
 {
 	EXPECT_EQ(0, close(self->prog));
 	cleanup_layout1();
@@ -318,7 +276,7 @@ static void landlocked_deny_open(struct __test_metadata *_metadata,
 	ASSERT_EQ(0, munmap(addr, 1));
 }
 
-TEST_F(rule_fs2, deny_open_for_hierarchy) {
+TEST_F(fs_no_open, deny_open_for_hierarchy) {
 	int fd;
 	int status;
 	pid_t child;
@@ -327,8 +285,8 @@ TEST_F(rule_fs2, deny_open_for_hierarchy) {
 	ASSERT_LE(0, fd);
 	ASSERT_EQ(0, close(fd));
 
-	ASSERT_EQ(0, seccomp(SECCOMP_ADD_LANDLOCK_RULE, 0, &self->prog)) {
-		TH_LOG("Failed to apply rule fs2: %s", strerror(errno));
+	ASSERT_EQ(0, seccomp(SECCOMP_APPEND_LANDLOCK_RULE, 0, &self->prog)) {
+		TH_LOG("Failed to apply rule fs_no_open: %s", strerror(errno));
 	}
 
 	landlocked_deny_open(_metadata, &self->l1);

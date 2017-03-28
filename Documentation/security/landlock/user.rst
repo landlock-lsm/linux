@@ -20,7 +20,8 @@ it in the C language.  As described in *samples/bpf/README.rst*, LLVM can
 compile such programs.  Files *samples/bpf/landlock1_kern.c* and those in
 *tools/testing/selftests/landlock/rules/* can be used as examples.  The
 following example is a simple rule to forbid file creation, whatever syscall
-may be used (e.g. open, mkdir, link...).
+may be used (e.g. open, mkdir, link...).  The *ctx->arg2* contains the action
+type performed on the file (cf. :ref:`fs_actions`).
 
 .. code-block:: c
 
@@ -60,9 +61,9 @@ feature such as debugging.  This should be avoided if not strictly necessary.
 
 The next step is to fill a :c:type:`union bpf_attr <bpf_attr>` with
 BPF_PROG_TYPE_LANDLOCK, the previously created subtype and other BPF program
-metadata.  This bpf_attr must then be passed to the bpf(2) syscall alongside
-the BPF_PROG_LOAD command.  If everything is deemed correct by the kernel, the
-thread gets a file descriptor referring to this rule.
+metadata.  This bpf_attr must then be passed to the :manpage:`bpf(2)` syscall
+alongside the BPF_PROG_LOAD command.  If everything is deemed correct by the
+kernel, the thread gets a file descriptor referring to this rule.
 
 In the following code, the *insn* variable is an array of BPF instructions
 which can be extracted from an ELF file as is done in bpf_load_file() from
@@ -76,6 +77,7 @@ which can be extracted from an ELF file as is done in bpf_load_file() from
         .insns = (__u64) (unsigned long) insn,
         .license = (__u64) (unsigned long) "GPL",
         .prog_subtype = &subtype,
+        .prog_subtype_size = sizeof(subtype),
     };
     int rule = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
     if (rule == -1)
@@ -90,21 +92,21 @@ socket), the thread willing to sandbox itself (and its future children) needs
 to perform two steps to properly enforce a rule.
 
 The thread must first request to never be allowed to get new privileges with a
-call to prctl(2) and the PR_SET_NO_NEW_PRIVS option.  More information can be
-found in *Documentation/prctl/no_new_privs.txt*.
+call to :manpage:`prctl(2)` and the PR_SET_NO_NEW_PRIVS option.  More
+information can be found in *Documentation/prctl/no_new_privs.txt*.
 
 .. code-block:: c
 
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, NULL, 0, 0))
         exit(1);
 
-A thread can apply a rule to itself by using the seccomp(2) syscall.  The
-operation is SECCOMP_ADD_LANDLOCK_RULE, the flags must be empty and the *args*
-argument must point to a valid Landlock rule file descriptor.
+A thread can apply a rule to itself by using the :manpage:`seccomp(2)` syscall.
+The operation is SECCOMP_APPEND_LANDLOCK_RULE, the flags must be empty and the
+*args* argument must point to a valid Landlock rule file descriptor.
 
 .. code-block:: c
 
-    if (seccomp(SECCOMP_ADD_LANDLOCK_RULE, 0, &rule))
+    if (seccomp(SECCOMP_APPEND_LANDLOCK_RULE, 0, &rule))
         exit(1);
 
 If the syscall succeeds, the rule is now enforced on the calling thread and
@@ -112,22 +114,27 @@ will be enforced on all its subsequently created children of the thread as
 well.  Once a thread is landlocked, there is no way to remove this security
 policy, only stacking more restrictions is allowed.
 
+When a syscall ask for an action on a kernel object, if this action is denied,
+then an EPERM errno code is returned through the syscall.
+
 
 .. _inherited_rules:
 
 Inherited rules
 ---------------
 
-Every new thread resulting from a clone(2) inherits Landlock rule restrictions
-from its parent.  This is comparable to the seccomp inheritance as described in
-*Documentation/prctl/seccomp_filter.txt*, but differs for rules addition.
+Every new thread resulting from a :manpage:`clone(2)` inherits Landlock rule
+restrictions from its parent.  This is similar to the seccomp inheritance as
+described in *Documentation/prctl/seccomp_filter.txt*.
 
-If a thread adds a rule for a particular event, then all its future children
-and their progeny will inherit all the rules from the same event, whether any
-of those rules were added before or after the fork.  This allows a thread to
-share its security policy with its children and further restrict them over
-time.  If a thread wants its future rules to be propagated, it must then create
-at least one rule tied to the same event before any fork.
+
+Ptrace restrictions
+-------------------
+
+A landlocked process has less privileges than a non-landlocked process and must
+then be subject to additional restrictions when manipulating another process.
+To be allowed to use :manpage:`ptrace(2)` and related syscalls on a target
+process, a landlocked process must have a subset of the target process rules.
 
 
 .. _features:
@@ -176,6 +183,8 @@ Optional arguments from :c:type:`struct landlock_context <landlock_context>`:
 * arg1: filesystem handle
 * arg2: action type
 
+
+.. _fs_actions:
 
 File system action types
 ------------------------

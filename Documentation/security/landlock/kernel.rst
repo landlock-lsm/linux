@@ -84,7 +84,7 @@ Landlock helpers
 * It is quite easy to add new helpers to extend Landlock.  The main concern
   should be about the possibility to leak information from a landlocked process
   to another (e.g. through maps) to not reproduce the same security sensitive
-  behavior as ptrace(2).
+  behavior as :manpage:`ptrace(2).`
 
 
 Rule addition and propagation
@@ -102,7 +102,7 @@ Structure definitions
 Functions for rule addition
 ---------------------------
 
-.. kernel-doc:: security/landlock/manager.c
+.. kernel-doc:: security/landlock/providers.c
 
 
 Questions and answers
@@ -116,17 +116,17 @@ code would lead to more code complexity.  A decision to ignore a kind of action
 can and should be done at the beginning of a Landlock rule.
 
 
-Why a rule does not return an errno code?
------------------------------------------
+Why a rule does not return an errno or a kill code?
+---------------------------------------------------
 
-seccomp filters can return multiple kind of code, including an errno value,
-which may be convenient for access control.  Those return codes are hardwired
-in the userland ABI.  Instead, Landlock approach is to return a boolean to
-allow or deny an action, which is much simpler and more generic.  Moreover, we
-do not really have a choice because, unlike to seccomp, Landlock rules are not
-enforced at the syscall entry point but may be executed at any point in the
-kernel (through LSM hooks) where an errno return code may not make sense.
-However, with this simple ABI and with the ability to call helpers, Landlock
-may gain features similar to seccomp-bpf in the future while being compatible
-with previous rules.
+seccomp filters can return multiple kind of code, including an errno value or a
+kill signal, which may be convenient for access control.  Those return codes
+are hardwired in the userland ABI.  Instead, Landlock's approach is to return a
+boolean to allow or deny an action, which is much simpler and more generic.
+Moreover, we do not really have a choice because, unlike to seccomp, Landlock
+rules are not enforced at the syscall entry point but may be executed at any
+point in the kernel (through LSM hooks) where an errno return code may not make
+sense.  However, with this simple ABI and with the ability to call helpers,
+Landlock may gain features similar to seccomp-bpf in the future while being
+compatible with previous rules.
 

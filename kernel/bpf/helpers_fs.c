@@ -22,25 +22,25 @@ BPF_CALL_1(bpf_handle_fs_get_mode, struct bpf_handle_fs *, handle_fs)
 		return -ENOENT;
 	}
 	switch (handle_fs->type) {
-		case BPF_HANDLE_FS_TYPE_FILE:
-			if (WARN_ON(!handle_fs->file->f_inode))
-				return -ENOENT;
-			return handle_fs->file->f_inode->i_mode;
-		case BPF_HANDLE_FS_TYPE_INODE:
-			return handle_fs->inode->i_mode;
-		case BPF_HANDLE_FS_TYPE_PATH:
-			if (WARN_ON(!handle_fs->path->dentry ||
-					!handle_fs->path->dentry->d_inode))
-				return -ENOENT;
-			return handle_fs->path->dentry->d_inode->i_mode;
-		case BPF_HANDLE_FS_TYPE_DENTRY:
-			if (WARN_ON(!handle_fs->dentry->d_inode))
-				return -ENOENT;
-			return handle_fs->dentry->d_inode->i_mode;
-		case BPF_HANDLE_FS_TYPE_NONE:
-		default:
-			WARN_ON(1);
-			return -EFAULT;
+	case BPF_HANDLE_FS_TYPE_FILE:
+		if (WARN_ON(!handle_fs->file->f_inode))
+			return -ENOENT;
+		return handle_fs->file->f_inode->i_mode;
+	case BPF_HANDLE_FS_TYPE_INODE:
+		return handle_fs->inode->i_mode;
+	case BPF_HANDLE_FS_TYPE_PATH:
+		if (WARN_ON(!handle_fs->path->dentry ||
+				!handle_fs->path->dentry->d_inode))
+			return -ENOENT;
+		return handle_fs->path->dentry->d_inode->i_mode;
+	case BPF_HANDLE_FS_TYPE_DENTRY:
+		if (WARN_ON(!handle_fs->dentry->d_inode))
+			return -ENOENT;
+		return handle_fs->dentry->d_inode->i_mode;
+	case BPF_HANDLE_FS_TYPE_NONE:
+	default:
+		WARN_ON(1);
+		return -EFAULT;
 	}
 }
 

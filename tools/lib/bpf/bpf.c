@@ -27,7 +27,7 @@
 #include "bpf.h"
 
 /*
- * When building perf, unistd.h is overrided. __NR_bpf is
+ * When building perf, unistd.h is overridden. __NR_bpf is
  * required to be defined explicitly.
  */
 #ifndef __NR_bpf
@@ -69,14 +69,30 @@ int bpf_create_map(enum bpf_map_type map_type, int key_size,
 	return sys_bpf(BPF_MAP_CREATE, &attr, sizeof(attr));
 }
 
+int bpf_create_map_in_map(enum bpf_map_type map_type, int key_size,
+			  int inner_map_fd, int max_entries, __u32 map_flags)
+{
+	union bpf_attr attr;
+
+	memset(&attr, '\0', sizeof(attr));
+
+	attr.map_type = map_type;
+	attr.key_size = key_size;
+	attr.value_size = 4;
+	attr.inner_map_fd = inner_map_fd;
+	attr.max_entries = max_entries;
+	attr.map_flags = map_flags;
+
+	return sys_bpf(BPF_MAP_CREATE, &attr, sizeof(attr));
+}
+
 int bpf_load_program(enum bpf_prog_type type, const struct bpf_insn *insns,
 		     size_t insns_cnt, const char *license,
 		     __u32 kern_version, char *log_buf, size_t log_buf_sz,
-		     union bpf_prog_subtype *subtype)
+		     const union bpf_prog_subtype *subtype)
 {
 	int fd;
 	union bpf_attr attr;
-	union bpf_prog_subtype st_none = {};
 
 	bzero(&attr, sizeof(attr));
 	attr.prog_type = type;
@@ -87,7 +103,8 @@ int bpf_load_program(enum bpf_prog_type type, const struct bpf_insn *insns,
 	attr.log_size = 0;
 	attr.log_level = 0;
 	attr.kern_version = kern_version;
-	attr.prog_subtype = subtype ? *subtype : st_none;
+	attr.prog_subtype = ptr_to_u64(subtype);
+	attr.prog_subtype_size = subtype ? sizeof(*subtype) : 0;
 
 	fd = sys_bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
 	if (fd >= 0 || !log_buf || !log_buf_sz)

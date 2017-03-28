@@ -1088,6 +1088,23 @@ static int ath10k_core_fetch_board_data_api_n(struct ath10k *ar,
 		case ATH10K_BD_IE_BOARD:
 			ret = ath10k_core_parse_bd_ie_board(ar, data, ie_len,
 							    boardname);
+			if (ret == -ENOENT && ar->id.bdf_ext[0] != '\0') {
+				/* try default bdf if variant was not found */
+				char *s, *v = ",variant=";
+				char boardname2[100];
+
+				strlcpy(boardname2, boardname,
+					sizeof(boardname2));
+
+				s = strstr(boardname2, v);
+				if (s)
+					*s = '\0';  /* strip ",variant=%s" */
+
+				ret = ath10k_core_parse_bd_ie_board(ar, data,
+								    ie_len,
+								    boardname2);
+			}
+
 			if (ret == -ENOENT)
 				/* no match found, continue */
 				break;

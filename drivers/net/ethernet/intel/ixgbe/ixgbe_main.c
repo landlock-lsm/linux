@@ -2122,7 +2122,7 @@ static struct sk_buff *ixgbe_build_skb(struct ixgbe_ring *rx_ring,
 	prefetch(va + L1_CACHE_BYTES);
 #endif
 
-	/* build an skb to around the page buffer */
+	/* build an skb around the page buffer */
 	skb = build_skb(va - IXGBE_SKB_PAD, truesize);
 	if (unlikely(!skb))
 		return NULL;
@@ -3474,6 +3474,21 @@ u32 ixgbe_rss_indir_tbl_entries(struct ixgbe_adapter *adapter)
 }
 
 /**
+ * ixgbe_store_key - Write the RSS key to HW
+ * @adapter: device handle
+ *
+ * Write the RSS key stored in adapter.rss_key to HW.
+ */
+void ixgbe_store_key(struct ixgbe_adapter *adapter)
+{
+	struct ixgbe_hw *hw = &adapter->hw;
+	int i;
+
+	for (i = 0; i < 10; i++)
+		IXGBE_WRITE_REG(hw, IXGBE_RSSRK(i), adapter->rss_key[i]);
+}
+
+/**
  * ixgbe_store_reta - Write the RETA table to HW
  * @adapter: device handle
  *
@@ -3538,7 +3553,6 @@ static void ixgbe_store_vfreta(struct ixgbe_adapter *adapter)
 
 static void ixgbe_setup_reta(struct ixgbe_adapter *adapter)
 {
-	struct ixgbe_hw *hw = &adapter->hw;
 	u32 i, j;
 	u32 reta_entries = ixgbe_rss_indir_tbl_entries(adapter);
 	u16 rss_i = adapter->ring_feature[RING_F_RSS].indices;
@@ -3551,8 +3565,7 @@ static void ixgbe_setup_reta(struct ixgbe_adapter *adapter)
 		rss_i = 4;
 
 	/* Fill out hash function seeds */
-	for (i = 0; i < 10; i++)
-		IXGBE_WRITE_REG(hw, IXGBE_RSSRK(i), adapter->rss_key[i]);
+	ixgbe_store_key(adapter);
 
 	/* Fill out redirection table */
 	memset(adapter->rss_indir_tbl, 0, sizeof(adapter->rss_indir_tbl));
@@ -3959,7 +3972,8 @@ static void ixgbe_set_rx_buffer_len(struct ixgbe_adapter *adapter)
 		if (adapter->flags2 & IXGBE_FLAG2_RSC_ENABLED)
 			set_bit(__IXGBE_RX_3K_BUFFER, &rx_ring->state);
 
-		if (max_frame > (ETH_FRAME_LEN + ETH_FCS_LEN))
+		if ((max_frame > (ETH_FRAME_LEN + ETH_FCS_LEN)) ||
+		    (max_frame > IXGBE_MAX_FRAME_BUILD_SKB))
 			set_bit(__IXGBE_RX_3K_BUFFER, &rx_ring->state);
 #endif
 	}
@@ -8934,7 +8948,9 @@ static int __ixgbe_setup_tc(struct net_device *dev, u32 handle, __be16 proto,
 	if (tc->type != TC_SETUP_MQPRIO)
 		return -EINVAL;
 
-	return ixgbe_setup_tc(dev, tc->tc);
+	tc->mqprio->hw = TC_MQPRIO_HW_OFFLOAD_TCS;
+
+	return ixgbe_setup_tc(dev, tc->mqprio->num_tc);
 }
 
 #ifdef CONFIG_PCI_IOV

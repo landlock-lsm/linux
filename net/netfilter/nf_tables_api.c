@@ -461,16 +461,15 @@ nla_put_failure:
 	return -1;
 }
 
-static int nf_tables_table_notify(const struct nft_ctx *ctx, int event)
+static void nf_tables_table_notify(const struct nft_ctx *ctx, int event)
 {
 	struct sk_buff *skb;
 	int err;
 
 	if (!ctx->report &&
 	    !nfnetlink_has_listeners(ctx->net, NFNLGRP_NFTABLES))
-		return 0;
+		return;
 
-	err = -ENOBUFS;
 	skb = nlmsg_new(NLMSG_GOODSIZE, GFP_KERNEL);
 	if (skb == NULL)
 		goto err;
@@ -482,14 +481,11 @@ static int nf_tables_table_notify(const struct nft_ctx *ctx, int event)
 		goto err;
 	}
 
-	err = nfnetlink_send(skb, ctx->net, ctx->portid, NFNLGRP_NFTABLES,
-			     ctx->report, GFP_KERNEL);
+	nfnetlink_send(skb, ctx->net, ctx->portid, NFNLGRP_NFTABLES,
+		       ctx->report, GFP_KERNEL);
+	return;
 err:
-	if (err < 0) {
-		nfnetlink_set_err(ctx->net, ctx->portid, NFNLGRP_NFTABLES,
-				  err);
-	}
-	return err;
+	nfnetlink_set_err(ctx->net, ctx->portid, NFNLGRP_NFTABLES, -ENOBUFS);
 }
 
 static int nf_tables_dump_tables(struct sk_buff *skb,
@@ -1050,16 +1046,15 @@ nla_put_failure:
 	return -1;
 }
 
-static int nf_tables_chain_notify(const struct nft_ctx *ctx, int event)
+static void nf_tables_chain_notify(const struct nft_ctx *ctx, int event)
 {
 	struct sk_buff *skb;
 	int err;
 
 	if (!ctx->report &&
 	    !nfnetlink_has_listeners(ctx->net, NFNLGRP_NFTABLES))
-		return 0;
+		return;
 
-	err = -ENOBUFS;
 	skb = nlmsg_new(NLMSG_GOODSIZE, GFP_KERNEL);
 	if (skb == NULL)
 		goto err;
@@ -1072,14 +1067,11 @@ static int nf_tables_chain_notify(const struct nft_ctx *ctx, int event)
 		goto err;
 	}
 
-	err = nfnetlink_send(skb, ctx->net, ctx->portid, NFNLGRP_NFTABLES,
-			     ctx->report, GFP_KERNEL);
+	nfnetlink_send(skb, ctx->net, ctx->portid, NFNLGRP_NFTABLES,
+		       ctx->report, GFP_KERNEL);
+	return;
 err:
-	if (err < 0) {
-		nfnetlink_set_err(ctx->net, ctx->portid, NFNLGRP_NFTABLES,
-				  err);
-	}
-	return err;
+	nfnetlink_set_err(ctx->net, ctx->portid, NFNLGRP_NFTABLES, -ENOBUFS);
 }
 
 static int nf_tables_dump_chains(struct sk_buff *skb,
@@ -1780,8 +1772,19 @@ static int nf_tables_newexpr(const struct nft_ctx *ctx,
 			goto err1;
 	}
 
+	if (ops->validate) {
+		const struct nft_data *data = NULL;
+
+		err = ops->validate(ctx, expr, &data);
+		if (err < 0)
+			goto err2;
+	}
+
 	return 0;
 
+err2:
+	if (ops->destroy)
+		ops->destroy(ctx, expr);
 err1:
 	expr->ops = NULL;
 	return err;
@@ -1934,18 +1937,16 @@ nla_put_failure:
 	return -1;
 }
 
-static int nf_tables_rule_notify(const struct nft_ctx *ctx,
-				 const struct nft_rule *rule,
-				 int event)
+static void nf_tables_rule_notify(const struct nft_ctx *ctx,
+				  const struct nft_rule *rule, int event)
 {
 	struct sk_buff *skb;
 	int err;
 
 	if (!ctx->report &&
 	    !nfnetlink_has_listeners(ctx->net, NFNLGRP_NFTABLES))
-		return 0;
+		return;
 
-	err = -ENOBUFS;
 	skb = nlmsg_new(NLMSG_GOODSIZE, GFP_KERNEL);
 	if (skb == NULL)
 		goto err;
@@ -1958,14 +1959,11 @@ static int nf_tables_rule_notify(const struct nft_ctx *ctx,
 		goto err;
 	}
 
-	err = nfnetlink_send(skb, ctx->net, ctx->portid, NFNLGRP_NFTABLES,
-			     ctx->report, GFP_KERNEL);
+	nfnetlink_send(skb, ctx->net, ctx->portid, NFNLGRP_NFTABLES,
+		       ctx->report, GFP_KERNEL);
+	return;
 err:
-	if (err < 0) {
-		nfnetlink_set_err(ctx->net, ctx->portid, NFNLGRP_NFTABLES,
-				  err);
-	}
-	return err;
+	nfnetlink_set_err(ctx->net, ctx->portid, NFNLGRP_NFTABLES, -ENOBUFS);
 }
 
 struct nft_rule_dump_ctx {
@@ -2536,8 +2534,8 @@ static int nft_ctx_init_from_setattr(struct nft_ctx *ctx, struct net *net,
 	return 0;
 }
 
-struct nft_set *nf_tables_set_lookup(const struct nft_table *table,
-				     const struct nlattr *nla, u8 genmask)
+static struct nft_set *nf_tables_set_lookup(const struct nft_table *table,
+					    const struct nlattr *nla, u8 genmask)
 {
 	struct nft_set *set;
 
@@ -2551,11 +2549,10 @@ struct nft_set *nf_tables_set_lookup(const struct nft_table *table,
 	}
 	return ERR_PTR(-ENOENT);
 }
-EXPORT_SYMBOL_GPL(nf_tables_set_lookup);
 
-struct nft_set *nf_tables_set_lookup_byid(const struct net *net,
-					  const struct nlattr *nla,
-					  u8 genmask)
+static struct nft_set *nf_tables_set_lookup_byid(const struct net *net,
+						 const struct nlattr *nla,
+						 u8 genmask)
 {
 	struct nft_trans *trans;
 	u32 id = ntohl(nla_get_be32(nla));
@@ -2570,7 +2567,25 @@ struct nft_set *nf_tables_set_lookup_byid(const struct net *net,
 	}
 	return ERR_PTR(-ENOENT);
 }
-EXPORT_SYMBOL_GPL(nf_tables_set_lookup_byid);
+
+struct nft_set *nft_set_lookup(const struct net *net,
+			       const struct nft_table *table,
+			       const struct nlattr *nla_set_name,
+			       const struct nlattr *nla_set_id,
+			       u8 genmask)
+{
+	struct nft_set *set;
+
+	set = nf_tables_set_lookup(table, nla_set_name, genmask);
+	if (IS_ERR(set)) {
+		if (!nla_set_id)
+			return set;
+
+		set = nf_tables_set_lookup_byid(net, nla_set_id, genmask);
+	}
+	return set;
+}
+EXPORT_SYMBOL_GPL(nft_set_lookup);
 
 static int nf_tables_set_alloc_name(struct nft_ctx *ctx, struct nft_set *set,
 				    const char *name)
@@ -2696,9 +2711,9 @@ nla_put_failure:
 	return -1;
 }
 
-static int nf_tables_set_notify(const struct nft_ctx *ctx,
-				const struct nft_set *set,
-				int event, gfp_t gfp_flags)
+static void nf_tables_set_notify(const struct nft_ctx *ctx,
+				 const struct nft_set *set, int event,
+			         gfp_t gfp_flags)
 {
 	struct sk_buff *skb;
 	u32 portid = ctx->portid;
@@ -2706,9 +2721,8 @@ static int nf_tables_set_notify(const struct nft_ctx *ctx,
 
 	if (!ctx->report &&
 	    !nfnetlink_has_listeners(ctx->net, NFNLGRP_NFTABLES))
-		return 0;
+		return;
 
-	err = -ENOBUFS;
 	skb = nlmsg_new(NLMSG_GOODSIZE, gfp_flags);
 	if (skb == NULL)
 		goto err;
@@ -2719,12 +2733,11 @@ static int nf_tables_set_notify(const struct nft_ctx *ctx,
 		goto err;
 	}
 
-	err = nfnetlink_send(skb, ctx->net, portid, NFNLGRP_NFTABLES,
-			     ctx->report, gfp_flags);
+	nfnetlink_send(skb, ctx->net, portid, NFNLGRP_NFTABLES, ctx->report,
+		       gfp_flags);
+	return;
 err:
-	if (err < 0)
-		nfnetlink_set_err(ctx->net, portid, NFNLGRP_NFTABLES, err);
-	return err;
+	nfnetlink_set_err(ctx->net, portid, NFNLGRP_NFTABLES, -ENOBUFS);
 }
 
 static int nf_tables_dump_sets(struct sk_buff *skb, struct netlink_callback *cb)
@@ -3160,7 +3173,6 @@ int nf_tables_bind_set(const struct nft_ctx *ctx, struct nft_set *set,
 		iter.count	= 0;
 		iter.err	= 0;
 		iter.fn		= nf_tables_bind_check_setelem;
-		iter.flush	= false;
 
 		set->ops->walk(ctx, set, &iter);
 		if (iter.err < 0)
@@ -3414,7 +3426,6 @@ static int nf_tables_dump_set(struct sk_buff *skb, struct netlink_callback *cb)
 	args.iter.count		= 0;
 	args.iter.err		= 0;
 	args.iter.fn		= nf_tables_dump_setelem;
-	args.iter.flush		= false;
 	set->ops->walk(&ctx, set, &args.iter);
 
 	nla_nest_end(skb, nest);
@@ -3504,10 +3515,10 @@ nla_put_failure:
 	return -1;
 }
 
-static int nf_tables_setelem_notify(const struct nft_ctx *ctx,
-				    const struct nft_set *set,
-				    const struct nft_set_elem *elem,
-				    int event, u16 flags)
+static void nf_tables_setelem_notify(const struct nft_ctx *ctx,
+				     const struct nft_set *set,
+				     const struct nft_set_elem *elem,
+				     int event, u16 flags)
 {
 	struct net *net = ctx->net;
 	u32 portid = ctx->portid;
@@ -3515,9 +3526,8 @@ static int nf_tables_setelem_notify(const struct nft_ctx *ctx,
 	int err;
 
 	if (!ctx->report && !nfnetlink_has_listeners(net, NFNLGRP_NFTABLES))
-		return 0;
+		return;
 
-	err = -ENOBUFS;
 	skb = nlmsg_new(NLMSG_GOODSIZE, GFP_KERNEL);
 	if (skb == NULL)
 		goto err;
@@ -3529,12 +3539,11 @@ static int nf_tables_setelem_notify(const struct nft_ctx *ctx,
 		goto err;
 	}
 
-	err = nfnetlink_send(skb, net, portid, NFNLGRP_NFTABLES, ctx->report,
-			     GFP_KERNEL);
+	nfnetlink_send(skb, net, portid, NFNLGRP_NFTABLES, ctx->report,
+		       GFP_KERNEL);
+	return;
 err:
-	if (err < 0)
-		nfnetlink_set_err(net, portid, NFNLGRP_NFTABLES, err);
-	return err;
+	nfnetlink_set_err(net, portid, NFNLGRP_NFTABLES, -ENOBUFS);
 }
 
 static struct nft_trans *nft_trans_elem_alloc(struct nft_ctx *ctx,
@@ -3980,7 +3989,6 @@ static int nf_tables_delsetelem(struct net *net, struct sock *nlsk,
 		struct nft_set_iter iter = {
 			.genmask	= genmask,
 			.fn		= nft_flush_set,
-			.flush		= true,
 		};
 		set->ops->walk(&ctx, set, &iter);
 
@@ -4084,7 +4092,8 @@ static const struct nla_policy nft_obj_policy[NFTA_OBJ_MAX + 1] = {
 	[NFTA_OBJ_DATA]		= { .type = NLA_NESTED },
 };
 
-static struct nft_object *nft_obj_init(const struct nft_object_type *type,
+static struct nft_object *nft_obj_init(const struct nft_ctx *ctx,
+				       const struct nft_object_type *type,
 				       const struct nlattr *attr)
 {
 	struct nlattr *tb[type->maxattr + 1];
@@ -4104,7 +4113,7 @@ static struct nft_object *nft_obj_init(const struct nft_object_type *type,
 	if (obj == NULL)
 		goto err1;
 
-	err = type->init((const struct nlattr * const *)tb, obj);
+	err = type->init(ctx, (const struct nlattr * const *)tb, obj);
 	if (err < 0)
 		goto err2;
 
@@ -4212,7 +4221,7 @@ static int nf_tables_newobj(struct net *net, struct sock *nlsk,
 	if (IS_ERR(type))
 		return PTR_ERR(type);
 
-	obj = nft_obj_init(type, nla[NFTA_OBJ_DATA]);
+	obj = nft_obj_init(&ctx, type, nla[NFTA_OBJ_DATA]);
 	if (IS_ERR(obj)) {
 		err = PTR_ERR(obj);
 		goto err1;
@@ -4476,18 +4485,17 @@ static int nf_tables_delobj(struct net *net, struct sock *nlsk,
 	return nft_delobj(&ctx, obj);
 }
 
-int nft_obj_notify(struct net *net, struct nft_table *table,
-		   struct nft_object *obj, u32 portid, u32 seq, int event,
-		   int family, int report, gfp_t gfp)
+void nft_obj_notify(struct net *net, struct nft_table *table,
+		    struct nft_object *obj, u32 portid, u32 seq, int event,
+		    int family, int report, gfp_t gfp)
 {
 	struct sk_buff *skb;
 	int err;
 
 	if (!report &&
 	    !nfnetlink_has_listeners(net, NFNLGRP_NFTABLES))
-		return 0;
+		return;
 
-	err = -ENOBUFS;
 	skb = nlmsg_new(NLMSG_GOODSIZE, gfp);
 	if (skb == NULL)
 		goto err;
@@ -4499,21 +4507,18 @@ int nft_obj_notify(struct net *net, struct nft_table *table,
 		goto err;
 	}
 
-	err = nfnetlink_send(skb, net, portid, NFNLGRP_NFTABLES, report, gfp);
+	nfnetlink_send(skb, net, portid, NFNLGRP_NFTABLES, report, gfp);
+	return;
 err:
-	if (err < 0) {
-		nfnetlink_set_err(net, portid, NFNLGRP_NFTABLES, err);
-	}
-	return err;
+	nfnetlink_set_err(net, portid, NFNLGRP_NFTABLES, -ENOBUFS);
 }
 EXPORT_SYMBOL_GPL(nft_obj_notify);
 
-static int nf_tables_obj_notify(const struct nft_ctx *ctx,
-				struct nft_object *obj, int event)
+static void nf_tables_obj_notify(const struct nft_ctx *ctx,
+				 struct nft_object *obj, int event)
 {
-	return nft_obj_notify(ctx->net, ctx->table, obj, ctx->portid,
-			      ctx->seq, event, ctx->afi->family, ctx->report,
-			      GFP_KERNEL);
+	nft_obj_notify(ctx->net, ctx->table, obj, ctx->portid, ctx->seq, event,
+		       ctx->afi->family, ctx->report, GFP_KERNEL);
 }
 
 static int nf_tables_fill_gen_info(struct sk_buff *skb, struct net *net,
@@ -4543,7 +4548,8 @@ nla_put_failure:
 	return -EMSGSIZE;
 }
 
-static int nf_tables_gen_notify(struct net *net, struct sk_buff *skb, int event)
+static void nf_tables_gen_notify(struct net *net, struct sk_buff *skb,
+				 int event)
 {
 	struct nlmsghdr *nlh = nlmsg_hdr(skb);
 	struct sk_buff *skb2;
@@ -4551,9 +4557,8 @@ static int nf_tables_gen_notify(struct net *net, struct sk_buff *skb, int event)
 
 	if (nlmsg_report(nlh) &&
 	    !nfnetlink_has_listeners(net, NFNLGRP_NFTABLES))
-		return 0;
+		return;
 
-	err = -ENOBUFS;
 	skb2 = nlmsg_new(NLMSG_GOODSIZE, GFP_KERNEL);
 	if (skb2 == NULL)
 		goto err;
@@ -4565,14 +4570,12 @@ static int nf_tables_gen_notify(struct net *net, struct sk_buff *skb, int event)
 		goto err;
 	}
 
-	err = nfnetlink_send(skb2, net, NETLINK_CB(skb).portid,
-			     NFNLGRP_NFTABLES, nlmsg_report(nlh), GFP_KERNEL);
+	nfnetlink_send(skb2, net, NETLINK_CB(skb).portid, NFNLGRP_NFTABLES,
+		       nlmsg_report(nlh), GFP_KERNEL);
+	return;
 err:
-	if (err < 0) {
-		nfnetlink_set_err(net, NETLINK_CB(skb).portid, NFNLGRP_NFTABLES,
-				  err);
-	}
-	return err;
+	nfnetlink_set_err(net, NETLINK_CB(skb).portid, NFNLGRP_NFTABLES,
+			  -ENOBUFS);
 }
 
 static int nf_tables_getgen(struct net *net, struct sock *nlsk,
@@ -5137,7 +5140,6 @@ static int nf_tables_check_loops(const struct nft_ctx *ctx,
 			iter.count	= 0;
 			iter.err	= 0;
 			iter.fn		= nf_tables_loop_check_setelem;
-			iter.flush	= false;
 
 			set->ops->walk(ctx, set, &iter);
 			if (iter.err < 0)

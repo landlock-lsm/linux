@@ -100,6 +100,11 @@ enum octeon_tag_type {
 
 #define BYTES_PER_DHLEN_UNIT        8
 #define MAX_REG_CNT                 2000000U
+#define INTRNAMSIZ                  32
+#define IRQ_NAME_OFF(i)             ((i) * INTRNAMSIZ)
+#define MAX_IOQ_INTERRUPTS_PER_PF   (64 * 2)
+#define MAX_IOQ_INTERRUPTS_PER_VF   (8 * 2)
+
 
 static inline u32 incr_index(u32 index, u32 count, u32 max)
 {
@@ -181,6 +186,7 @@ static inline void add_sg_size(struct octeon_sg_entry *sg_entry,
 #define   OCTNET_CMD_Q                0
 
 /* NIC Command types */
+#define   OCTNET_CMD_RESET_PF         0x0
 #define   OCTNET_CMD_CHANGE_MTU       0x1
 #define   OCTNET_CMD_CHANGE_MACADDR   0x2
 #define   OCTNET_CMD_CHANGE_DEVFLAGS  0x3

@@ -13,6 +13,7 @@
 #include <linux/bpf_trace.h>
 #include <linux/syscalls.h>
 #include <linux/slab.h>
+#include <linux/sched/signal.h>
 #include <linux/vmalloc.h>
 #include <linux/mmzone.h>
 #include <linux/anon_inodes.h>
@@ -214,7 +215,7 @@ int bpf_map_new_fd(struct bpf_map *map)
 		   offsetof(union bpf_attr, CMD##_LAST_FIELD) - \
 		   sizeof(attr->CMD##_LAST_FIELD)) != NULL
 
-#define BPF_MAP_CREATE_LAST_FIELD map_flags
+#define BPF_MAP_CREATE_LAST_FIELD inner_map_fd
 /* called via syscall */
 static int map_create(union bpf_attr *attr)
 {
@@ -351,6 +352,9 @@ static int map_lookup_elem(union bpf_attr *attr)
 		err = bpf_percpu_array_copy(map, key, value);
 	} else if (map->map_type == BPF_MAP_TYPE_STACK_TRACE) {
 		err = bpf_stackmap_copy(map, key, value);
+	} else if (map->map_type == BPF_MAP_TYPE_ARRAY_OF_MAPS ||
+		   map->map_type == BPF_MAP_TYPE_HASH_OF_MAPS) {
+		err = -ENOTSUPP;
 	} else {
 		rcu_read_lock();
 		ptr = map->ops->map_lookup_elem(map, key);
@@ -437,10 +441,16 @@ static int map_update_elem(union bpf_attr *attr)
 		err = bpf_percpu_array_update(map, key, value, attr->flags);
 	} else if (map->map_type == BPF_MAP_TYPE_PERF_EVENT_ARRAY ||
 		   map->map_type == BPF_MAP_TYPE_PROG_ARRAY ||
-		   map->map_type == BPF_MAP_TYPE_CGROUP_ARRAY) {
+		   map->map_type == BPF_MAP_TYPE_CGROUP_ARRAY ||
+		   map->map_type == BPF_MAP_TYPE_ARRAY_OF_MAPS) {
 		rcu_read_lock();
 		err = bpf_fd_array_map_update_elem(map, f.file, key, value,
 						   attr->flags);
+		rcu_read_unlock();
+	} else if (map->map_type == BPF_MAP_TYPE_HASH_OF_MAPS) {
+		rcu_read_lock();
+		err = bpf_fd_htab_map_update_elem(map, f.file, key, value,
+						  attr->flags);
 		rcu_read_unlock();
 	} else {
 		rcu_read_lock();
@@ -583,59 +593,6 @@ static int find_prog_type(enum bpf_prog_type type, struct bpf_prog *prog)
 void bpf_register_prog_type(struct bpf_prog_type_list *tl)
 {
 	list_add(&tl->list_node, &bpf_prog_types);
-}
-
-/* fixup insn->imm field of bpf_call instructions:
- * if (insn->imm == BPF_FUNC_map_lookup_elem)
- *      insn->imm = bpf_map_lookup_elem - __bpf_call_base;
- * else if (insn->imm == BPF_FUNC_map_update_elem)
- *      insn->imm = bpf_map_update_elem - __bpf_call_base;
- * else ...
- *
- * this function is called after eBPF program passed verification
- */
-static void fixup_bpf_calls(struct bpf_prog *prog)
-{
-	const struct bpf_func_proto *fn;
-	int i;
-
-	for (i = 0; i < prog->len; i++) {
-		struct bpf_insn *insn = &prog->insnsi[i];
-
-		if (insn->code == (BPF_JMP | BPF_CALL)) {
-			/* we reach here when program has bpf_call instructions
-			 * and it passed bpf_check(), means that
-			 * ops->get_func_proto must have been supplied, check it
-			 */
-			BUG_ON(!prog->aux->ops->get_func_proto);
-
-			if (insn->imm == BPF_FUNC_get_route_realm)
-				prog->dst_needed = 1;
-			if (insn->imm == BPF_FUNC_get_prandom_u32)
-				bpf_user_rnd_init_once();
-			if (insn->imm == BPF_FUNC_xdp_adjust_head)
-				prog->xdp_adjust_head = 1;
-			if (insn->imm == BPF_FUNC_tail_call) {
-				/* mark bpf_tail_call as different opcode
-				 * to avoid conditional branch in
-				 * interpeter for every normal call
-				 * and to prevent accidental JITing by
-				 * JIT compiler that doesn't support
-				 * bpf_tail_call yet
-				 */
-				insn->imm = 0;
-				insn->code |= BPF_X;
-				continue;
-			}
-
-			fn = prog->aux->ops->get_func_proto(insn->imm, &prog->subtype);
-			/* all functions that have prototype and verifier allowed
-			 * programs to call them, must be real in-kernel functions
-			 */
-			BUG_ON(!fn->func);
-			insn->imm = fn->func - __bpf_call_base;
-		}
-	}
 }
 
 /* drop refcnt on maps used by eBPF program and free auxilary data */
@@ -826,8 +783,44 @@ struct bpf_prog *bpf_prog_get_type(u32 ufd, enum bpf_prog_type type)
 }
 EXPORT_SYMBOL_GPL(bpf_prog_get_type);
 
+static int check_user_buf(void __user *uptr, unsigned int size_req,
+			  unsigned int size_max)
+{
+	if (!access_ok(VERIFY_READ, uptr, 1))
+		return -EFAULT;
+
+	if (size_req > PAGE_SIZE)	/* silly large */
+		return -E2BIG;
+
+	/* If we're handed a bigger struct than we know of,
+	 * ensure all the unknown bits are 0 - i.e. new
+	 * user-space does not rely on any kernel feature
+	 * extensions we dont know about yet.
+	 */
+	if (size_req > size_max) {
+		unsigned char __user *addr;
+		unsigned char __user *end;
+		unsigned char val;
+		int err;
+
+		addr = uptr + size_max;
+		end  = uptr + size_req;
+
+		for (; addr < end; addr++) {
+			err = get_user(val, addr);
+			if (err)
+				return err;
+			if (val)
+				return -E2BIG;
+		}
+		return size_max;
+	}
+
+	return size_req;
+}
+
 /* last field in 'union bpf_attr' used by this command */
-#define	BPF_PROG_LOAD_LAST_FIELD prog_subtype
+#define	BPF_PROG_LOAD_LAST_FIELD prog_subtype_size
 
 static int bpf_prog_load(union bpf_attr *attr)
 {
@@ -885,15 +878,31 @@ static int bpf_prog_load(union bpf_attr *attr)
 	err = find_prog_type(type, prog);
 	if (err < 0)
 		goto free_prog;
-	prog->subtype = attr->prog_subtype;
+
+	/* copy eBPF program subtype from user space */
+	if (attr->prog_subtype) {
+		__u32 size;
+
+		size = check_user_buf((void __user *)attr->prog_subtype,
+				      attr->prog_subtype_size,
+				      sizeof(prog->subtype));
+		if (size < 0) {
+			err = size;
+			goto free_prog;
+		}
+		/* prog->subtype is __GFP_ZERO */
+		if (copy_from_user(&prog->subtype,
+				   u64_to_user_ptr(attr->prog_subtype), size)
+				   != 0)
+			return -EFAULT;
+		prog->has_subtype = 1;
+	} else if (attr->prog_subtype_size != 0)
+		return -EINVAL;
 
 	/* run eBPF verifier */
 	err = bpf_check(&prog, attr);
 	if (err < 0)
 		goto free_used_maps;
-
-	/* fixup BPF_CALL->imm field */
-	fixup_bpf_calls(prog);
 
 	/* eBPF program is ready to be JITed */
 	prog = bpf_prog_select_runtime(prog, &err);
@@ -1028,34 +1037,9 @@ SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, siz
 	if (!capable(CAP_SYS_ADMIN) && sysctl_unprivileged_bpf_disabled)
 		return -EPERM;
 
-	if (!access_ok(VERIFY_READ, uattr, 1))
-		return -EFAULT;
-
-	if (size > PAGE_SIZE)	/* silly large */
-		return -E2BIG;
-
-	/* If we're handed a bigger struct than we know of,
-	 * ensure all the unknown bits are 0 - i.e. new
-	 * user-space does not rely on any kernel feature
-	 * extensions we dont know about yet.
-	 */
-	if (size > sizeof(attr)) {
-		unsigned char __user *addr;
-		unsigned char __user *end;
-		unsigned char val;
-
-		addr = (void __user *)uattr + sizeof(attr);
-		end  = (void __user *)uattr + size;
-
-		for (; addr < end; addr++) {
-			err = get_user(val, addr);
-			if (err)
-				return err;
-			if (val)
-				return -E2BIG;
-		}
-		size = sizeof(attr);
-	}
+	size = check_user_buf((void __user *)uattr, size, sizeof(attr));
+	if (size < 0)
+		return size;
 
 	/* copy attributes from user space, may be less than sizeof(bpf_attr) */
 	if (copy_from_user(&attr, uattr, size) != 0)

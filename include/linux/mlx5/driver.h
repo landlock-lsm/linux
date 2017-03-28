@@ -295,6 +295,7 @@ struct mlx5_port_caps {
 	int	gid_table_len;
 	int	pkey_table_len;
 	u8	ext_port_cap;
+	bool	has_smi;
 };
 
 struct mlx5_cmd_mailbox {
@@ -727,6 +728,7 @@ struct mlx5e_resources {
 	u32                        pdn;
 	struct mlx5_td             td;
 	struct mlx5_core_mkey      mkey;
+	struct mlx5_sq_bfreg       bfreg;
 };
 
 struct mlx5_core_dev {
@@ -1061,7 +1063,10 @@ enum {
 };
 
 enum {
-	MAX_MR_CACHE_ENTRIES    = 21,
+	MAX_UMR_CACHE_ENTRY = 20,
+	MLX5_IMR_MTT_CACHE_ENTRY,
+	MLX5_IMR_KSM_CACHE_ENTRY,
+	MAX_MR_CACHE_ENTRIES
 };
 
 enum {

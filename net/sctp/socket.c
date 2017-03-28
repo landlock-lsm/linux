@@ -57,6 +57,7 @@
 #include <linux/kernel.h>
 #include <linux/wait.h>
 #include <linux/time.h>
+#include <linux/sched/signal.h>
 #include <linux/ip.h>
 #include <linux/capability.h>
 #include <linux/fcntl.h>
@@ -3757,6 +3758,39 @@ out:
 	return retval;
 }
 
+static int sctp_setsockopt_reconfig_supported(struct sock *sk,
+					      char __user *optval,
+					      unsigned int optlen)
+{
+	struct sctp_assoc_value params;
+	struct sctp_association *asoc;
+	int retval = -EINVAL;
+
+	if (optlen != sizeof(params))
+		goto out;
+
+	if (copy_from_user(&params, optval, optlen)) {
+		retval = -EFAULT;
+		goto out;
+	}
+
+	asoc = sctp_id2assoc(sk, params.assoc_id);
+	if (asoc) {
+		asoc->reconf_enable = !!params.assoc_value;
+	} else if (!params.assoc_id) {
+		struct sctp_sock *sp = sctp_sk(sk);
+
+		sp->ep->reconf_enable = !!params.assoc_value;
+	} else {
+		goto out;
+	}
+
+	retval = 0;
+
+out:
+	return retval;
+}
+
 static int sctp_setsockopt_enable_strreset(struct sock *sk,
 					   char __user *optval,
 					   unsigned int optlen)
@@ -4037,6 +4071,9 @@ static int sctp_setsockopt(struct sock *sk, int level, int optname,
 	case SCTP_DEFAULT_PRINFO:
 		retval = sctp_setsockopt_default_prinfo(sk, optval, optlen);
 		break;
+	case SCTP_RECONFIG_SUPPORTED:
+		retval = sctp_setsockopt_reconfig_supported(sk, optval, optlen);
+		break;
 	case SCTP_ENABLE_STREAM_RESET:
 		retval = sctp_setsockopt_enable_strreset(sk, optval, optlen);
 		break;
@@ -4115,7 +4152,7 @@ static int sctp_disconnect(struct sock *sk, int flags)
  * descriptor will be returned from accept() to represent the newly
  * formed association.
  */
-static struct sock *sctp_accept(struct sock *sk, int flags, int *err)
+static struct sock *sctp_accept(struct sock *sk, int flags, int *err, bool kern)
 {
 	struct sctp_sock *sp;
 	struct sctp_endpoint *ep;
@@ -4150,7 +4187,7 @@ static struct sock *sctp_accept(struct sock *sk, int flags, int *err)
 	 */
 	asoc = list_entry(ep->asocs.next, struct sctp_association, asocs);
 
-	newsk = sp->pf->create_accept_sk(sk, asoc);
+	newsk = sp->pf->create_accept_sk(sk, asoc, kern);
 	if (!newsk) {
 		error = -ENOMEM;
 		goto out;
@@ -4861,6 +4898,12 @@ int sctp_do_peeloff(struct sock *sk, sctp_assoc_t id, struct socket **sockp)
 
 	if (!asoc)
 		return -EINVAL;
+
+	/* If there is a thread waiting on more sndbuf space for
+	 * sending on this asoc, it cannot be peeled.
+	 */
+	if (waitqueue_active(&asoc->wait))
+		return -EBUSY;
 
 	/* An association cannot be branched off from an already peeled-off
 	 * socket, nor is this supported for tcp style sockets.
@@ -6533,6 +6576,47 @@ out:
 	return retval;
 }
 
+static int sctp_getsockopt_reconfig_supported(struct sock *sk, int len,
+					      char __user *optval,
+					      int __user *optlen)
+{
+	struct sctp_assoc_value params;
+	struct sctp_association *asoc;
+	int retval = -EFAULT;
+
+	if (len < sizeof(params)) {
+		retval = -EINVAL;
+		goto out;
+	}
+
+	len = sizeof(params);
+	if (copy_from_user(&params, optval, len))
+		goto out;
+
+	asoc = sctp_id2assoc(sk, params.assoc_id);
+	if (asoc) {
+		params.assoc_value = asoc->reconf_enable;
+	} else if (!params.assoc_id) {
+		struct sctp_sock *sp = sctp_sk(sk);
+
+		params.assoc_value = sp->ep->reconf_enable;
+	} else {
+		retval = -EINVAL;
+		goto out;
+	}
+
+	if (put_user(len, optlen))
+		goto out;
+
+	if (copy_to_user(optval, &params, len))
+		goto out;
+
+	retval = 0;
+
+out:
+	return retval;
+}
+
 static int sctp_getsockopt_enable_strreset(struct sock *sk, int len,
 					   char __user *optval,
 					   int __user *optlen)
@@ -6740,6 +6824,10 @@ static int sctp_getsockopt(struct sock *sk, int level, int optname,
 	case SCTP_PR_ASSOC_STATUS:
 		retval = sctp_getsockopt_pr_assocstatus(sk, len, optval,
 							optlen);
+		break;
+	case SCTP_RECONFIG_SUPPORTED:
+		retval = sctp_getsockopt_reconfig_supported(sk, len, optval,
+							    optlen);
 		break;
 	case SCTP_ENABLE_STREAM_RESET:
 		retval = sctp_getsockopt_enable_strreset(sk, len, optval,
@@ -7430,9 +7518,12 @@ struct sk_buff *sctp_skb_recv_datagram(struct sock *sk, int flags,
 		if (sk->sk_shutdown & RCV_SHUTDOWN)
 			break;
 
-		if (sk_can_busy_loop(sk) &&
-		    sk_busy_loop(sk, noblock))
-			continue;
+		if (sk_can_busy_loop(sk)) {
+			sk_busy_loop(sk, noblock);
+
+			if (!skb_queue_empty(&sk->sk_receive_queue))
+				continue;
+		}
 
 		/* User doesn't want to wait.  */
 		error = -EAGAIN;
@@ -7599,8 +7690,6 @@ static int sctp_wait_for_sndbuf(struct sctp_association *asoc, long *timeo_p,
 		 */
 		release_sock(sk);
 		current_timeo = schedule_timeout(current_timeo);
-		if (sk != asoc->base.sk)
-			goto do_error;
 		lock_sock(sk);
 
 		*timeo_p = current_timeo;

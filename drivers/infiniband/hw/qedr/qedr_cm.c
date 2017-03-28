@@ -43,14 +43,11 @@
 #include <rdma/ib_addr.h>
 #include <rdma/ib_cache.h>
 
-#include "qedr_hsi.h"
 #include <linux/qed/qed_if.h>
 #include <linux/qed/qed_roce_if.h>
 #include "qedr.h"
-#include "qedr_hsi.h"
 #include "verbs.h"
 #include <rdma/qedr-abi.h>
-#include "qedr_hsi.h"
 #include "qedr_cm.h"
 
 void qedr_inc_sw_gsi_cons(struct qedr_qp_hwq_info *info)
@@ -287,7 +284,7 @@ static inline int qedr_gsi_build_header(struct qedr_dev *dev,
 	has_udp = (sgid_attr.gid_type == IB_GID_TYPE_ROCE_UDP_ENCAP);
 	if (!has_udp) {
 		/* RoCE v1 */
-		ether_type = ETH_P_ROCE;
+		ether_type = ETH_P_IBOE;
 		*roce_mode = ROCE_V1;
 	} else if (ipv6_addr_v4mapped((struct in6_addr *)&sgid)) {
 		/* RoCE v2 IPv4 */

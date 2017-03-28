@@ -177,7 +177,7 @@ sctp_xmit_t sctp_packet_transmit_chunk(struct sctp_packet *packet,
 {
 	sctp_xmit_t retval;
 
-	pr_debug("%s: packet:%p size:%Zu chunk:%p size:%d\n", __func__,
+	pr_debug("%s: packet:%p size:%zu chunk:%p size:%d\n", __func__,
 		 packet, packet->size, chunk, chunk->skb ? chunk->skb->len : -1);
 
 	switch ((retval = (sctp_packet_append_chunk(packet, chunk)))) {
@@ -546,7 +546,6 @@ int sctp_packet_transmit(struct sctp_packet *packet, gfp_t gfp)
 	struct sctp_association *asoc = tp->asoc;
 	struct sctp_chunk *chunk, *tmp;
 	int pkt_count, gso = 0;
-	int confirm;
 	struct dst_entry *dst;
 	struct sk_buff *head;
 	struct sctphdr *sh;
@@ -625,13 +624,13 @@ int sctp_packet_transmit(struct sctp_packet *packet, gfp_t gfp)
 			asoc->peer.last_sent_to = tp;
 	}
 	head->ignore_df = packet->ipfragok;
-	confirm = tp->dst_pending_confirm;
-	if (confirm)
+	if (tp->dst_pending_confirm)
 		skb_set_dst_pending_confirm(head, 1);
 	/* neighbour should be confirmed on successful transmission or
 	 * positive error
 	 */
-	if (tp->af_specific->sctp_xmit(head, tp) >= 0 && confirm)
+	if (tp->af_specific->sctp_xmit(head, tp) >= 0 &&
+	    tp->dst_pending_confirm)
 		tp->dst_pending_confirm = 0;
 
 out:
