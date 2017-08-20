@@ -91,7 +91,7 @@ static void set_tun_src(struct net *net, struct net_device *dev,
 }
 
 /* encapsulate an IPv6 packet within an outer IPv6 header with a given SRH */
-static int seg6_do_srh_encap(struct sk_buff *skb, struct ipv6_sr_hdr *osrh)
+int seg6_do_srh_encap(struct sk_buff *skb, struct ipv6_sr_hdr *osrh)
 {
 	struct net *net = dev_net(skb_dst(skb)->dev);
 	struct ipv6hdr *hdr, *inner_hdr;
@@ -141,10 +141,10 @@ static int seg6_do_srh_encap(struct sk_buff *skb, struct ipv6_sr_hdr *osrh)
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(seg6_do_srh_encap);
 
 /* insert an SRH within an IPv6 packet, just after the IPv6 header */
-#ifdef CONFIG_IPV6_SEG6_INLINE
-static int seg6_do_srh_inline(struct sk_buff *skb, struct ipv6_sr_hdr *osrh)
+int seg6_do_srh_inline(struct sk_buff *skb, struct ipv6_sr_hdr *osrh)
 {
 	struct ipv6hdr *hdr, *oldhdr;
 	struct ipv6_sr_hdr *isrh;
@@ -193,7 +193,7 @@ static int seg6_do_srh_inline(struct sk_buff *skb, struct ipv6_sr_hdr *osrh)
 
 	return 0;
 }
-#endif
+EXPORT_SYMBOL_GPL(seg6_do_srh_inline);
 
 static int seg6_do_srh(struct sk_buff *skb)
 {
@@ -209,12 +209,10 @@ static int seg6_do_srh(struct sk_buff *skb)
 	}
 
 	switch (tinfo->mode) {
-#ifdef CONFIG_IPV6_SEG6_INLINE
 	case SEG6_IPTUN_MODE_INLINE:
 		err = seg6_do_srh_inline(skb, tinfo->srh);
 		skb_reset_inner_headers(skb);
 		break;
-#endif
 	case SEG6_IPTUN_MODE_ENCAP:
 		err = seg6_do_srh_encap(skb, tinfo->srh);
 		break;
@@ -265,6 +263,10 @@ static int seg6_input(struct sk_buff *skb)
 		skb_dst_set(skb, dst);
 	}
 
+	err = skb_cow_head(skb, LL_RESERVED_SPACE(dst->dev));
+	if (unlikely(err))
+		return err;
+
 	return dst_input(skb);
 }
 
@@ -310,6 +312,10 @@ static int seg6_output(struct net *net, struct sock *sk, struct sk_buff *skb)
 	skb_dst_drop(skb);
 	skb_dst_set(skb, dst);
 
+	err = skb_cow_head(skb, LL_RESERVED_SPACE(dst->dev));
+	if (unlikely(err))
+		goto drop;
+
 	return dst_output(net, sk, skb);
 drop:
 	kfree_skb(skb);
@@ -318,7 +324,8 @@ drop:
 
 static int seg6_build_state(struct nlattr *nla,
 			    unsigned int family, const void *cfg,
-			    struct lwtunnel_state **ts)
+			    struct lwtunnel_state **ts,
+			    struct netlink_ext_ack *extack)
 {
 	struct nlattr *tb[SEG6_IPTUNNEL_MAX + 1];
 	struct seg6_iptunnel_encap *tuninfo;
@@ -328,7 +335,7 @@ static int seg6_build_state(struct nlattr *nla,
 	int err;
 
 	err = nla_parse_nested(tb, SEG6_IPTUNNEL_MAX, nla,
-			       seg6_iptunnel_policy);
+			       seg6_iptunnel_policy, extack);
 
 	if (err < 0)
 		return err;
@@ -348,10 +355,8 @@ static int seg6_build_state(struct nlattr *nla,
 		return -EINVAL;
 
 	switch (tuninfo->mode) {
-#ifdef CONFIG_IPV6_SEG6_INLINE
 	case SEG6_IPTUN_MODE_INLINE:
 		break;
-#endif
 	case SEG6_IPTUN_MODE_ENCAP:
 		break;
 	default:

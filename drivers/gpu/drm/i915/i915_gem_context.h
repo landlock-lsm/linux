@@ -140,10 +140,34 @@ struct i915_gem_context {
 	 */
 	int priority;
 
-	/** ggtt_alignment: alignment restriction for context objects */
-	u32 ggtt_alignment;
 	/** ggtt_offset_bias: placement restriction for context objects */
 	u32 ggtt_offset_bias;
+
+	struct i915_gem_context_vma_lut {
+		/** ht_size: last request size to allocate the hashtable for. */
+		unsigned int ht_size;
+#define I915_CTX_RESIZE_IN_PROGRESS BIT(0)
+		/** ht_bits: real log2(size) of hashtable. */
+		unsigned int ht_bits;
+		/** ht_count: current number of entries inside the hashtable */
+		unsigned int ht_count;
+
+		/** ht: the array of buckets comprising the simple hashtable */
+		struct hlist_head *ht;
+
+		/**
+		 * resize: After an execbuf completes, we check the load factor
+		 * of the hashtable. If the hashtable is too full, or too empty,
+		 * we schedule a task to resize the hashtable. During the
+		 * resize, the entries are moved between different buckets and
+		 * so we cannot simultaneously read the hashtable as it is
+		 * being resized (unlike rhashtable). Therefore we treat the
+		 * active work as a strong barrier, pausing a subsequent
+		 * execbuf to wait for the resize worker to complete, if
+		 * required.
+		 */
+		struct work_struct resize;
+	} vma_lut;
 
 	/** engine: per-engine logical HW state */
 	struct intel_context {
@@ -159,9 +183,6 @@ struct i915_gem_context {
 	u32 ring_size;
 	/** desc_template: invariant fields for the HW context descriptor */
 	u32 desc_template;
-
-	/** status_notifier: list of callbacks for context-switch changes */
-	struct atomic_notifier_head status_notifier;
 
 	/** guilty_count: How many times this context has caused a GPU hang. */
 	unsigned int guilty_count;

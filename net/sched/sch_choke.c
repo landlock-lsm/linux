@@ -223,7 +223,6 @@ static bool choke_match_random(const struct choke_sched_data *q,
 static int choke_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 			 struct sk_buff **to_free)
 {
-	int ret = NET_XMIT_SUCCESS | __NET_XMIT_BYPASS;
 	struct choke_sched_data *q = qdisc_priv(sch);
 	const struct red_parms *p = &q->parms;
 
@@ -290,11 +289,6 @@ static int choke_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 congestion_drop:
 	qdisc_drop(skb, sch, to_free);
 	return NET_XMIT_CN;
-
-	if (ret & __NET_XMIT_BYPASS)
-		qdisc_qstats_drop(sch);
-	__qdisc_drop(skb, to_free);
-	return ret;
 }
 
 static struct sk_buff *choke_dequeue(struct Qdisc *sch)
@@ -363,7 +357,7 @@ static int choke_change(struct Qdisc *sch, struct nlattr *opt)
 	if (opt == NULL)
 		return -EINVAL;
 
-	err = nla_parse_nested(tb, TCA_CHOKE_MAX, opt, choke_policy);
+	err = nla_parse_nested(tb, TCA_CHOKE_MAX, opt, choke_policy, NULL);
 	if (err < 0)
 		return err;
 
@@ -382,10 +376,7 @@ static int choke_change(struct Qdisc *sch, struct nlattr *opt)
 	if (mask != q->tab_mask) {
 		struct sk_buff **ntab;
 
-		ntab = kcalloc(mask + 1, sizeof(struct sk_buff *),
-			       GFP_KERNEL | __GFP_NOWARN);
-		if (!ntab)
-			ntab = vzalloc((mask + 1) * sizeof(struct sk_buff *));
+		ntab = kvmalloc_array((mask + 1), sizeof(struct sk_buff *), GFP_KERNEL | __GFP_ZERO);
 		if (!ntab)
 			return -ENOMEM;
 

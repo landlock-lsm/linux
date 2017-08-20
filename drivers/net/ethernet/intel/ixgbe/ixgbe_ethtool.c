@@ -111,6 +111,9 @@ static const struct ixgbe_stats ixgbe_gstrings_stats[] = {
 	{"os2bmc_tx_by_bmc", IXGBE_STAT(stats.b2ospc)},
 	{"os2bmc_tx_by_host", IXGBE_STAT(stats.o2bspc)},
 	{"os2bmc_rx_by_host", IXGBE_STAT(stats.b2ogprc)},
+	{"tx_hwtstamp_timeouts", IXGBE_STAT(tx_hwtstamp_timeouts)},
+	{"tx_hwtstamp_skipped", IXGBE_STAT(tx_hwtstamp_skipped)},
+	{"rx_hwtstamp_cleared", IXGBE_STAT(rx_hwtstamp_cleared)},
 #ifdef IXGBE_FCOE
 	{"fcoe_bad_fccrc", IXGBE_STAT(stats.fccrc)},
 	{"rx_fcoe_dropped", IXGBE_STAT(stats.fcoerpdc)},
@@ -179,6 +182,7 @@ static u32 ixgbe_get_supported_10gtypes(struct ixgbe_hw *hw)
 	case IXGBE_DEV_ID_82598_BX:
 	case IXGBE_DEV_ID_82599_KR:
 	case IXGBE_DEV_ID_X550EM_X_KR:
+	case IXGBE_DEV_ID_X550EM_X_XFI:
 		return SUPPORTED_10000baseKR_Full;
 	default:
 		return SUPPORTED_10000baseKX4_Full |
@@ -1070,15 +1074,19 @@ static int ixgbe_set_ringparam(struct net_device *netdev,
 	if (!netif_running(adapter->netdev)) {
 		for (i = 0; i < adapter->num_tx_queues; i++)
 			adapter->tx_ring[i]->count = new_tx_count;
+		for (i = 0; i < adapter->num_xdp_queues; i++)
+			adapter->xdp_ring[i]->count = new_tx_count;
 		for (i = 0; i < adapter->num_rx_queues; i++)
 			adapter->rx_ring[i]->count = new_rx_count;
 		adapter->tx_ring_count = new_tx_count;
+		adapter->xdp_ring_count = new_tx_count;
 		adapter->rx_ring_count = new_rx_count;
 		goto clear_reset;
 	}
 
 	/* allocate temporary buffer to store rings in */
 	i = max_t(int, adapter->num_tx_queues, adapter->num_rx_queues);
+	i = max_t(int, i, adapter->num_xdp_queues);
 	temp_ring = vmalloc(i * sizeof(struct ixgbe_ring));
 
 	if (!temp_ring) {
@@ -1110,10 +1118,31 @@ static int ixgbe_set_ringparam(struct net_device *netdev,
 			}
 		}
 
+		for (i = 0; i < adapter->num_xdp_queues; i++) {
+			memcpy(&temp_ring[i], adapter->xdp_ring[i],
+			       sizeof(struct ixgbe_ring));
+
+			temp_ring[i].count = new_tx_count;
+			err = ixgbe_setup_tx_resources(&temp_ring[i]);
+			if (err) {
+				while (i) {
+					i--;
+					ixgbe_free_tx_resources(&temp_ring[i]);
+				}
+				goto err_setup;
+			}
+		}
+
 		for (i = 0; i < adapter->num_tx_queues; i++) {
 			ixgbe_free_tx_resources(adapter->tx_ring[i]);
 
 			memcpy(adapter->tx_ring[i], &temp_ring[i],
+			       sizeof(struct ixgbe_ring));
+		}
+		for (i = 0; i < adapter->num_xdp_queues; i++) {
+			ixgbe_free_tx_resources(adapter->xdp_ring[i]);
+
+			memcpy(adapter->xdp_ring[i], &temp_ring[i],
 			       sizeof(struct ixgbe_ring));
 		}
 
@@ -1127,7 +1156,7 @@ static int ixgbe_set_ringparam(struct net_device *netdev,
 			       sizeof(struct ixgbe_ring));
 
 			temp_ring[i].count = new_rx_count;
-			err = ixgbe_setup_rx_resources(&temp_ring[i]);
+			err = ixgbe_setup_rx_resources(adapter, &temp_ring[i]);
 			if (err) {
 				while (i) {
 					i--;
@@ -1248,7 +1277,7 @@ static void ixgbe_get_strings(struct net_device *netdev, u32 stringset,
 			      u8 *data)
 {
 	char *p = (char *)data;
-	int i;
+	unsigned int i;
 
 	switch (stringset) {
 	case ETH_SS_TEST:
@@ -1760,7 +1789,7 @@ static int ixgbe_setup_desc_rings(struct ixgbe_adapter *adapter)
 	rx_ring->netdev = adapter->netdev;
 	rx_ring->reg_idx = adapter->rx_ring[0]->reg_idx;
 
-	err = ixgbe_setup_rx_resources(rx_ring);
+	err = ixgbe_setup_rx_resources(adapter, rx_ring);
 	if (err) {
 		ret_val = 4;
 		goto err_nomem;
@@ -2228,6 +2257,9 @@ static int ixgbe_set_phys_id(struct net_device *netdev,
 	struct ixgbe_adapter *adapter = netdev_priv(netdev);
 	struct ixgbe_hw *hw = &adapter->hw;
 
+	if (!hw->mac.ops.led_on || !hw->mac.ops.led_off)
+		return -EOPNOTSUPP;
+
 	switch (state) {
 	case ETHTOOL_ID_ACTIVE:
 		adapter->led_reg = IXGBE_READ_REG(hw, IXGBE_LEDCTL);
@@ -2639,6 +2671,7 @@ static int ixgbe_flowspec_to_flow_type(struct ethtool_rx_flow_spec *fsp,
 				*flow_type = IXGBE_ATR_FLOW_TYPE_IPV4;
 				break;
 			}
+			/* fall through */
 		default:
 			return 0;
 		}
@@ -2941,9 +2974,7 @@ static int ixgbe_rss_indir_tbl_max(struct ixgbe_adapter *adapter)
 
 static u32 ixgbe_get_rxfh_key_size(struct net_device *netdev)
 {
-	struct ixgbe_adapter *adapter = netdev_priv(netdev);
-
-	return sizeof(adapter->rss_key);
+	return IXGBE_RSS_KEY_SIZE;
 }
 
 static u32 ixgbe_rss_indir_size(struct net_device *netdev)

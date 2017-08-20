@@ -31,6 +31,7 @@
 #include <linux/firmware.h>
 #include <linux/module.h>
 #include <linux/mmu_notifier.h>
+#include <linux/interval_tree.h>
 #include <drm/drmP.h>
 #include <drm/drm.h>
 
@@ -358,7 +359,7 @@ void amdgpu_mn_unregister(struct amdgpu_bo *bo)
 	head = bo->mn_list.next;
 
 	bo->mn = NULL;
-	list_del(&bo->mn_list);
+	list_del_init(&bo->mn_list);
 
 	if (list_empty(head)) {
 		struct amdgpu_mn_node *node;

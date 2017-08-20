@@ -12,7 +12,8 @@
 	FN(ABORTED)		\
 	FN(DROP)		\
 	FN(PASS)		\
-	FN(TX)
+	FN(TX)			\
+	FN(REDIRECT)
 
 #define __XDP_ACT_TP_FN(x)	\
 	TRACE_DEFINE_ENUM(XDP_##x);
@@ -48,6 +49,37 @@ TRACE_EVENT(xdp_exception,
 		  __print_symbolic(__entry->act, __XDP_ACT_SYM_TAB))
 );
 
+TRACE_EVENT(xdp_redirect,
+
+	TP_PROTO(const struct net_device *from,
+		 const struct net_device *to,
+		 const struct bpf_prog *xdp, u32 act, int err),
+
+	TP_ARGS(from, to, xdp, act, err),
+
+	TP_STRUCT__entry(
+		__string(name_from, from->name)
+		__string(name_to, to->name)
+		__array(u8, prog_tag, 8)
+		__field(u32, act)
+		__field(int, err)
+	),
+
+	TP_fast_assign(
+		BUILD_BUG_ON(sizeof(__entry->prog_tag) != sizeof(xdp->tag));
+		memcpy(__entry->prog_tag, xdp->tag, sizeof(xdp->tag));
+		__assign_str(name_from, from->name);
+		__assign_str(name_to, to->name);
+		__entry->act = act;
+		__entry->err = err;
+	),
+
+	TP_printk("prog=%s from=%s to=%s action=%s err=%d",
+		  __print_hex_str(__entry->prog_tag, 8),
+		  __get_str(name_from), __get_str(name_to),
+		  __print_symbolic(__entry->act, __XDP_ACT_SYM_TAB),
+		  __entry->err)
+);
 #endif /* _TRACE_XDP_H */
 
 #include <trace/define_trace.h>

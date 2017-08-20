@@ -34,7 +34,7 @@ BPF_CALL_1(bpf_handle_fs_get_mode, struct bpf_handle_fs *, handle_fs)
 			return -ENOENT;
 		return handle_fs->path->dentry->d_inode->i_mode;
 	case BPF_HANDLE_FS_TYPE_DENTRY:
-		if (WARN_ON(!handle_fs->dentry->d_inode))
+		if (!handle_fs->dentry->d_inode)
 			return -ENOENT;
 		return handle_fs->dentry->d_inode->i_mode;
 	case BPF_HANDLE_FS_TYPE_NONE:

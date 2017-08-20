@@ -13,7 +13,7 @@
  *        of Berkeley Packet Filters/Linux Socket Filters.
  */
 
-#include <linux/atomic.h>
+#include <linux/refcount.h>
 #include <linux/audit.h>
 #include <linux/compat.h>
 #include <linux/coredump.h>
@@ -57,15 +57,13 @@
  * to a task_struct (other than @usage).
  */
 struct seccomp_filter {
-	atomic_t usage;
+	refcount_t usage;
 	struct seccomp_filter *prev;
 	struct bpf_prog *prog;
 };
 
 /* Limit any path through the tree to 256KB worth of instructions. */
 #define MAX_INSNS_PER_PATH ((1 << 18) / sizeof(struct sock_filter))
-
-static void put_seccomp_filter(struct seccomp_filter *filter);
 
 /*
  * Endianness is explicitly ignored and left for BPF program authors to manage
@@ -317,7 +315,7 @@ static inline void seccomp_sync_threads(void)
 		 * current's path will hold a reference.  (This also
 		 * allows a put before the assignment.)
 		 */
-		put_seccomp_filter(thread->seccomp.filter);
+		put_seccomp_filter(thread);
 		smp_store_release(&thread->seccomp.filter,
 				  caller->seccomp.filter);
 
@@ -381,7 +379,7 @@ static struct seccomp_filter *seccomp_prepare_filter(struct sock_fprog *fprog)
 		return ERR_PTR(ret);
 	}
 
-	atomic_set(&sfilter->usage, 1);
+	refcount_set(&sfilter->usage, 1);
 
 	return sfilter;
 }
@@ -468,7 +466,7 @@ void get_seccomp_filter(struct task_struct *tsk)
 	if (!orig)
 		return;
 	/* Reference count is bounded by the number of total processes. */
-	atomic_inc(&orig->usage);
+	refcount_inc(&orig->usage);
 }
 
 static inline void seccomp_filter_free(struct seccomp_filter *filter)
@@ -479,25 +477,16 @@ static inline void seccomp_filter_free(struct seccomp_filter *filter)
 	}
 }
 
-/* put_seccomp_filter - decrements the ref count of a filter */
-static void put_seccomp_filter(struct seccomp_filter *filter)
+/* put_seccomp_filter - decrements the ref count of tsk->seccomp.filter */
+void put_seccomp_filter(struct task_struct *tsk)
 {
-	struct seccomp_filter *orig = filter;
-
+	struct seccomp_filter *orig = tsk->seccomp.filter;
 	/* Clean up single-reference branches iteratively. */
-	while (orig && atomic_dec_and_test(&orig->usage)) {
+	while (orig && refcount_dec_and_test(&orig->usage)) {
 		struct seccomp_filter *freeme = orig;
 		orig = orig->prev;
 		seccomp_filter_free(freeme);
 	}
-}
-
-void put_seccomp(struct task_struct *tsk)
-{
-	put_seccomp_filter(tsk->seccomp.filter);
-#ifdef CONFIG_SECURITY_LANDLOCK
-	put_landlock_events(tsk->seccomp.landlock_events);
-#endif /* CONFIG_SECURITY_LANDLOCK */
 }
 
 static void seccomp_init_siginfo(siginfo_t *info, int syscall, int reason)
@@ -653,11 +642,12 @@ static int __seccomp_filter(int this_syscall, const struct seccomp_data *sd,
 		return 0;
 
 	case SECCOMP_RET_KILL:
-	default: {
-		siginfo_t info;
+	default:
 		audit_seccomp(this_syscall, SIGSYS, action);
 		/* Dump core only if this is the last remaining thread. */
 		if (get_nr_threads(current) == 1) {
+			siginfo_t info;
+
 			/* Show the original registers in the dump. */
 			syscall_rollback(current, task_pt_regs(current));
 			/* Trigger a manual coredump since do_exit skips it. */
@@ -665,7 +655,6 @@ static int __seccomp_filter(int this_syscall, const struct seccomp_data *sd,
 			do_coredump(&info);
 		}
 		do_exit(SIGSYS);
-	}
 	}
 
 	unreachable();
@@ -817,10 +806,8 @@ static long do_seccomp(unsigned int op, unsigned int flags,
 		return seccomp_set_mode_strict();
 	case SECCOMP_SET_MODE_FILTER:
 		return seccomp_set_mode_filter(flags, uargs);
-#if defined(CONFIG_SECCOMP_FILTER) && defined(CONFIG_SECURITY_LANDLOCK)
-	case SECCOMP_APPEND_LANDLOCK_RULE:
-		return landlock_seccomp_append_prog(flags, uargs);
-#endif /* CONFIG_SECCOMP_FILTER && CONFIG_SECURITY_LANDLOCK */
+	case SECCOMP_PREPEND_LANDLOCK_RULE:
+		return landlock_seccomp_prepend_rule(flags, uargs);
 	default:
 		return -EINVAL;
 	}
@@ -930,7 +917,7 @@ long seccomp_get_filter(struct task_struct *task, unsigned long filter_off,
 	if (copy_to_user(data, fprog->filter, bpf_classic_proglen(fprog)))
 		ret = -EFAULT;
 
-	put_seccomp_filter(task->seccomp.filter);
+	put_seccomp_filter(task);
 	return ret;
 
 out:

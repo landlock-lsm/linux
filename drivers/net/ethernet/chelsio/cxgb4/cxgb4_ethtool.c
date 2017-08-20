@@ -500,7 +500,11 @@ static int from_fw_port_mod_type(enum fw_port_type port_type,
 	} else if (port_type == FW_PORT_TYPE_SFP ||
 		   port_type == FW_PORT_TYPE_QSFP_10G ||
 		   port_type == FW_PORT_TYPE_QSA ||
-		   port_type == FW_PORT_TYPE_QSFP) {
+		   port_type == FW_PORT_TYPE_QSFP ||
+		   port_type == FW_PORT_TYPE_CR4_QSFP ||
+		   port_type == FW_PORT_TYPE_CR_QSFP ||
+		   port_type == FW_PORT_TYPE_CR2_QSFP ||
+		   port_type == FW_PORT_TYPE_SFP28) {
 		if (mod_type == FW_PORT_MOD_TYPE_LR ||
 		    mod_type == FW_PORT_MOD_TYPE_SR ||
 		    mod_type == FW_PORT_MOD_TYPE_ER ||
@@ -511,6 +515,9 @@ static int from_fw_port_mod_type(enum fw_port_type port_type,
 			return PORT_DA;
 		else
 			return PORT_OTHER;
+	} else if (port_type == FW_PORT_TYPE_KR4_100G ||
+		   port_type == FW_PORT_TYPE_KR_SFP28) {
+		return PORT_NONE;
 	}
 
 	return PORT_OTHER;
@@ -618,7 +625,21 @@ static void fw_caps_to_lmm(enum fw_port_type port_type,
 	case FW_PORT_TYPE_CR_QSFP:
 	case FW_PORT_TYPE_SFP28:
 		SET_LMM(FIBRE);
-		SET_LMM(25000baseCR_Full);
+		FW_CAPS_TO_LMM(SPEED_1G, 1000baseT_Full);
+		FW_CAPS_TO_LMM(SPEED_10G, 10000baseT_Full);
+		FW_CAPS_TO_LMM(SPEED_25G, 25000baseCR_Full);
+		break;
+
+	case FW_PORT_TYPE_KR_SFP28:
+		SET_LMM(Backplane);
+		FW_CAPS_TO_LMM(SPEED_1G, 1000baseT_Full);
+		FW_CAPS_TO_LMM(SPEED_10G, 10000baseKR_Full);
+		FW_CAPS_TO_LMM(SPEED_25G, 25000baseKR_Full);
+		break;
+
+	case FW_PORT_TYPE_CR2_QSFP:
+		SET_LMM(FIBRE);
+		SET_LMM(50000baseSR2_Full);
 		break;
 
 	case FW_PORT_TYPE_KR4_100G:
@@ -674,12 +695,19 @@ static unsigned int lmm_to_fw_caps(const unsigned long *link_mode_mask)
 static int get_link_ksettings(struct net_device *dev,
 			      struct ethtool_link_ksettings *link_ksettings)
 {
-	const struct port_info *pi = netdev_priv(dev);
+	struct port_info *pi = netdev_priv(dev);
 	struct ethtool_link_settings *base = &link_ksettings->base;
 
 	ethtool_link_ksettings_zero_link_mode(link_ksettings, supported);
 	ethtool_link_ksettings_zero_link_mode(link_ksettings, advertising);
 	ethtool_link_ksettings_zero_link_mode(link_ksettings, lp_advertising);
+
+	/* For the nonce, the Firmware doesn't send up Port State changes
+	 * when the Virtual Interface attached to the Port is down.  So
+	 * if it's down, let's grab any changes.
+	 */
+	if (!netif_running(dev))
+		(void)t4_update_port_info(pi);
 
 	base->port = from_fw_port_mod_type(pi->port_type, pi->mod_type);
 
@@ -770,6 +798,104 @@ static int set_link_ksettings(struct net_device *dev,
 	if (ret)
 		*lc = old_lc;
 
+	return ret;
+}
+
+/* Translate the Firmware FEC value into the ethtool value. */
+static inline unsigned int fwcap_to_eth_fec(unsigned int fw_fec)
+{
+	unsigned int eth_fec = 0;
+
+	if (fw_fec & FW_PORT_CAP_FEC_RS)
+		eth_fec |= ETHTOOL_FEC_RS;
+	if (fw_fec & FW_PORT_CAP_FEC_BASER_RS)
+		eth_fec |= ETHTOOL_FEC_BASER;
+
+	/* if nothing is set, then FEC is off */
+	if (!eth_fec)
+		eth_fec = ETHTOOL_FEC_OFF;
+
+	return eth_fec;
+}
+
+/* Translate Common Code FEC value into ethtool value. */
+static inline unsigned int cc_to_eth_fec(unsigned int cc_fec)
+{
+	unsigned int eth_fec = 0;
+
+	if (cc_fec & FEC_AUTO)
+		eth_fec |= ETHTOOL_FEC_AUTO;
+	if (cc_fec & FEC_RS)
+		eth_fec |= ETHTOOL_FEC_RS;
+	if (cc_fec & FEC_BASER_RS)
+		eth_fec |= ETHTOOL_FEC_BASER;
+
+	/* if nothing is set, then FEC is off */
+	if (!eth_fec)
+		eth_fec = ETHTOOL_FEC_OFF;
+
+	return eth_fec;
+}
+
+/* Translate ethtool FEC value into Common Code value. */
+static inline unsigned int eth_to_cc_fec(unsigned int eth_fec)
+{
+	unsigned int cc_fec = 0;
+
+	if (eth_fec & ETHTOOL_FEC_OFF)
+		return cc_fec;
+
+	if (eth_fec & ETHTOOL_FEC_AUTO)
+		cc_fec |= FEC_AUTO;
+	if (eth_fec & ETHTOOL_FEC_RS)
+		cc_fec |= FEC_RS;
+	if (eth_fec & ETHTOOL_FEC_BASER)
+		cc_fec |= FEC_BASER_RS;
+
+	return cc_fec;
+}
+
+static int get_fecparam(struct net_device *dev, struct ethtool_fecparam *fec)
+{
+	const struct port_info *pi = netdev_priv(dev);
+	const struct link_config *lc = &pi->link_cfg;
+
+	/* Translate the Firmware FEC Support into the ethtool value.  We
+	 * always support IEEE 802.3 "automatic" selection of Link FEC type if
+	 * any FEC is supported.
+	 */
+	fec->fec = fwcap_to_eth_fec(lc->supported);
+	if (fec->fec != ETHTOOL_FEC_OFF)
+		fec->fec |= ETHTOOL_FEC_AUTO;
+
+	/* Translate the current internal FEC parameters into the
+	 * ethtool values.
+	 */
+	fec->active_fec = cc_to_eth_fec(lc->fec);
+
+	return 0;
+}
+
+static int set_fecparam(struct net_device *dev, struct ethtool_fecparam *fec)
+{
+	struct port_info *pi = netdev_priv(dev);
+	struct link_config *lc = &pi->link_cfg;
+	struct link_config old_lc;
+	int ret;
+
+	/* Save old Link Configuration in case the L1 Configure below
+	 * fails.
+	 */
+	old_lc = *lc;
+
+	/* Try to perform the L1 Configure and return the result of that
+	 * effort.  If it fails, revert the attempted change.
+	 */
+	lc->requested_fec = eth_to_cc_fec(fec->fec);
+	ret = t4_link_l1cfg(pi->adapter, pi->adapter->mbox,
+			    pi->tx_chan, lc);
+	if (ret)
+		*lc = old_lc;
 	return ret;
 }
 
@@ -969,7 +1095,7 @@ static int get_eeprom(struct net_device *dev, struct ethtool_eeprom *e,
 {
 	int i, err = 0;
 	struct adapter *adapter = netdev2adap(dev);
-	u8 *buf = t4_alloc_mem(EEPROMSIZE);
+	u8 *buf = kvzalloc(EEPROMSIZE, GFP_KERNEL);
 
 	if (!buf)
 		return -ENOMEM;
@@ -980,7 +1106,7 @@ static int get_eeprom(struct net_device *dev, struct ethtool_eeprom *e,
 
 	if (!err)
 		memcpy(data, buf + e->offset, e->len);
-	t4_free_mem(buf);
+	kvfree(buf);
 	return err;
 }
 
@@ -1009,7 +1135,7 @@ static int set_eeprom(struct net_device *dev, struct ethtool_eeprom *eeprom,
 	if (aligned_offset != eeprom->offset || aligned_len != eeprom->len) {
 		/* RMW possibly needed for first or last words.
 		 */
-		buf = t4_alloc_mem(aligned_len);
+		buf = kvzalloc(aligned_len, GFP_KERNEL);
 		if (!buf)
 			return -ENOMEM;
 		err = eeprom_rd_phys(adapter, aligned_offset, (u32 *)buf);
@@ -1037,7 +1163,7 @@ static int set_eeprom(struct net_device *dev, struct ethtool_eeprom *eeprom,
 		err = t4_seeprom_wp(adapter, true);
 out:
 	if (buf != data)
-		t4_free_mem(buf);
+		kvfree(buf);
 	return err;
 }
 
@@ -1085,14 +1211,31 @@ static int set_flash(struct net_device *netdev, struct ethtool_flash *ef)
 
 static int get_ts_info(struct net_device *dev, struct ethtool_ts_info *ts_info)
 {
+	struct port_info *pi = netdev_priv(dev);
+	struct  adapter *adapter = pi->adapter;
+
 	ts_info->so_timestamping = SOF_TIMESTAMPING_TX_SOFTWARE |
 				   SOF_TIMESTAMPING_RX_SOFTWARE |
 				   SOF_TIMESTAMPING_SOFTWARE;
 
 	ts_info->so_timestamping |= SOF_TIMESTAMPING_RX_HARDWARE |
+				    SOF_TIMESTAMPING_TX_HARDWARE |
 				    SOF_TIMESTAMPING_RAW_HARDWARE;
 
-	ts_info->phc_index = -1;
+	ts_info->tx_types = (1 << HWTSTAMP_TX_OFF) |
+			    (1 << HWTSTAMP_TX_ON);
+
+	ts_info->rx_filters = (1 << HWTSTAMP_FILTER_NONE) |
+			      (1 << HWTSTAMP_FILTER_PTP_V2_L4_EVENT) |
+			      (1 << HWTSTAMP_FILTER_PTP_V1_L4_SYNC) |
+			      (1 << HWTSTAMP_FILTER_PTP_V1_L4_DELAY_REQ) |
+			      (1 << HWTSTAMP_FILTER_PTP_V2_L4_SYNC) |
+			      (1 << HWTSTAMP_FILTER_PTP_V2_L4_DELAY_REQ);
+
+	if (adapter->ptp_clock)
+		ts_info->phc_index = ptp_clock_index(adapter->ptp_clock);
+	else
+		ts_info->phc_index = -1;
 
 	return 0;
 }
@@ -1210,6 +1353,8 @@ static int get_rxnfc(struct net_device *dev, struct ethtool_rxnfc *info,
 static const struct ethtool_ops cxgb_ethtool_ops = {
 	.get_link_ksettings = get_link_ksettings,
 	.set_link_ksettings = set_link_ksettings,
+	.get_fecparam      = get_fecparam,
+	.set_fecparam      = set_fecparam,
 	.get_drvinfo       = get_drvinfo,
 	.get_msglevel      = get_msglevel,
 	.set_msglevel      = set_msglevel,

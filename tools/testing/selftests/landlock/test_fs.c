@@ -95,13 +95,10 @@ FIXTURE_SETUP(fs_read_only)
 	cleanup_layout1();
 	setup_layout1(_metadata, &self->l1);
 
-	ASSERT_EQ(0, load_bpf_file("rules/fs_read_only.o")) {
+	ASSERT_EQ(0, load_bpf_file("rule_fs_read_only.o")) {
 		TH_LOG("%s", bpf_log_buf);
 	}
 	self->prog = prog_fd[0];
-	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, NULL, 0, 0)) {
-		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS");
-	}
 }
 
 FIXTURE_TEARDOWN(fs_read_only)
@@ -115,7 +112,6 @@ TEST_F(fs_read_only, load_prog) {}
 TEST_F(fs_read_only, read_only_file)
 {
 	int fd;
-	int step = 0;
 	char buf_write[] = "should not be written";
 	char buf_read[2];
 
@@ -125,86 +121,84 @@ TEST_F(fs_read_only, read_only_file)
 	ASSERT_EQ(-1, read(self->l1.file_wo, buf_read, sizeof(buf_read)));
 	ASSERT_EQ(EBADF, errno);
 
-	ASSERT_EQ(0, seccomp(SECCOMP_APPEND_LANDLOCK_RULE, 0, &self->prog)) {
+	ASSERT_EQ(0, seccomp(SECCOMP_PREPEND_LANDLOCK_RULE, 0, &self->prog)) {
 		TH_LOG("Failed to apply rule fs_read_only: %s",
 				strerror(errno));
 	}
+	_metadata->no_print = true;
 
 	fd = open(".", O_TMPFILE | O_EXCL | O_RDWR | O_CLOEXEC, 0600);
-	ASSERT_STEP(fd == -1);
-	ASSERT_STEP(errno != EOPNOTSUPP)
-	ASSERT_STEP(errno == EPERM);
+	ASSERT_EQ(fd, -1);
+	ASSERT_NE(errno, EOPNOTSUPP)
+	ASSERT_EQ(errno, EPERM);
 
 	fd = open(TMP_PREFIX "file_created",
 			O_RDONLY | O_CLOEXEC);
-	ASSERT_STEP(fd >= 0);
-	ASSERT_STEP(!close(fd));
+	ASSERT_GE(fd, 0);
+	ASSERT_EQ(close(fd), 0);
 
 	fd = open(TMP_PREFIX "file_created",
 			O_RDWR | O_CLOEXEC);
-	ASSERT_STEP(fd == -1);
-	ASSERT_STEP(errno == EPERM);
+	ASSERT_EQ(fd, -1);
+	ASSERT_EQ(errno, EPERM);
 
 	fd = open(TMP_PREFIX "file_created",
 			O_WRONLY | O_CLOEXEC);
-	ASSERT_STEP(fd == -1);
-	ASSERT_STEP(errno == EPERM);
+	ASSERT_EQ(fd, -1);
+	ASSERT_EQ(errno, EPERM);
 
 	fd = open(TMP_PREFIX "should_not_exist",
 			O_CREAT | O_EXCL | O_CLOEXEC, 0600);
-	ASSERT_STEP(fd == -1);
-	ASSERT_STEP(errno == EPERM);
+	ASSERT_EQ(fd, -1);
+	ASSERT_EQ(errno, EPERM);
 
-	ASSERT_STEP(-1 ==
+	ASSERT_EQ(-1,
 			write(self->l1.file_ro, buf_write, sizeof(buf_write)));
-	ASSERT_STEP(errno == EBADF);
-	ASSERT_STEP(sizeof(buf_read) ==
+	ASSERT_EQ(errno, EBADF);
+	ASSERT_EQ(sizeof(buf_read),
 			read(self->l1.file_ro, buf_read, sizeof(buf_read)));
 
-	ASSERT_STEP(-1 ==
+	ASSERT_EQ(-1,
 			write(self->l1.file_rw, buf_write, sizeof(buf_write)));
-	ASSERT_STEP(errno == EPERM);
-	ASSERT_STEP(sizeof(buf_read) ==
+	ASSERT_EQ(errno, EPERM);
+	ASSERT_EQ(sizeof(buf_read),
 			read(self->l1.file_rw, buf_read, sizeof(buf_read)));
 
-	ASSERT_STEP(-1 == write(self->l1.file_wo, buf_write, sizeof(buf_write)));
-	ASSERT_STEP(errno == EPERM);
-	ASSERT_STEP(-1 == read(self->l1.file_wo, buf_read, sizeof(buf_read)));
-	ASSERT_STEP(errno == EBADF);
+	ASSERT_EQ(-1, write(self->l1.file_wo, buf_write, sizeof(buf_write)));
+	ASSERT_EQ(errno, EPERM);
+	ASSERT_EQ(-1, read(self->l1.file_wo, buf_read, sizeof(buf_read)));
+	ASSERT_EQ(errno, EBADF);
 
-	ASSERT_STEP(-1 == unlink(TMP_PREFIX "file_created"));
-	ASSERT_STEP(errno == EPERM);
-	ASSERT_STEP(-1 == rmdir(TMP_PREFIX "dir_created"));
-	ASSERT_STEP(errno == EPERM);
+	ASSERT_EQ(-1, unlink(TMP_PREFIX "file_created"));
+	ASSERT_EQ(errno, EPERM);
+	ASSERT_EQ(-1, rmdir(TMP_PREFIX "dir_created"));
+	ASSERT_EQ(errno, EPERM);
 
-	ASSERT_STEP(0 == close(self->l1.file_ro));
-	ASSERT_STEP(0 == close(self->l1.file_rw));
-	ASSERT_STEP(0 == close(self->l1.file_wo));
+	ASSERT_EQ(0, close(self->l1.file_ro));
+	ASSERT_EQ(0, close(self->l1.file_rw));
+	ASSERT_EQ(0, close(self->l1.file_wo));
 }
 
 TEST_F(fs_read_only, read_only_mount)
 {
-	int step = 0;
-
 	ASSERT_EQ(0, mount(".", TMP_PREFIX "dir_created",
 				NULL, MS_BIND, NULL));
 	ASSERT_EQ(0, umount2(TMP_PREFIX "dir_created", MNT_FORCE));
 
-	ASSERT_EQ(0, seccomp(SECCOMP_APPEND_LANDLOCK_RULE, 0, &self->prog)) {
+	ASSERT_EQ(0, seccomp(SECCOMP_PREPEND_LANDLOCK_RULE, 0, &self->prog)) {
 		TH_LOG("Failed to apply rule fs_read_only: %s",
 				strerror(errno));
 	}
 
-	ASSERT_STEP(-1 == mount(".", TMP_PREFIX "dir_created",
+	ASSERT_EQ(-1, mount(".", TMP_PREFIX "dir_created",
 				NULL, MS_BIND, NULL));
-	ASSERT_STEP(errno == EPERM);
-	ASSERT_STEP(-1 == umount("/"));
-	ASSERT_STEP(errno == EPERM);
+	ASSERT_EQ(errno, EPERM);
+	ASSERT_EQ(-1, umount("/"));
+	ASSERT_EQ(errno, EPERM);
 }
 
 TEST_F(fs_read_only, read_only_mem)
 {
-	int step = 0;
 	void *addr;
 
 	addr = mmap(NULL, 1, PROT_READ | PROT_WRITE,
@@ -212,27 +206,27 @@ TEST_F(fs_read_only, read_only_mem)
 	ASSERT_NE(NULL, addr);
 	ASSERT_EQ(0, munmap(addr, 1));
 
-	ASSERT_EQ(0, seccomp(SECCOMP_APPEND_LANDLOCK_RULE, 0, &self->prog)) {
+	ASSERT_EQ(0, seccomp(SECCOMP_PREPEND_LANDLOCK_RULE, 0, &self->prog)) {
 		TH_LOG("Failed to apply rule fs_read_only: %s",
 				strerror(errno));
 	}
 
 	addr = mmap(NULL, 1, PROT_READ, MAP_SHARED,
 			self->l1.file_rw, 0);
-	ASSERT_STEP(addr != NULL);
-	ASSERT_STEP(-1 == mprotect(addr, 1, PROT_WRITE));
-	ASSERT_STEP(errno == EPERM);
-	ASSERT_STEP(0 == munmap(addr, 1));
+	ASSERT_NE(addr, NULL);
+	ASSERT_EQ(-1, mprotect(addr, 1, PROT_WRITE));
+	ASSERT_EQ(errno, EPERM);
+	ASSERT_EQ(0, munmap(addr, 1));
 
 	addr = mmap(NULL, 1, PROT_READ | PROT_WRITE, MAP_SHARED,
 			self->l1.file_rw, 0);
-	ASSERT_STEP(addr != NULL);
-	ASSERT_STEP(errno == EPERM);
+	ASSERT_NE(addr, NULL);
+	ASSERT_EQ(errno, EPERM);
 
 	addr = mmap(NULL, 1, PROT_READ | PROT_WRITE, MAP_PRIVATE,
 			self->l1.file_rw, 0);
-	ASSERT_STEP(addr != NULL);
-	ASSERT_STEP(0 == munmap(addr, 1));
+	ASSERT_NE(addr, NULL);
+	ASSERT_EQ(0, munmap(addr, 1));
 }
 
 FIXTURE(fs_no_open) {
@@ -245,13 +239,10 @@ FIXTURE_SETUP(fs_no_open)
 	cleanup_layout1();
 	setup_layout1(_metadata, &self->l1);
 
-	ASSERT_EQ(0, load_bpf_file("rules/fs_no_open.o")) {
+	ASSERT_EQ(0, load_bpf_file("rule_fs_no_open.o")) {
 		TH_LOG("%s", bpf_log_buf);
 	}
 	self->prog = prog_fd[0];
-	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, NULL, 0, 0)) {
-		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS");
-	}
 }
 
 FIXTURE_TEARDOWN(fs_no_open)
@@ -285,7 +276,7 @@ TEST_F(fs_no_open, deny_open_for_hierarchy) {
 	ASSERT_LE(0, fd);
 	ASSERT_EQ(0, close(fd));
 
-	ASSERT_EQ(0, seccomp(SECCOMP_APPEND_LANDLOCK_RULE, 0, &self->prog)) {
+	ASSERT_EQ(0, seccomp(SECCOMP_PREPEND_LANDLOCK_RULE, 0, &self->prog)) {
 		TH_LOG("Failed to apply rule fs_no_open: %s", strerror(errno));
 	}
 
@@ -295,7 +286,7 @@ TEST_F(fs_no_open, deny_open_for_hierarchy) {
 	ASSERT_LE(0, child);
 	if (!child) {
 		landlocked_deny_open(_metadata, &self->l1);
-		_exit(1);
+		_exit(0);
 	}
 	ASSERT_EQ(child, waitpid(child, &status, 0));
 	ASSERT_TRUE(WIFEXITED(status));

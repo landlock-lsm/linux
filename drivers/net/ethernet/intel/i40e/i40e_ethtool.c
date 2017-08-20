@@ -89,7 +89,6 @@ static const struct i40e_stats i40e_gstrings_misc_stats[] = {
 	I40E_VSI_STAT("rx_unknown_protocol", eth_stats.rx_unknown_protocol),
 	I40E_VSI_STAT("tx_linearize", tx_linearize),
 	I40E_VSI_STAT("tx_force_wb", tx_force_wb),
-	I40E_VSI_STAT("tx_lost_interrupt", tx_lost_interrupt),
 	I40E_VSI_STAT("rx_alloc_fail", rx_buf_failed),
 	I40E_VSI_STAT("rx_pg_alloc_fail", rx_page_failed),
 };
@@ -148,6 +147,7 @@ static const struct i40e_stats i40e_gstrings_stats[] = {
 	I40E_PF_STAT("VF_admin_queue_requests", vf_aq_requests),
 	I40E_PF_STAT("arq_overflows", arq_overflows),
 	I40E_PF_STAT("rx_hwtstamp_cleared", rx_hwtstamp_cleared),
+	I40E_PF_STAT("tx_hwtstamp_skipped", tx_hwtstamp_skipped),
 	I40E_PF_STAT("fdir_flush_cnt", fd_flush_cnt),
 	I40E_PF_STAT("fdir_atr_match", stats.fd_atr_match),
 	I40E_PF_STAT("fdir_atr_tunnel_match", stats.fd_atr_tunnel_match),
@@ -207,22 +207,37 @@ static const char i40e_gstrings_test[][ETH_GSTRING_LEN] = {
 
 #define I40E_TEST_LEN (sizeof(i40e_gstrings_test) / ETH_GSTRING_LEN)
 
-static const char i40e_priv_flags_strings[][ETH_GSTRING_LEN] = {
-	"MFP",
-	"LinkPolling",
-	"flow-director-atr",
-	"veb-stats",
-	"hw-atr-eviction",
+struct i40e_priv_flags {
+	char flag_string[ETH_GSTRING_LEN];
+	u64 flag;
+	bool read_only;
 };
 
-#define I40E_PRIV_FLAGS_STR_LEN ARRAY_SIZE(i40e_priv_flags_strings)
+#define I40E_PRIV_FLAG(_name, _flag, _read_only) { \
+	.flag_string = _name, \
+	.flag = _flag, \
+	.read_only = _read_only, \
+}
+
+static const struct i40e_priv_flags i40e_gstrings_priv_flags[] = {
+	/* NOTE: MFP setting cannot be changed */
+	I40E_PRIV_FLAG("MFP", I40E_FLAG_MFP_ENABLED, 1),
+	I40E_PRIV_FLAG("LinkPolling", I40E_FLAG_LINK_POLLING_ENABLED, 0),
+	I40E_PRIV_FLAG("flow-director-atr", I40E_FLAG_FD_ATR_ENABLED, 0),
+	I40E_PRIV_FLAG("veb-stats", I40E_FLAG_VEB_STATS_ENABLED, 0),
+	I40E_PRIV_FLAG("hw-atr-eviction", I40E_FLAG_HW_ATR_EVICT_ENABLED, 0),
+	I40E_PRIV_FLAG("legacy-rx", I40E_FLAG_LEGACY_RX, 0),
+};
+
+#define I40E_PRIV_FLAGS_STR_LEN ARRAY_SIZE(i40e_gstrings_priv_flags)
 
 /* Private flags with a global effect, restricted to PF 0 */
-static const char i40e_gl_priv_flags_strings[][ETH_GSTRING_LEN] = {
-	"vf-true-promisc-support",
+static const struct i40e_priv_flags i40e_gl_gstrings_priv_flags[] = {
+	I40E_PRIV_FLAG("vf-true-promisc-support",
+		       I40E_FLAG_TRUE_PROMISC_SUPPORT, 0),
 };
 
-#define I40E_GL_PRIV_FLAGS_STR_LEN ARRAY_SIZE(i40e_gl_priv_flags_strings)
+#define I40E_GL_PRIV_FLAGS_STR_LEN ARRAY_SIZE(i40e_gl_gstrings_priv_flags)
 
 /**
  * i40e_partition_setting_complaint - generic complaint for MFP restriction
@@ -684,6 +699,7 @@ static int i40e_set_link_ksettings(struct net_device *netdev,
 	struct ethtool_link_ksettings copy_cmd;
 	i40e_status status = 0;
 	bool change = false;
+	int timeout = 50;
 	int err = 0;
 	u32 autoneg;
 	u32 advertise;
@@ -742,14 +758,20 @@ static int i40e_set_link_ksettings(struct net_device *netdev,
 	if (memcmp(&copy_cmd, &safe_cmd, sizeof(struct ethtool_link_ksettings)))
 		return -EOPNOTSUPP;
 
-	while (test_bit(__I40E_CONFIG_BUSY, &vsi->state))
+	while (test_and_set_bit(__I40E_CONFIG_BUSY, pf->state)) {
+		timeout--;
+		if (!timeout)
+			return -EBUSY;
 		usleep_range(1000, 2000);
+	}
 
 	/* Get the current phy config */
 	status = i40e_aq_get_phy_capabilities(hw, false, false, &abilities,
 					      NULL);
-	if (status)
-		return -EAGAIN;
+	if (status) {
+		err = -EAGAIN;
+		goto done;
+	}
 
 	/* Copy abilities to config in case autoneg is not
 	 * set below
@@ -765,7 +787,8 @@ static int i40e_set_link_ksettings(struct net_device *netdev,
 			if (!ethtool_link_ksettings_test_link_mode(
 				    &safe_cmd, supported, Autoneg)) {
 				netdev_info(netdev, "Autoneg not supported on this phy\n");
-				return -EINVAL;
+				err = -EINVAL;
+				goto done;
 			}
 			/* Autoneg is allowed to change */
 			config.abilities = abilities.abilities |
@@ -783,7 +806,8 @@ static int i40e_set_link_ksettings(struct net_device *netdev,
 			    hw->phy.link_info.phy_type !=
 			    I40E_PHY_TYPE_10GBASE_T) {
 				netdev_info(netdev, "Autoneg cannot be disabled on this phy\n");
-				return -EINVAL;
+				err = -EINVAL;
+				goto done;
 			}
 			/* Autoneg is allowed to change */
 			config.abilities = abilities.abilities &
@@ -794,8 +818,10 @@ static int i40e_set_link_ksettings(struct net_device *netdev,
 
 	ethtool_convert_link_mode_to_legacy_u32(&tmp,
 						safe_cmd.link_modes.supported);
-	if (advertise & ~tmp)
-		return -EINVAL;
+	if (advertise & ~tmp) {
+		err = -EINVAL;
+		goto done;
+	}
 
 	if (advertise & ADVERTISED_100baseT_Full)
 		config.link_speed |= I40E_LINK_SPEED_100MB;
@@ -851,7 +877,8 @@ static int i40e_set_link_ksettings(struct net_device *netdev,
 			netdev_info(netdev, "Set phy config failed, err %s aq_err %s\n",
 				    i40e_stat_str(hw, status),
 				    i40e_aq_str(hw, hw->aq.asq_last_status));
-			return -EAGAIN;
+			err = -EAGAIN;
+			goto done;
 		}
 
 		status = i40e_update_link_info(hw);
@@ -863,6 +890,9 @@ static int i40e_set_link_ksettings(struct net_device *netdev,
 	} else {
 		netdev_info(netdev, "Nothing changed, exiting without setting anything.\n");
 	}
+
+done:
+	clear_bit(__I40E_CONFIG_BUSY, pf->state);
 
 	return err;
 }
@@ -958,7 +988,7 @@ static int i40e_set_pauseparam(struct net_device *netdev,
 	}
 
 	/* If we have link and don't have autoneg */
-	if (!test_bit(__I40E_DOWN, &pf->state) &&
+	if (!test_bit(__I40E_DOWN, pf->state) &&
 	    !(hw_link_info->an_info & I40E_AQ_AN_COMPLETED)) {
 		/* Send message that it might not necessarily work*/
 		netdev_info(netdev, "Autoneg did not complete so changing settings may not result in an actual change.\n");
@@ -1010,10 +1040,10 @@ static int i40e_set_pauseparam(struct net_device *netdev,
 		err = -EAGAIN;
 	}
 
-	if (!test_bit(__I40E_DOWN, &pf->state)) {
+	if (!test_bit(__I40E_DOWN, pf->state)) {
 		/* Give it a little more time to try to come back */
 		msleep(75);
-		if (!test_bit(__I40E_DOWN, &pf->state))
+		if (!test_bit(__I40E_DOWN, pf->state))
 			return i40e_nway_reset(netdev);
 	}
 
@@ -1061,7 +1091,7 @@ static void i40e_get_regs(struct net_device *netdev, struct ethtool_regs *regs,
 	struct i40e_pf *pf = np->vsi->back;
 	struct i40e_hw *hw = &pf->hw;
 	u32 *reg_buf = p;
-	int i, j, ri;
+	unsigned int i, j, ri;
 	u32 reg;
 
 	/* Tell ethtool which driver-version-specific regs output we have.
@@ -1110,8 +1140,8 @@ static int i40e_get_eeprom(struct net_device *netdev,
 		/* make sure it is the right magic for NVMUpdate */
 		if ((eeprom->magic >> 16) != hw->device_id)
 			errno = -EINVAL;
-		else if (test_bit(__I40E_RESET_RECOVERY_PENDING, &pf->state) ||
-			 test_bit(__I40E_RESET_INTR_RECEIVED, &pf->state))
+		else if (test_bit(__I40E_RESET_RECOVERY_PENDING, pf->state) ||
+			 test_bit(__I40E_RESET_INTR_RECEIVED, pf->state))
 			errno = -EBUSY;
 		else
 			ret_val = i40e_nvmupd_command(hw, cmd, bytes, &errno);
@@ -1217,8 +1247,8 @@ static int i40e_set_eeprom(struct net_device *netdev,
 	/* check for NVMUpdate access method */
 	else if (!eeprom->magic || (eeprom->magic >> 16) != hw->device_id)
 		errno = -EINVAL;
-	else if (test_bit(__I40E_RESET_RECOVERY_PENDING, &pf->state) ||
-		 test_bit(__I40E_RESET_INTR_RECEIVED, &pf->state))
+	else if (test_bit(__I40E_RESET_RECOVERY_PENDING, pf->state) ||
+		 test_bit(__I40E_RESET_INTR_RECEIVED, pf->state))
 		errno = -EBUSY;
 	else
 		ret_val = i40e_nvmupd_command(hw, cmd, bytes, &errno);
@@ -1269,6 +1299,17 @@ static void i40e_get_ringparam(struct net_device *netdev,
 	ring->rx_jumbo_pending = 0;
 }
 
+static bool i40e_active_tx_ring_index(struct i40e_vsi *vsi, u16 index)
+{
+	if (i40e_enabled_xdp_vsi(vsi)) {
+		return index < vsi->num_queue_pairs ||
+			(index >= vsi->alloc_queue_pairs &&
+			 index < vsi->alloc_queue_pairs + vsi->num_queue_pairs);
+	}
+
+	return index < vsi->num_queue_pairs;
+}
+
 static int i40e_set_ringparam(struct net_device *netdev,
 			      struct ethtool_ringparam *ring)
 {
@@ -1278,6 +1319,8 @@ static int i40e_set_ringparam(struct net_device *netdev,
 	struct i40e_vsi *vsi = np->vsi;
 	struct i40e_pf *pf = vsi->back;
 	u32 new_rx_count, new_tx_count;
+	u16 tx_alloc_queue_pairs;
+	int timeout = 50;
 	int i, err = 0;
 
 	if ((ring->rx_mini_pending) || (ring->rx_jumbo_pending))
@@ -1302,14 +1345,20 @@ static int i40e_set_ringparam(struct net_device *netdev,
 	    (new_rx_count == vsi->rx_rings[0]->count))
 		return 0;
 
-	while (test_and_set_bit(__I40E_CONFIG_BUSY, &pf->state))
+	while (test_and_set_bit(__I40E_CONFIG_BUSY, pf->state)) {
+		timeout--;
+		if (!timeout)
+			return -EBUSY;
 		usleep_range(1000, 2000);
+	}
 
 	if (!netif_running(vsi->netdev)) {
 		/* simple case - set for the next time the netdev is started */
 		for (i = 0; i < vsi->num_queue_pairs; i++) {
 			vsi->tx_rings[i]->count = new_tx_count;
 			vsi->rx_rings[i]->count = new_rx_count;
+			if (i40e_enabled_xdp_vsi(vsi))
+				vsi->xdp_rings[i]->count = new_tx_count;
 		}
 		goto done;
 	}
@@ -1319,20 +1368,24 @@ static int i40e_set_ringparam(struct net_device *netdev,
 	 * to the Tx and Rx ring structs.
 	 */
 
-	/* alloc updated Tx resources */
+	/* alloc updated Tx and XDP Tx resources */
+	tx_alloc_queue_pairs = vsi->alloc_queue_pairs *
+			       (i40e_enabled_xdp_vsi(vsi) ? 2 : 1);
 	if (new_tx_count != vsi->tx_rings[0]->count) {
 		netdev_info(netdev,
 			    "Changing Tx descriptor count from %d to %d.\n",
 			    vsi->tx_rings[0]->count, new_tx_count);
-		tx_rings = kcalloc(vsi->alloc_queue_pairs,
+		tx_rings = kcalloc(tx_alloc_queue_pairs,
 				   sizeof(struct i40e_ring), GFP_KERNEL);
 		if (!tx_rings) {
 			err = -ENOMEM;
 			goto done;
 		}
 
-		for (i = 0; i < vsi->num_queue_pairs; i++) {
-			/* clone ring and setup updated count */
+		for (i = 0; i < tx_alloc_queue_pairs; i++) {
+			if (!i40e_active_tx_ring_index(vsi, i))
+				continue;
+
 			tx_rings[i] = *vsi->tx_rings[i];
 			tx_rings[i].count = new_tx_count;
 			/* the desc and bi pointers will be reallocated in the
@@ -1344,6 +1397,8 @@ static int i40e_set_ringparam(struct net_device *netdev,
 			if (err) {
 				while (i) {
 					i--;
+					if (!i40e_active_tx_ring_index(vsi, i))
+						continue;
 					i40e_free_tx_resources(&tx_rings[i]);
 				}
 				kfree(tx_rings);
@@ -1411,9 +1466,11 @@ rx_unwind:
 	i40e_down(vsi);
 
 	if (tx_rings) {
-		for (i = 0; i < vsi->num_queue_pairs; i++) {
-			i40e_free_tx_resources(vsi->tx_rings[i]);
-			*vsi->tx_rings[i] = tx_rings[i];
+		for (i = 0; i < tx_alloc_queue_pairs; i++) {
+			if (i40e_active_tx_ring_index(vsi, i)) {
+				i40e_free_tx_resources(vsi->tx_rings[i]);
+				*vsi->tx_rings[i] = tx_rings[i];
+			}
 		}
 		kfree(tx_rings);
 		tx_rings = NULL;
@@ -1444,14 +1501,16 @@ rx_unwind:
 free_tx:
 	/* error cleanup if the Rx allocations failed after getting Tx */
 	if (tx_rings) {
-		for (i = 0; i < vsi->num_queue_pairs; i++)
-			i40e_free_tx_resources(&tx_rings[i]);
+		for (i = 0; i < tx_alloc_queue_pairs; i++) {
+			if (i40e_active_tx_ring_index(vsi, i))
+				i40e_free_tx_resources(vsi->tx_rings[i]);
+		}
 		kfree(tx_rings);
 		tx_rings = NULL;
 	}
 
 done:
-	clear_bit(__I40E_CONFIG_BUSY, &pf->state);
+	clear_bit(__I40E_CONFIG_BUSY, pf->state);
 
 	return err;
 }
@@ -1491,9 +1550,9 @@ static void i40e_get_ethtool_stats(struct net_device *netdev,
 	struct i40e_ring *tx_ring, *rx_ring;
 	struct i40e_vsi *vsi = np->vsi;
 	struct i40e_pf *pf = vsi->back;
+	unsigned int j;
 	int i = 0;
 	char *p;
-	int j;
 	struct rtnl_link_stats64 *net_stats = i40e_get_vsi_stats_struct(vsi);
 	unsigned int start;
 
@@ -1578,7 +1637,7 @@ static void i40e_get_strings(struct net_device *netdev, u32 stringset,
 	struct i40e_vsi *vsi = np->vsi;
 	struct i40e_pf *pf = vsi->back;
 	char *p = (char *)data;
-	int i;
+	unsigned int i;
 
 	switch (stringset) {
 	case ETH_SS_TEST:
@@ -1660,12 +1719,18 @@ static void i40e_get_strings(struct net_device *netdev, u32 stringset,
 		/* BUG_ON(p - data != I40E_STATS_LEN * ETH_GSTRING_LEN); */
 		break;
 	case ETH_SS_PRIV_FLAGS:
-		memcpy(data, i40e_priv_flags_strings,
-		       I40E_PRIV_FLAGS_STR_LEN * ETH_GSTRING_LEN);
-		data += I40E_PRIV_FLAGS_STR_LEN * ETH_GSTRING_LEN;
-		if (pf->hw.pf_id == 0)
-			memcpy(data, i40e_gl_priv_flags_strings,
-			       I40E_GL_PRIV_FLAGS_STR_LEN * ETH_GSTRING_LEN);
+		for (i = 0; i < I40E_PRIV_FLAGS_STR_LEN; i++) {
+			snprintf(p, ETH_GSTRING_LEN, "%s",
+				 i40e_gstrings_priv_flags[i].flag_string);
+			p += ETH_GSTRING_LEN;
+		}
+		if (pf->hw.pf_id != 0)
+			break;
+		for (i = 0; i < I40E_GL_PRIV_FLAGS_STR_LEN; i++) {
+			snprintf(p, ETH_GSTRING_LEN, "%s",
+				 i40e_gl_gstrings_priv_flags[i].flag_string);
+			p += ETH_GSTRING_LEN;
+		}
 		break;
 	default:
 		break;
@@ -1786,7 +1851,7 @@ static inline bool i40e_active_vfs(struct i40e_pf *pf)
 	int i;
 
 	for (i = 0; i < pf->num_alloc_vfs; i++)
-		if (test_bit(I40E_VF_STAT_ACTIVE, &vfs[i].vf_states))
+		if (test_bit(I40E_VF_STATE_ACTIVE, &vfs[i].vf_states))
 			return true;
 	return false;
 }
@@ -1807,7 +1872,7 @@ static void i40e_diag_test(struct net_device *netdev,
 		/* Offline tests */
 		netif_info(pf, drv, netdev, "offline testing starting\n");
 
-		set_bit(__I40E_TESTING, &pf->state);
+		set_bit(__I40E_TESTING, pf->state);
 
 		if (i40e_active_vfs(pf) || i40e_active_vmdqs(pf)) {
 			dev_warn(&pf->pdev->dev,
@@ -1817,7 +1882,7 @@ static void i40e_diag_test(struct net_device *netdev,
 			data[I40E_ETH_TEST_INTR]	= 1;
 			data[I40E_ETH_TEST_LINK]	= 1;
 			eth_test->flags |= ETH_TEST_FL_FAILED;
-			clear_bit(__I40E_TESTING, &pf->state);
+			clear_bit(__I40E_TESTING, pf->state);
 			goto skip_ol_tests;
 		}
 
@@ -1831,7 +1896,7 @@ static void i40e_diag_test(struct net_device *netdev,
 			 * link then the following link test would have
 			 * to be moved to before the reset
 			 */
-			i40e_do_reset(pf, BIT(__I40E_PF_RESET_REQUESTED));
+			i40e_do_reset(pf, BIT(__I40E_PF_RESET_REQUESTED), true);
 
 		if (i40e_link_test(netdev, &data[I40E_ETH_TEST_LINK]))
 			eth_test->flags |= ETH_TEST_FL_FAILED;
@@ -1846,8 +1911,8 @@ static void i40e_diag_test(struct net_device *netdev,
 		if (i40e_reg_test(netdev, &data[I40E_ETH_TEST_REG]))
 			eth_test->flags |= ETH_TEST_FL_FAILED;
 
-		clear_bit(__I40E_TESTING, &pf->state);
-		i40e_do_reset(pf, BIT(__I40E_PF_RESET_REQUESTED));
+		clear_bit(__I40E_TESTING, pf->state);
+		i40e_do_reset(pf, BIT(__I40E_PF_RESET_REQUESTED), true);
 
 		if (if_running)
 			i40e_open(netdev);
@@ -2646,6 +2711,12 @@ static int i40e_set_rss_hash_opt(struct i40e_pf *pf, struct ethtool_rxnfc *nfc)
 	u8 flow_pctype = 0;
 	u64 i_set, i_setc;
 
+	if (pf->flags & I40E_FLAG_MFP_ENABLED) {
+		dev_err(&pf->pdev->dev,
+			"Change of RSS hash input set is not supported when MFP mode is enabled\n");
+		return -EOPNOTSUPP;
+	}
+
 	/* RSS does not support anything other than hashing
 	 * to queues on src and dst IPs and ports
 	 */
@@ -2884,11 +2955,11 @@ static int i40e_del_fdir_entry(struct i40e_vsi *vsi,
 	struct i40e_pf *pf = vsi->back;
 	int ret = 0;
 
-	if (test_bit(__I40E_RESET_RECOVERY_PENDING, &pf->state) ||
-	    test_bit(__I40E_RESET_INTR_RECEIVED, &pf->state))
+	if (test_bit(__I40E_RESET_RECOVERY_PENDING, pf->state) ||
+	    test_bit(__I40E_RESET_INTR_RECEIVED, pf->state))
 		return -EBUSY;
 
-	if (test_bit(__I40E_FD_FLUSH_REQUESTED, &pf->state))
+	if (test_bit(__I40E_FD_FLUSH_REQUESTED, pf->state))
 		return -EBUSY;
 
 	ret = i40e_update_ethtool_fdir_entry(vsi, NULL, fsp->location, cmd);
@@ -3603,14 +3674,14 @@ static int i40e_add_fdir_ethtool(struct i40e_vsi *vsi,
 	if (!(pf->flags & I40E_FLAG_FD_SB_ENABLED))
 		return -EOPNOTSUPP;
 
-	if (pf->hw_disabled_flags & I40E_FLAG_FD_SB_ENABLED)
+	if (pf->flags & I40E_FLAG_FD_SB_AUTO_DISABLED)
 		return -ENOSPC;
 
-	if (test_bit(__I40E_RESET_RECOVERY_PENDING, &pf->state) ||
-	    test_bit(__I40E_RESET_INTR_RECEIVED, &pf->state))
+	if (test_bit(__I40E_RESET_RECOVERY_PENDING, pf->state) ||
+	    test_bit(__I40E_RESET_INTR_RECEIVED, pf->state))
 		return -EBUSY;
 
-	if (test_bit(__I40E_FD_FLUSH_REQUESTED, &pf->state))
+	if (test_bit(__I40E_FD_FLUSH_REQUESTED, pf->state))
 		return -EBUSY;
 
 	fsp = (struct ethtool_rx_flow_spec *)&cmd->fs;
@@ -3952,7 +4023,7 @@ static int i40e_set_rxfh(struct net_device *netdev, const u32 *indir,
  * @dev: network interface device structure
  *
  * The get string set count and the string set should be matched for each
- * flag returned.  Add new strings for each flag to the i40e_priv_flags_strings
+ * flag returned.  Add new strings for each flag to the i40e_gstrings_priv_flags
  * array.
  *
  * Returns a u32 bitmap of flags.
@@ -3962,19 +4033,27 @@ static u32 i40e_get_priv_flags(struct net_device *dev)
 	struct i40e_netdev_priv *np = netdev_priv(dev);
 	struct i40e_vsi *vsi = np->vsi;
 	struct i40e_pf *pf = vsi->back;
-	u32 ret_flags = 0;
+	u32 i, j, ret_flags = 0;
 
-	ret_flags |= pf->flags & I40E_FLAG_LINK_POLLING_ENABLED ?
-		I40E_PRIV_FLAGS_LINKPOLL_FLAG : 0;
-	ret_flags |= pf->flags & I40E_FLAG_FD_ATR_ENABLED ?
-		I40E_PRIV_FLAGS_FD_ATR : 0;
-	ret_flags |= pf->flags & I40E_FLAG_VEB_STATS_ENABLED ?
-		I40E_PRIV_FLAGS_VEB_STATS : 0;
-	ret_flags |= pf->hw_disabled_flags & I40E_FLAG_HW_ATR_EVICT_CAPABLE ?
-		0 : I40E_PRIV_FLAGS_HW_ATR_EVICT;
-	if (pf->hw.pf_id == 0) {
-		ret_flags |= pf->flags & I40E_FLAG_TRUE_PROMISC_SUPPORT ?
-			I40E_PRIV_FLAGS_TRUE_PROMISC_SUPPORT : 0;
+	for (i = 0; i < I40E_PRIV_FLAGS_STR_LEN; i++) {
+		const struct i40e_priv_flags *priv_flags;
+
+		priv_flags = &i40e_gstrings_priv_flags[i];
+
+		if (priv_flags->flag & pf->flags)
+			ret_flags |= BIT(i);
+	}
+
+	if (pf->hw.pf_id != 0)
+		return ret_flags;
+
+	for (j = 0; j < I40E_GL_PRIV_FLAGS_STR_LEN; j++) {
+		const struct i40e_priv_flags *priv_flags;
+
+		priv_flags = &i40e_gl_gstrings_priv_flags[j];
+
+		if (priv_flags->flag & pf->flags)
+			ret_flags |= BIT(i + j);
 	}
 
 	return ret_flags;
@@ -3990,54 +4069,66 @@ static int i40e_set_priv_flags(struct net_device *dev, u32 flags)
 	struct i40e_netdev_priv *np = netdev_priv(dev);
 	struct i40e_vsi *vsi = np->vsi;
 	struct i40e_pf *pf = vsi->back;
-	u16 sw_flags = 0, valid_flags = 0;
-	bool reset_required = false;
-	bool promisc_change = false;
-	int ret;
+	u64 changed_flags;
+	u32 i, j;
 
-	/* NOTE: MFP is not settable */
+	changed_flags = pf->flags;
 
-	if (flags & I40E_PRIV_FLAGS_LINKPOLL_FLAG)
-		pf->flags |= I40E_FLAG_LINK_POLLING_ENABLED;
-	else
-		pf->flags &= ~I40E_FLAG_LINK_POLLING_ENABLED;
+	for (i = 0; i < I40E_PRIV_FLAGS_STR_LEN; i++) {
+		const struct i40e_priv_flags *priv_flags;
 
-	/* allow the user to control the state of the Flow
-	 * Director ATR (Application Targeted Routing) feature
-	 * of the driver
+		priv_flags = &i40e_gstrings_priv_flags[i];
+
+		if (priv_flags->read_only)
+			continue;
+
+		if (flags & BIT(i))
+			pf->flags |= priv_flags->flag;
+		else
+			pf->flags &= ~(priv_flags->flag);
+	}
+
+	if (pf->hw.pf_id != 0)
+		goto flags_complete;
+
+	for (j = 0; j < I40E_GL_PRIV_FLAGS_STR_LEN; j++) {
+		const struct i40e_priv_flags *priv_flags;
+
+		priv_flags = &i40e_gl_gstrings_priv_flags[j];
+
+		if (priv_flags->read_only)
+			continue;
+
+		if (flags & BIT(i + j))
+			pf->flags |= priv_flags->flag;
+		else
+			pf->flags &= ~(priv_flags->flag);
+	}
+
+flags_complete:
+	/* check for flags that changed */
+	changed_flags ^= pf->flags;
+
+	/* Process any additional changes needed as a result of flag changes.
+	 * The changed_flags value reflects the list of bits that were
+	 * changed in the code above.
 	 */
-	if (flags & I40E_PRIV_FLAGS_FD_ATR) {
-		pf->flags |= I40E_FLAG_FD_ATR_ENABLED;
-	} else {
-		pf->flags &= ~I40E_FLAG_FD_ATR_ENABLED;
-		pf->hw_disabled_flags |= I40E_FLAG_FD_ATR_ENABLED;
 
-		/* flush current ATR settings */
-		set_bit(__I40E_FD_FLUSH_REQUESTED, &pf->state);
+	/* Flush current ATR settings if ATR was disabled */
+	if ((changed_flags & I40E_FLAG_FD_ATR_ENABLED) &&
+	    !(pf->flags & I40E_FLAG_FD_ATR_ENABLED)) {
+		pf->flags |= I40E_FLAG_FD_ATR_AUTO_DISABLED;
+		set_bit(__I40E_FD_FLUSH_REQUESTED, pf->state);
 	}
 
-	if ((flags & I40E_PRIV_FLAGS_VEB_STATS) &&
-	    !(pf->flags & I40E_FLAG_VEB_STATS_ENABLED)) {
-		pf->flags |= I40E_FLAG_VEB_STATS_ENABLED;
-		reset_required = true;
-	} else if (!(flags & I40E_PRIV_FLAGS_VEB_STATS) &&
-		   (pf->flags & I40E_FLAG_VEB_STATS_ENABLED)) {
-		pf->flags &= ~I40E_FLAG_VEB_STATS_ENABLED;
-		reset_required = true;
-	}
+	/* Only allow ATR evict on hardware that is capable of handling it */
+	if (pf->flags & I40E_FLAG_HW_ATR_EVICT_CAPABLE)
+		pf->flags &= ~I40E_FLAG_HW_ATR_EVICT_ENABLED;
 
-	if (pf->hw.pf_id == 0) {
-		if ((flags & I40E_PRIV_FLAGS_TRUE_PROMISC_SUPPORT) &&
-		    !(pf->flags & I40E_FLAG_TRUE_PROMISC_SUPPORT)) {
-			pf->flags |= I40E_FLAG_TRUE_PROMISC_SUPPORT;
-			promisc_change = true;
-		} else if (!(flags & I40E_PRIV_FLAGS_TRUE_PROMISC_SUPPORT) &&
-			   (pf->flags & I40E_FLAG_TRUE_PROMISC_SUPPORT)) {
-			pf->flags &= ~I40E_FLAG_TRUE_PROMISC_SUPPORT;
-			promisc_change = true;
-		}
-	}
-	if (promisc_change) {
+	if (changed_flags & I40E_FLAG_TRUE_PROMISC_SUPPORT) {
+		u16 sw_flags = 0, valid_flags = 0;
+		int ret;
+
 		if (!(pf->flags & I40E_FLAG_TRUE_PROMISC_SUPPORT))
 			sw_flags = I40E_AQ_SET_SWITCH_CFG_PROMISC;
 		valid_flags = I40E_AQ_SET_SWITCH_CFG_PROMISC;
@@ -4053,15 +4144,12 @@ static int i40e_set_priv_flags(struct net_device *dev, u32 flags)
 		}
 	}
 
-	if ((flags & I40E_PRIV_FLAGS_HW_ATR_EVICT) &&
-	    (pf->flags & I40E_FLAG_HW_ATR_EVICT_CAPABLE))
-		pf->hw_disabled_flags &= ~I40E_FLAG_HW_ATR_EVICT_CAPABLE;
-	else
-		pf->hw_disabled_flags |= I40E_FLAG_HW_ATR_EVICT_CAPABLE;
-
-	/* if needed, issue reset to cause things to take effect */
-	if (reset_required)
-		i40e_do_reset(pf, BIT(__I40E_PF_RESET_REQUESTED));
+	/* Issue reset to cause things to take effect, as additional bits
+	 * are added we will need to create a mask of bits requiring reset
+	 */
+	if ((changed_flags & I40E_FLAG_VEB_STATS_ENABLED) ||
+	    ((changed_flags & I40E_FLAG_LEGACY_RX) && netif_running(dev)))
+		i40e_do_reset(pf, BIT(__I40E_PF_RESET_REQUESTED), true);
 
 	return 0;
 }

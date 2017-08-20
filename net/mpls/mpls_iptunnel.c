@@ -159,29 +159,39 @@ drop:
 
 static int mpls_build_state(struct nlattr *nla,
 			    unsigned int family, const void *cfg,
-			    struct lwtunnel_state **ts)
+			    struct lwtunnel_state **ts,
+			    struct netlink_ext_ack *extack)
 {
 	struct mpls_iptunnel_encap *tun_encap_info;
 	struct nlattr *tb[MPLS_IPTUNNEL_MAX + 1];
 	struct lwtunnel_state *newts;
+	u8 n_labels;
 	int ret;
 
 	ret = nla_parse_nested(tb, MPLS_IPTUNNEL_MAX, nla,
-			       mpls_iptunnel_policy);
+			       mpls_iptunnel_policy, extack);
 	if (ret < 0)
 		return ret;
 
-	if (!tb[MPLS_IPTUNNEL_DST])
+	if (!tb[MPLS_IPTUNNEL_DST]) {
+		NL_SET_ERR_MSG(extack, "MPLS_IPTUNNEL_DST attribute is missing");
+		return -EINVAL;
+	}
+
+	/* determine number of labels */
+	if (nla_get_labels(tb[MPLS_IPTUNNEL_DST], MAX_NEW_LABELS,
+			   &n_labels, NULL, extack))
 		return -EINVAL;
 
-
-	newts = lwtunnel_state_alloc(sizeof(*tun_encap_info));
+	newts = lwtunnel_state_alloc(sizeof(*tun_encap_info) +
+				     n_labels * sizeof(u32));
 	if (!newts)
 		return -ENOMEM;
 
 	tun_encap_info = mpls_lwtunnel_encap(newts);
-	ret = nla_get_labels(tb[MPLS_IPTUNNEL_DST], MAX_NEW_LABELS,
-			     &tun_encap_info->labels, tun_encap_info->label);
+	ret = nla_get_labels(tb[MPLS_IPTUNNEL_DST], n_labels,
+			     &tun_encap_info->labels, tun_encap_info->label,
+			     extack);
 	if (ret)
 		goto errout;
 
@@ -257,7 +267,7 @@ static int mpls_encap_cmp(struct lwtunnel_state *a, struct lwtunnel_state *b)
 	    a_hdr->default_ttl != b_hdr->default_ttl)
 		return 1;
 
-	for (l = 0; l < MAX_NEW_LABELS; l++)
+	for (l = 0; l < a_hdr->labels; l++)
 		if (a_hdr->label[l] != b_hdr->label[l])
 			return 1;
 	return 0;

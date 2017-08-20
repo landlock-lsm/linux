@@ -95,4 +95,12 @@
 
 #define SO_INCOMING_NAPI_ID	0x4031
 
+#define SO_COOKIE		0x4032
+
+#define SCM_TIMESTAMPING_PKTINFO	0x4033
+
+#define SO_PEERGROUPS		0x4034
+
+#define SO_ZEROCOPY		0x4035
+
 #endif /* _UAPI_ASM_SOCKET_H */

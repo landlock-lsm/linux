@@ -58,9 +58,9 @@ Landlock event and context
   this raw object (e.g. file, inode, path, dentry) with an abstract
   representation (i.e. handle) for userland/bpfland.
 * An evolution of a context's field (e.g. new flags in the status field) shall
-  only be activated for a rule if the version specified by the loading thread
-  imply this behavior.  This makes it possible to ensure that the rule code
-  make sense (e.g.  only watch flags which may be activated).
+  only be activated for a rule if the ABI specified by the loading thread imply
+  this behavior.  This makes it possible to ensure that the rule code make
+  sense (e.g. only watch flags which may be activated).
 * An event type shall guaranty that all the BPF function calls from a rule are
   safe.  Thus, the related Landlock context arguments shall always be of the
   same type for a particular event type.  For example, a network event could
@@ -96,7 +96,7 @@ intended goal of rule propagation.
 Structure definitions
 ---------------------
 
-.. kernel-doc:: include/linux/landlock.h
+.. kernel-doc:: security/landlock/common.h
 
 
 Functions for rule addition

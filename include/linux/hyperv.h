@@ -491,6 +491,12 @@ struct vmbus_channel_rescind_offer {
 	u32 child_relid;
 } __packed;
 
+static inline u32
+hv_ringbuffer_pending_size(const struct hv_ring_buffer_info *rbi)
+{
+	return rbi->ring_buffer->pending_send_sz;
+}
+
 /*
  * Request Offer -- no parameters, SynIC message contains the partition ID
  * Set Snoop -- no parameters, SynIC message contains the partition ID
@@ -524,10 +530,10 @@ struct vmbus_channel_open_channel {
 	u32 target_vp;
 
 	/*
-	* The upstream ring buffer begins at offset zero in the memory
-	* described by RingBufferGpadlHandle. The downstream ring buffer
-	* follows it at this offset (in pages).
-	*/
+	 * The upstream ring buffer begins at offset zero in the memory
+	 * described by RingBufferGpadlHandle. The downstream ring buffer
+	 * follows it at this offset (in pages).
+	 */
 	u32 downstream_ringbuffer_pageoffset;
 
 	/* User-specific data to be passed along to the server endpoint. */
@@ -738,7 +744,6 @@ struct vmbus_channel {
 	u32 ringbuffer_pagecount;
 	struct hv_ring_buffer_info outbound;	/* send to parent */
 	struct hv_ring_buffer_info inbound;	/* receive from parent */
-	spinlock_t inbound_lock;
 
 	struct vmbus_close_msg close_msg;
 
@@ -845,6 +850,13 @@ struct vmbus_channel {
 	 * link up channels based on their CPU affinity.
 	 */
 	struct list_head percpu_list;
+
+	/*
+	 * Defer freeing channel until after all cpu's have
+	 * gone through grace period.
+	 */
+	struct rcu_head rcu;
+
 	/*
 	 * For performance critical channels (storage, networking
 	 * etc,), Hyper-V has a mechanism to enhance the throughput
@@ -1006,19 +1018,12 @@ extern int vmbus_open(struct vmbus_channel *channel,
 			    u32 recv_ringbuffersize,
 			    void *userdata,
 			    u32 userdatalen,
-			    void(*onchannel_callback)(void *context),
+			    void (*onchannel_callback)(void *context),
 			    void *context);
 
 extern void vmbus_close(struct vmbus_channel *channel);
 
 extern int vmbus_sendpacket(struct vmbus_channel *channel,
-				  void *buffer,
-				  u32 bufferLen,
-				  u64 requestid,
-				  enum vmbus_packet_type type,
-				  u32 flags);
-
-extern int vmbus_sendpacket_ctl(struct vmbus_channel *channel,
 				  void *buffer,
 				  u32 bufferLen,
 				  u64 requestid,
@@ -1031,20 +1036,6 @@ extern int vmbus_sendpacket_pagebuffer(struct vmbus_channel *channel,
 					    void *buffer,
 					    u32 bufferlen,
 					    u64 requestid);
-
-extern int vmbus_sendpacket_pagebuffer_ctl(struct vmbus_channel *channel,
-					   struct hv_page_buffer pagebuffers[],
-					   u32 pagecount,
-					   void *buffer,
-					   u32 bufferlen,
-					   u64 requestid,
-					   u32 flags);
-
-extern int vmbus_sendpacket_multipagebuffer(struct vmbus_channel *channel,
-					struct hv_multipage_buffer *mpb,
-					void *buffer,
-					u32 bufferlen,
-					u64 requestid);
 
 extern int vmbus_sendpacket_mpb_desc(struct vmbus_channel *channel,
 				     struct vmbus_packet_mpb_array *mpb,
@@ -1147,6 +1138,17 @@ static inline void *hv_get_drvdata(struct hv_device *dev)
 {
 	return dev_get_drvdata(&dev->device);
 }
+
+struct hv_ring_buffer_debug_info {
+	u32 current_interrupt_mask;
+	u32 current_read_index;
+	u32 current_write_index;
+	u32 bytes_avail_toread;
+	u32 bytes_avail_towrite;
+};
+
+void hv_ringbuffer_get_debuginfo(const struct hv_ring_buffer_info *ring_info,
+			    struct hv_ring_buffer_debug_info *debug_info);
 
 /* Vmbus interface */
 #define vmbus_driver_register(driver)	\
@@ -1421,7 +1423,7 @@ struct hyperv_service_callback {
 	char *log_msg;
 	uuid_le data;
 	struct vmbus_channel *channel;
-	void (*callback) (void *context);
+	void (*callback)(void *context);
 };
 
 #define MAX_SRV_VER	0x7ffffff
@@ -1429,9 +1431,6 @@ extern bool vmbus_prep_negotiate_resp(struct icmsg_hdr *icmsghdrp, u8 *buf,
 				const int *fw_version, int fw_vercnt,
 				const int *srv_version, int srv_vercnt,
 				int *nego_fw_version, int *nego_srv_version);
-
-void hv_event_tasklet_disable(struct vmbus_channel *channel);
-void hv_event_tasklet_enable(struct vmbus_channel *channel);
 
 void hv_process_channel_removal(struct vmbus_channel *channel, u32 relid);
 
@@ -1500,8 +1499,6 @@ static inline  void hv_signal_on_read(struct vmbus_channel *channel)
 	cached_write_sz = hv_get_cached_bytes_to_write(rbi);
 	if (cached_write_sz < pending_sz)
 		vmbus_setevent(channel);
-
-	return;
 }
 
 /*

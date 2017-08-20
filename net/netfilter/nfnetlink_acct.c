@@ -49,7 +49,8 @@ struct nfacct_filter {
 
 static int nfnl_acct_new(struct net *net, struct sock *nfnl,
 			 struct sk_buff *skb, const struct nlmsghdr *nlh,
-			 const struct nlattr * const tb[])
+			 const struct nlattr * const tb[],
+			 struct netlink_ext_ack *extack)
 {
 	struct nf_acct *nfacct, *matching = NULL;
 	char *acct_name;
@@ -139,7 +140,7 @@ nfnl_acct_fill_info(struct sk_buff *skb, u32 portid, u32 seq, u32 type,
 	u64 pkts, bytes;
 	u32 old_flags;
 
-	event |= NFNL_SUBSYS_ACCT << 8;
+	event = nfnl_msg_type(NFNL_SUBSYS_ACCT, event);
 	nlh = nlmsg_put(skb, portid, seq, event, sizeof(*nfmsg), flags);
 	if (nlh == NULL)
 		goto nlmsg_failure;
@@ -244,7 +245,8 @@ nfacct_filter_alloc(const struct nlattr * const attr)
 	struct nlattr *tb[NFACCT_FILTER_MAX + 1];
 	int err;
 
-	err = nla_parse_nested(tb, NFACCT_FILTER_MAX, attr, filter_policy);
+	err = nla_parse_nested(tb, NFACCT_FILTER_MAX, attr, filter_policy,
+			       NULL);
 	if (err < 0)
 		return ERR_PTR(err);
 
@@ -263,7 +265,8 @@ nfacct_filter_alloc(const struct nlattr * const attr)
 
 static int nfnl_acct_get(struct net *net, struct sock *nfnl,
 			 struct sk_buff *skb, const struct nlmsghdr *nlh,
-			 const struct nlattr * const tb[])
+			 const struct nlattr * const tb[],
+			 struct netlink_ext_ack *extack)
 {
 	int ret = -ENOENT;
 	struct nf_acct *cur;
@@ -342,7 +345,8 @@ static int nfnl_acct_try_del(struct nf_acct *cur)
 
 static int nfnl_acct_del(struct net *net, struct sock *nfnl,
 			 struct sk_buff *skb, const struct nlmsghdr *nlh,
-			 const struct nlattr * const tb[])
+			 const struct nlattr * const tb[],
+			 struct netlink_ext_ack *extack)
 {
 	struct nf_acct *cur, *tmp;
 	int ret = -ENOENT;

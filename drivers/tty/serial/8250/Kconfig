@@ -128,9 +128,13 @@ config SERIAL_8250_PCI
 	  by the parport_serial driver, enabled with CONFIG_PARPORT_SERIAL.
 
 config SERIAL_8250_EXAR
-        tristate "8250/16550 PCI device support"
-        depends on SERIAL_8250_PCI
+	tristate "8250/16550 Exar/Commtech PCI/PCIe device support"
+	depends on SERIAL_8250_PCI
 	default SERIAL_8250
+	help
+	  This builds support for XR17C1xx, XR17V3xx and some Commtech
+	  422x PCIe serial cards that are not covered by the more generic
+	  SERIAL_8250_PCI option.
 
 config SERIAL_8250_HP300
 	tristate
@@ -219,6 +223,16 @@ config SERIAL_8250_ACCENT
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called 8250_accent.
+
+config SERIAL_8250_ASPEED_VUART
+	tristate "Aspeed Virtual UART"
+	depends on SERIAL_8250
+	depends on OF
+	help
+	  If you want to use the virtual UART (VUART) device on Aspeed
+	  BMC platforms, enable this option. This enables the 16550A-
+	  compatible device on the local LPC bus, giving a UART device
+	  with no physical RS232 connections.
 
 config SERIAL_8250_BOCA
 	tristate "Support Boca cards"

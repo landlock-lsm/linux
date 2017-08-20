@@ -21,6 +21,7 @@ struct nft_jhash {
 	enum nft_registers      sreg:8;
 	enum nft_registers      dreg:8;
 	u8			len;
+	bool			autogen_seed:1;
 	u32			modulus;
 	u32			seed;
 	u32			offset;
@@ -102,10 +103,12 @@ static int nft_jhash_init(const struct nft_ctx *ctx,
 	if (priv->offset + priv->modulus - 1 < priv->offset)
 		return -EOVERFLOW;
 
-	if (tb[NFTA_HASH_SEED])
+	if (tb[NFTA_HASH_SEED]) {
 		priv->seed = ntohl(nla_get_be32(tb[NFTA_HASH_SEED]));
-	else
+	} else {
+		priv->autogen_seed = true;
 		get_random_bytes(&priv->seed, sizeof(priv->seed));
+	}
 
 	return nft_validate_register_load(priv->sreg, len) &&
 	       nft_validate_register_store(ctx, priv->dreg, NULL,
@@ -151,7 +154,8 @@ static int nft_jhash_dump(struct sk_buff *skb,
 		goto nla_put_failure;
 	if (nla_put_be32(skb, NFTA_HASH_MODULUS, htonl(priv->modulus)))
 		goto nla_put_failure;
-	if (nla_put_be32(skb, NFTA_HASH_SEED, htonl(priv->seed)))
+	if (!priv->autogen_seed &&
+	    nla_put_be32(skb, NFTA_HASH_SEED, htonl(priv->seed)))
 		goto nla_put_failure;
 	if (priv->offset != 0)
 		if (nla_put_be32(skb, NFTA_HASH_OFFSET, htonl(priv->offset)))
@@ -224,7 +228,7 @@ nft_hash_select_ops(const struct nft_ctx *ctx,
 
 static struct nft_expr_type nft_hash_type __read_mostly = {
 	.name		= "hash",
-	.select_ops	= &nft_hash_select_ops,
+	.select_ops	= nft_hash_select_ops,
 	.policy		= nft_hash_policy,
 	.maxattr	= NFTA_HASH_MAX,
 	.owner		= THIS_MODULE,

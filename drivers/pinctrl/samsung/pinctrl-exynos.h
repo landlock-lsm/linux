@@ -17,6 +17,9 @@
  * (at your option) any later version.
  */
 
+#ifndef __PINCTRL_SAMSUNG_EXYNOS_H
+#define __PINCTRL_SAMSUNG_EXYNOS_H
+
 /* External GPIO and wakeup interrupt related definitions */
 #define EXYNOS_GPIO_ECON_OFFSET		0x700
 #define EXYNOS_GPIO_EFLTCON_OFFSET	0x800
@@ -79,17 +82,6 @@
 		.name		= id			\
 	}
 
-#define EXYNOS_PIN_BANK_EINTW_EXT(pins, reg, id, offs, pctl_idx) \
-	{						\
-		.type           = &bank_type_alive,	\
-		.pctl_offset    = reg,                  \
-		.nr_pins        = pins,                 \
-		.eint_type      = EINT_TYPE_WKUP,       \
-		.eint_offset    = offs,                 \
-		.name           = id,                   \
-		.pctl_res_idx   = pctl_idx,             \
-	}						\
-
 #define EXYNOS5433_PIN_BANK_EINTG(pins, reg, id, offs)		\
 	{							\
 		.type		= &exynos5433_bank_type_off,	\
@@ -142,3 +134,13 @@ struct exynos_muxed_weint_data {
 	unsigned int nr_banks;
 	struct samsung_pin_bank *banks[];
 };
+
+int exynos_eint_gpio_init(struct samsung_pinctrl_drv_data *d);
+int exynos_eint_wkup_init(struct samsung_pinctrl_drv_data *d);
+void exynos_pinctrl_suspend(struct samsung_pinctrl_drv_data *drvdata);
+void exynos_pinctrl_resume(struct samsung_pinctrl_drv_data *drvdata);
+struct samsung_retention_ctrl *
+exynos_retention_init(struct samsung_pinctrl_drv_data *drvdata,
+		      const struct samsung_retention_data *data);
+
+#endif /* __PINCTRL_SAMSUNG_EXYNOS_H */

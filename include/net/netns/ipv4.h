@@ -122,6 +122,9 @@ struct netns_ipv4 {
 	int sysctl_tcp_fin_timeout;
 	unsigned int sysctl_tcp_notsent_lowat;
 	int sysctl_tcp_tw_reuse;
+	int sysctl_tcp_sack;
+	int sysctl_tcp_window_scaling;
+	int sysctl_tcp_timestamps;
 	struct inet_timewait_death_row tcp_death_row;
 	int sysctl_max_syn_backlog;
 
@@ -156,6 +159,7 @@ struct netns_ipv4 {
 	int sysctl_fib_multipath_hash_policy;
 #endif
 
+	struct fib_notifier_ops	*notifier_ops;
 	unsigned int	fib_seq;	/* protected by rtnl_mutex */
 
 	atomic_t	rt_genid;

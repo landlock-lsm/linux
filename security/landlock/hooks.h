@@ -1,7 +1,7 @@
 /*
  * Landlock LSM - hooks helpers
  *
- * Copyright © 2017 Mickaël Salaün <mic@digikod.net>
+ * Copyright © 2016-2017 Mickaël Salaün <mic@digikod.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2, as
@@ -49,8 +49,6 @@
 #define MAP_EVENT_SPACE(h, n, m, ...) MAP2x(n, SEP_SPACE, m, SKIP2x(h, __VA_ARGS__))
 #define MAP_EVENT_AND(h, n, m, ...) MAP2x(n, SEP_AND, m, SKIP2x(h, __VA_ARGS__))
 
-#define GET_CMD(h, n, ...) SKIP2x(n, SKIP2x(h, __VA_ARGS__))
-
 #define EXPAND_TYPE(d) d##_TYPE
 #define EXPAND_BPF(d) d##_BPF
 #define EXPAND_C(d) d##_C
@@ -77,7 +75,7 @@
 	inline bool landlock_is_valid_access_event_##EVENT(		\
 			int off, int size, enum bpf_access_type type,	\
 			enum bpf_reg_type *reg_type,			\
-			union bpf_prog_subtype *prog_subtype)		\
+			const union bpf_prog_subtype *prog_subtype)	\
 	{								\
 		enum bpf_reg_type _ctx_types[CTX_ARG_NB] = {		\
 			MAP1x(NA, SEP_COMMA, GET_TYPE_BPF, __VA_ARGS__)	\
@@ -112,13 +110,15 @@
 			MAP_EVENT_COMMA(NH, NE, GET_EVENT_U64,		\
 					__VA_ARGS__)			\
 		};							\
-		u32 _cmd = GET_CMD(NH, NE, __VA_ARGS__);		\
 		return landlock_decide(LANDLOCK_SUBTYPE_EVENT_##EVENT,	\
-				_ctx_values, _cmd, #HOOK);		\
+				_ctx_values, #HOOK);			\
 		}							\
 	}								\
 	extern void __consistent_##EVENT(MAP_EVENT_COMMA(		\
 				NH, NE, GET_EVENT_C, __VA_ARGS__))
+
+#define HOOK_INIT(EVENT, HOOK, ID) \
+	LSM_HOOK_INIT(HOOK, landlock_hook_##EVENT##_##HOOK##_##ID)
 
 /*
  * The WRAP_TYPE_* definitions group the bpf_reg_type enum value and the C
@@ -132,7 +132,7 @@
 WRAP_TYPE_NONE_C;
 
 /* WRAP_TYPE_RAW */
-#define WRAP_TYPE_RAW_BPF	UNKNOWN_VALUE
+#define WRAP_TYPE_RAW_BPF	SCALAR_VALUE
 #define WRAP_TYPE_RAW_C		struct __wrapcheck_raw
 WRAP_TYPE_RAW_C;
 
@@ -176,7 +176,7 @@ __init void landlock_register_hooks(struct security_hook_list *hooks, int count)
 bool landlock_is_valid_access(int off, int size, enum bpf_access_type type,
 		enum bpf_reg_type *reg_type,
 		enum bpf_reg_type ctx_types[CTX_ARG_NB],
-		union bpf_prog_subtype *prog_subtype);
+		const union bpf_prog_subtype *prog_subtype);
 
 int landlock_decide(enum landlock_subtype_event event,
-		__u64 ctx_values[CTX_ARG_NB], u32 cmd, const char *hook);
+		__u64 ctx_values[CTX_ARG_NB], const char *hook);

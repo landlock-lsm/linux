@@ -163,7 +163,7 @@ int register_qdisc(struct Qdisc_ops *qops)
 		if (!(cops->get && cops->put && cops->walk && cops->leaf))
 			goto out_einval;
 
-		if (cops->tcf_chain && !(cops->bind_tcf && cops->unbind_tcf))
+		if (cops->tcf_block && !(cops->bind_tcf && cops->unbind_tcf))
 			goto out_einval;
 	}
 
@@ -251,6 +251,15 @@ int qdisc_set_default(const char *name)
 	return ops ? 0 : -ENOENT;
 }
 
+#ifdef CONFIG_NET_SCH_DEFAULT
+/* Set default value from kernel config */
+static int __init sch_default_qdisc(void)
+{
+	return qdisc_set_default(CONFIG_DEFAULT_NET_SCH);
+}
+late_initcall(sch_default_qdisc);
+#endif
+
 /* We know handle. Find qdisc among all qdisc's attached to device
  * (root qdisc, all its children, children of children etc.)
  * Note: caller either uses rtnl or rcu_read_lock()
@@ -277,9 +286,6 @@ static struct Qdisc *qdisc_match_from_root(struct Qdisc *root, u32 handle)
 void qdisc_hash_add(struct Qdisc *q, bool invisible)
 {
 	if ((q->parent != TC_H_ROOT) && !(q->flags & TCQ_F_INGRESS)) {
-		struct Qdisc *root = qdisc_dev(q)->qdisc;
-
-		WARN_ON_ONCE(root == &noop_qdisc);
 		ASSERT_RTNL();
 		hash_add_rcu(qdisc_dev(q)->qdisc_hash, &q->hash, q->handle);
 		if (invisible)
@@ -457,7 +463,7 @@ static struct qdisc_size_table *qdisc_get_stab(struct nlattr *opt)
 	u16 *tab = NULL;
 	int err;
 
-	err = nla_parse_nested(tb, TCA_STAB_MAX, opt, stab_policy);
+	err = nla_parse_nested(tb, TCA_STAB_MAX, opt, stab_policy, NULL);
 	if (err < 0)
 		return ERR_PTR(err);
 	if (!tb[TCA_STAB_BASE])
@@ -743,6 +749,7 @@ void qdisc_tree_reduce_backlog(struct Qdisc *sch, unsigned int n,
 	const struct Qdisc_class_ops *cops;
 	unsigned long cl;
 	u32 parentid;
+	bool notify;
 	int drops;
 
 	if (n == 0 && len == 0)
@@ -755,6 +762,13 @@ void qdisc_tree_reduce_backlog(struct Qdisc *sch, unsigned int n,
 
 		if (sch->flags & TCQ_F_NOPARENT)
 			break;
+		/* Notify parent qdisc only if child qdisc becomes empty.
+		 *
+		 * If child was empty even before update then backlog
+		 * counter is screwed and we skip notification because
+		 * parent class is already passive.
+		 */
+		notify = !sch->q.qlen && !WARN_ON_ONCE(!n);
 		/* TODO: perform the search on a per txq basis */
 		sch = qdisc_lookup(qdisc_dev(sch), TC_H_MAJ(parentid));
 		if (sch == NULL) {
@@ -762,7 +776,7 @@ void qdisc_tree_reduce_backlog(struct Qdisc *sch, unsigned int n,
 			break;
 		}
 		cops = sch->ops->cl_ops;
-		if (cops->qlen_notify) {
+		if (notify && cops->qlen_notify) {
 			cl = cops->get(sch, parentid);
 			cops->qlen_notify(sch, cl);
 			cops->put(sch, cl);
@@ -830,7 +844,7 @@ static int qdisc_graft(struct net_device *dev, struct Qdisc *parent,
 
 			old = dev_graft_qdisc(dev_queue, new);
 			if (new && i > 0)
-				atomic_inc(&new->refcnt);
+				refcount_inc(&new->refcnt);
 
 			if (!ingress)
 				qdisc_destroy(old);
@@ -841,7 +855,7 @@ skip:
 			notify_and_destroy(net, skb, n, classid,
 					   dev->qdisc, new);
 			if (new && !new->ops->attach)
-				atomic_inc(&new->refcnt);
+				refcount_inc(&new->refcnt);
 			dev->qdisc = new ? : &noop_qdisc;
 
 			if (new && new->ops->attach)
@@ -1010,7 +1024,8 @@ static struct Qdisc *qdisc_create(struct net_device *dev,
 		return sch;
 	}
 	/* ops->init() failed, we call ->destroy() like qdisc_create_dflt() */
-	ops->destroy(sch);
+	if (ops->destroy)
+		ops->destroy(sch);
 err_out3:
 	dev_put(dev);
 	kfree((char *) sch - sch->padded);
@@ -1116,7 +1131,8 @@ check_loop_fn(struct Qdisc *q, unsigned long cl, struct qdisc_walker *w)
  * Delete/get qdisc.
  */
 
-static int tc_get_qdisc(struct sk_buff *skb, struct nlmsghdr *n)
+static int tc_get_qdisc(struct sk_buff *skb, struct nlmsghdr *n,
+			struct netlink_ext_ack *extack)
 {
 	struct net *net = sock_net(skb->sk);
 	struct tcmsg *tcm = nlmsg_data(n);
@@ -1131,7 +1147,7 @@ static int tc_get_qdisc(struct sk_buff *skb, struct nlmsghdr *n)
 	    !netlink_ns_capable(skb, net->user_ns, CAP_NET_ADMIN))
 		return -EPERM;
 
-	err = nlmsg_parse(n, sizeof(*tcm), tca, TCA_MAX, NULL);
+	err = nlmsg_parse(n, sizeof(*tcm), tca, TCA_MAX, NULL, extack);
 	if (err < 0)
 		return err;
 
@@ -1185,7 +1201,8 @@ static int tc_get_qdisc(struct sk_buff *skb, struct nlmsghdr *n)
  * Create/change qdisc.
  */
 
-static int tc_modify_qdisc(struct sk_buff *skb, struct nlmsghdr *n)
+static int tc_modify_qdisc(struct sk_buff *skb, struct nlmsghdr *n,
+			   struct netlink_ext_ack *extack)
 {
 	struct net *net = sock_net(skb->sk);
 	struct tcmsg *tcm;
@@ -1200,7 +1217,7 @@ static int tc_modify_qdisc(struct sk_buff *skb, struct nlmsghdr *n)
 
 replay:
 	/* Reinit, just in case something touches this. */
-	err = nlmsg_parse(n, sizeof(*tcm), tca, TCA_MAX, NULL);
+	err = nlmsg_parse(n, sizeof(*tcm), tca, TCA_MAX, NULL, extack);
 	if (err < 0)
 		return err;
 
@@ -1247,7 +1264,7 @@ replay:
 				if (q == p ||
 				    (p && check_loop(q, p, 0)))
 					return -ELOOP;
-				atomic_inc(&q->refcnt);
+				refcount_inc(&q->refcnt);
 				goto graft;
 			} else {
 				if (!q)
@@ -1362,7 +1379,7 @@ static int tc_fill_qdisc(struct sk_buff *skb, struct Qdisc *q, u32 clid,
 	tcm->tcm_ifindex = qdisc_dev(q)->ifindex;
 	tcm->tcm_parent = clid;
 	tcm->tcm_handle = q->handle;
-	tcm->tcm_info = atomic_read(&q->refcnt);
+	tcm->tcm_info = refcount_read(&q->refcnt);
 	if (nla_put_string(skb, TCA_KIND, q->ops->id))
 		goto nla_put_failure;
 	if (q->ops->dump && q->ops->dump(q, skb) < 0)
@@ -1515,7 +1532,7 @@ static int tc_dump_qdisc(struct sk_buff *skb, struct netlink_callback *cb)
 	idx = 0;
 	ASSERT_RTNL();
 
-	err = nlmsg_parse(nlh, sizeof(*tcm), tca, TCA_MAX, NULL);
+	err = nlmsg_parse(nlh, sizeof(*tcm), tca, TCA_MAX, NULL, NULL);
 	if (err < 0)
 		return err;
 
@@ -1558,7 +1575,8 @@ done:
 
 
 
-static int tc_ctl_tclass(struct sk_buff *skb, struct nlmsghdr *n)
+static int tc_ctl_tclass(struct sk_buff *skb, struct nlmsghdr *n,
+			 struct netlink_ext_ack *extack)
 {
 	struct net *net = sock_net(skb->sk);
 	struct tcmsg *tcm = nlmsg_data(n);
@@ -1577,7 +1595,7 @@ static int tc_ctl_tclass(struct sk_buff *skb, struct nlmsghdr *n)
 	    !netlink_ns_capable(skb, net->user_ns, CAP_NET_ADMIN))
 		return -EPERM;
 
-	err = nlmsg_parse(n, sizeof(*tcm), tca, TCA_MAX, NULL);
+	err = nlmsg_parse(n, sizeof(*tcm), tca, TCA_MAX, NULL, extack);
 	if (err < 0)
 		return err;
 
@@ -1819,6 +1837,12 @@ static int tc_dump_tclass_root(struct Qdisc *root, struct sk_buff *skb,
 	if (!qdisc_dev(root))
 		return 0;
 
+	if (tcm->tcm_parent) {
+		q = qdisc_match_from_root(root, TC_H_MAJ(tcm->tcm_parent));
+		if (q && tc_dump_tclass_qdisc(q, skb, tcm, cb, t_p, s_t) < 0)
+			return -1;
+		return 0;
+	}
 	hash_for_each(qdisc_dev(root)->qdisc_hash, b, q, hash) {
 		if (tc_dump_tclass_qdisc(q, skb, tcm, cb, t_p, s_t) < 0)
 			return -1;
@@ -1859,54 +1883,6 @@ done:
 	dev_put(dev);
 	return skb->len;
 }
-
-/* Main classifier routine: scans classifier chain attached
- * to this qdisc, (optionally) tests for protocol and asks
- * specific classifiers.
- */
-int tc_classify(struct sk_buff *skb, const struct tcf_proto *tp,
-		struct tcf_result *res, bool compat_mode)
-{
-	__be16 protocol = tc_skb_protocol(skb);
-#ifdef CONFIG_NET_CLS_ACT
-	const int max_reclassify_loop = 4;
-	const struct tcf_proto *old_tp = tp;
-	int limit = 0;
-
-reclassify:
-#endif
-	for (; tp; tp = rcu_dereference_bh(tp->next)) {
-		int err;
-
-		if (tp->protocol != protocol &&
-		    tp->protocol != htons(ETH_P_ALL))
-			continue;
-
-		err = tp->classify(skb, tp, res);
-#ifdef CONFIG_NET_CLS_ACT
-		if (unlikely(err == TC_ACT_RECLASSIFY && !compat_mode))
-			goto reset;
-#endif
-		if (err >= 0)
-			return err;
-	}
-
-	return TC_ACT_UNSPEC; /* signal: continue lookup */
-#ifdef CONFIG_NET_CLS_ACT
-reset:
-	if (unlikely(limit++ >= max_reclassify_loop)) {
-		net_notice_ratelimited("%s: reclassify loop, rule prio %u, protocol %02x\n",
-				       tp->q->ops->id, tp->prio & 0xffff,
-				       ntohs(tp->protocol));
-		return TC_ACT_SHOT;
-	}
-
-	tp = old_tp;
-	protocol = tc_skb_protocol(skb);
-	goto reclassify;
-#endif
-}
-EXPORT_SYMBOL(tc_classify);
 
 #ifdef CONFIG_PROC_FS
 static int psched_show(struct seq_file *seq, void *v)
@@ -1981,14 +1957,14 @@ static int __init pktsched_init(void)
 	register_qdisc(&mq_qdisc_ops);
 	register_qdisc(&noqueue_qdisc_ops);
 
-	rtnl_register(PF_UNSPEC, RTM_NEWQDISC, tc_modify_qdisc, NULL, NULL);
-	rtnl_register(PF_UNSPEC, RTM_DELQDISC, tc_get_qdisc, NULL, NULL);
+	rtnl_register(PF_UNSPEC, RTM_NEWQDISC, tc_modify_qdisc, NULL, 0);
+	rtnl_register(PF_UNSPEC, RTM_DELQDISC, tc_get_qdisc, NULL, 0);
 	rtnl_register(PF_UNSPEC, RTM_GETQDISC, tc_get_qdisc, tc_dump_qdisc,
-		      NULL);
-	rtnl_register(PF_UNSPEC, RTM_NEWTCLASS, tc_ctl_tclass, NULL, NULL);
-	rtnl_register(PF_UNSPEC, RTM_DELTCLASS, tc_ctl_tclass, NULL, NULL);
+		      0);
+	rtnl_register(PF_UNSPEC, RTM_NEWTCLASS, tc_ctl_tclass, NULL, 0);
+	rtnl_register(PF_UNSPEC, RTM_DELTCLASS, tc_ctl_tclass, NULL, 0);
 	rtnl_register(PF_UNSPEC, RTM_GETTCLASS, tc_ctl_tclass, tc_dump_tclass,
-		      NULL);
+		      0);
 
 	return 0;
 }

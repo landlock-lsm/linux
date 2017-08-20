@@ -1,33 +1,35 @@
 /*
  * Landlock LSM - seccomp provider
  *
- * Copyright © 2017 Mickaël Salaün <mic@digikod.net>
+ * Copyright © 2016-2017 Mickaël Salaün <mic@digikod.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2, as
  * published by the Free Software Foundation.
  */
 
+#include <asm/barrier.h> /* smp_store_release() */
 #include <asm/page.h> /* PAGE_SIZE */
-#include <linux/atomic.h> /* atomic_*(), smp_store_release() */
 #include <linux/bpf.h> /* bpf_prog_put() */
+#include <linux/err.h> /* ERR_PTR() */
+#include <linux/errno.h>
 #include <linux/filter.h> /* struct bpf_prog */
 #include <linux/kernel.h> /* round_up() */
 #include <linux/landlock.h>
+#include <linux/refcount.h> /* refcount_t() */
 #include <linux/sched.h> /* current_cred(), task_no_new_privs() */
 #include <linux/security.h> /* security_capable_noaudit() */
 #include <linux/slab.h> /* alloc(), kfree() */
-#include <linux/types.h> /* atomic_t */
-#include <linux/uaccess.h> /* copy_from_user() */
+#include <linux/uaccess.h> /* get_user() */
 
-#include "common.h"
+#include "common.h" /* struct landlock_rule */
 
 static void put_landlock_rule(struct landlock_rule *rule)
 {
 	struct landlock_rule *orig = rule;
 
 	/* clean up single-reference branches iteratively */
-	while (orig && atomic_dec_and_test(&orig->usage)) {
+	while (orig && refcount_dec_and_test(&orig->usage)) {
 		struct landlock_rule *freeme = orig;
 
 		bpf_prog_put(orig->prog);
@@ -36,9 +38,9 @@ static void put_landlock_rule(struct landlock_rule *rule)
 	}
 }
 
-void put_landlock_events(struct landlock_events *events)
+static void put_landlock_events(struct landlock_events *events)
 {
-	if (events && atomic_dec_and_test(&events->usage)) {
+	if (events && refcount_dec_and_test(&events->usage)) {
 		size_t i;
 
 		for (i = 0; i < ARRAY_SIZE(events->rules); i++)
@@ -56,7 +58,7 @@ static struct landlock_events *new_landlock_events(void)
 	ret = kzalloc(sizeof(*ret), GFP_KERNEL);
 	if (!ret)
 		return ERR_PTR(-ENOMEM);
-	atomic_set(&ret->usage, 1);
+	refcount_set(&ret->usage, 1);
 	return ret;
 }
 
@@ -67,8 +69,8 @@ static void add_landlock_rule(struct landlock_events *events,
 	u32 event_idx = get_index(rule->prog->subtype.landlock_rule.event);
 
 	rule->prev = events->rules[event_idx];
-	WARN_ON(atomic_read(&rule->usage));
-	atomic_set(&rule->usage, 1);
+	WARN_ON(refcount_read(&rule->usage));
+	refcount_set(&rule->usage, 1);
 	/* do not increment the previous rule usage */
 	smp_store_release(&events->rules[event_idx], rule);
 }
@@ -77,18 +79,18 @@ static void add_landlock_rule(struct landlock_events *events,
 #define LANDLOCK_EVENTS_MAX_PAGES (1 << 6)
 
 /**
- * landlock_append_prog - attach a Landlock rule to @current_events
+ * landlock_prepend_rule - attach a Landlock rule to @current_events
  *
  * @current_events: landlock_events pointer, must be locked (if needed) to
  *                  prevent a concurrent put/free. This pointer must not be
  *                  freed after the call.
- * @prog: non-NULL Landlock rule to append to @current_events. @prog will be
- *        owned by landlock_append_prog() and freed if an error happened.
+ * @prog: non-NULL Landlock rule to prepend to @current_events. @prog will be
+ *        owned by landlock_prepend_rule() and freed if an error happened.
  *
  * Return @current_events or a new pointer when OK. Return a pointer error
  * otherwise.
  */
-static struct landlock_events *landlock_append_prog(
+static struct landlock_events *landlock_prepend_rule(
 		struct landlock_events *current_events, struct bpf_prog *prog)
 {
 	struct landlock_events *new_events = current_events;
@@ -96,7 +98,7 @@ static struct landlock_events *landlock_append_prog(
 	struct landlock_rule *rule;
 	u32 event_idx;
 
-	if (prog->type != BPF_PROG_TYPE_LANDLOCK) {
+	if (prog->type != BPF_PROG_TYPE_LANDLOCK_RULE) {
 		new_events = ERR_PTR(-EINVAL);
 		goto put_prog;
 	}
@@ -114,7 +116,7 @@ static struct landlock_events *landlock_append_prog(
 				pages += walker_r->prog->pages;
 		}
 		/* count a struct landlock_events if we need to allocate one */
-		if (atomic_read(&current_events->usage) != 1)
+		if (refcount_read(&current_events->usage) != 1)
 			pages += round_up(sizeof(*current_events), PAGE_SIZE) /
 				PAGE_SIZE;
 	}
@@ -133,6 +135,15 @@ static struct landlock_events *landlock_append_prog(
 	/* subtype.landlock_rule.event > 0 for loaded programs */
 	event_idx = get_index(rule->prog->subtype.landlock_rule.event);
 
+	/*
+	 * Each task_struct points to an array of rule list pointers.  These
+	 * tables are duplicated when additions are made (which means each
+	 * table needs to be refcounted for the processes using it). When a new
+	 * table is created, all the refcounters on the rules are bumped (to
+	 * track each table that references the rule). When a new rule is
+	 * added, it's just prepended to the list for the new table to point
+	 * at.
+	 */
 	if (!new_events) {
 		/*
 		 * If there is no Landlock events used by the current task,
@@ -141,7 +152,7 @@ static struct landlock_events *landlock_append_prog(
 		new_events = new_landlock_events();
 		if (IS_ERR(new_events))
 			goto put_rule;
-	} else if (atomic_read(&current_events->usage) > 1) {
+	} else if (refcount_read(&current_events->usage) > 1) {
 		/*
 		 * If the current task is not the sole user of its Landlock
 		 * events, then duplicate them.
@@ -155,14 +166,14 @@ static struct landlock_events *landlock_append_prog(
 			new_events->rules[i] =
 				lockless_dereference(current_events->rules[i]);
 			if (new_events->rules[i])
-				atomic_inc(&new_events->rules[i]->usage);
+				refcount_inc(&new_events->rules[i]->usage);
 		}
 
 		/*
 		 * Landlock events from the current task will not be freed here
 		 * because the usage is strictly greater than 1. It is only
 		 * prevented to be freed by another subject thanks to the
-		 * caller of landlock_append_prog() which should be locked if
+		 * caller of landlock_prepend_rule() which should be locked if
 		 * needed.
 		 */
 		put_landlock_events(current_events);
@@ -179,31 +190,36 @@ put_rule:
 	return new_events;
 }
 
+#ifdef CONFIG_SECCOMP_FILTER
+
 /**
- * landlock_seccomp_append_prog - attach a Landlock rule to the current process
+ * landlock_seccomp_prepend_rule - attach a Landlock rule to the current
+ *                                 process
  *
  * current->seccomp.landlock_events is lazily allocated. When a process fork,
  * only a pointer is copied. When a new event is added by a process, if there
  * is other references to this process' landlock_events, then a new allocation
  * is made to contain an array pointing to Landlock rule lists. This design
  * enable low-performance impact and is memory efficient while keeping the
- * property of append-only rules.
+ * property of prepend-only rules.
+ *
+ * For now, installing a Landlock rule requires that the requesting task has
+ * the global CAP_SYS_ADMIN. We cannot force the use of no_new_privs to not
+ * exclude containers where a process may legitimately acquire more privileges
+ * thanks to an SUID binary.
  *
  * @flags: not used for now, but could be used for TSYNC
  * @user_bpf_fd: file descriptor pointing to a loaded Landlock rule
  */
-#ifdef CONFIG_SECCOMP_FILTER
-int landlock_seccomp_append_prog(unsigned int flags,
+int landlock_seccomp_prepend_rule(unsigned int flags,
 		const char __user *user_bpf_fd)
 {
 	struct landlock_events *new_events;
 	struct bpf_prog *prog;
-	int bpf_fd;
+	int bpf_fd, err;
 
-	/* force no_new_privs to limit privilege escalation */
-	if (!task_no_new_privs(current))
-		return -EPERM;
-	/* will be removed in the future to allow unprivileged tasks */
+	/* planned to be replaced with a no_new_privs check to allow
+	 * unprivileged tasks */
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 	/* enable to check if Landlock is supported with early EFAULT */
@@ -211,8 +227,9 @@ int landlock_seccomp_append_prog(unsigned int flags,
 		return -EFAULT;
 	if (flags)
 		return -EINVAL;
-	if (copy_from_user(&bpf_fd, user_bpf_fd, sizeof(bpf_fd)))
-		return -EFAULT;
+	err = get_user(bpf_fd, user_bpf_fd);
+	if (err)
+		return err;
 	prog = bpf_prog_get(bpf_fd);
 	if (IS_ERR(prog))
 		return PTR_ERR(prog);
@@ -221,12 +238,24 @@ int landlock_seccomp_append_prog(unsigned int flags,
 	 * We don't need to lock anything for the current process hierarchy,
 	 * everything is guarded by the atomic counters.
 	 */
-	new_events = landlock_append_prog(current->seccomp.landlock_events,
+	new_events = landlock_prepend_rule(current->seccomp.landlock_events,
 			prog);
-	/* @prog is managed/freed by landlock_append_prog() */
+	/* @prog is managed/freed by landlock_prepend_rule() */
 	if (IS_ERR(new_events))
 		return PTR_ERR(new_events);
 	current->seccomp.landlock_events = new_events;
 	return 0;
 }
+
+void put_seccomp_landlock(struct task_struct *tsk)
+{
+	put_landlock_events(tsk->seccomp.landlock_events);
+}
+
+void get_seccomp_landlock(struct task_struct *tsk)
+{
+	if (tsk->seccomp.landlock_events)
+		refcount_inc(&tsk->seccomp.landlock_events->usage);
+}
+
 #endif /* CONFIG_SECCOMP_FILTER */

@@ -1,7 +1,7 @@
 /*
  * Landlock LSM - filesystem hooks
  *
- * Copyright © 2017 Mickaël Salaün <mic@digikod.net>
+ * Copyright © 2016-2017 Mickaël Salaün <mic@digikod.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2, as
@@ -26,20 +26,20 @@
 #include <linux/sched.h> /* struct task_struct */
 #include <linux/time.h> /* struct timespec */
 
+#include "common.h"
 #include "hooks.h"
-
 #include "hooks_fs.h"
 
 
-#define HOOK_NEW_FS(...) HOOK_NEW(1, FS, 2, __VA_ARGS__, 0)
-#define HOOK_NEW_FS2(...) HOOK_NEW(2, FS, 2, __VA_ARGS__, 0)
-#define HOOK_NEW_FS3(...) HOOK_NEW(3, FS, 2, __VA_ARGS__, 0)
-#define HOOK_NEW_FS4(...) HOOK_NEW(4, FS, 2, __VA_ARGS__, 0)
-#define HOOK_NEW_FS_CMD(...) HOOK_NEW(1, FS, 2, __VA_ARGS__)
-#define HOOK_INIT_FS(HOOK) LSM_HOOK_INIT(HOOK, landlock_hook_FS_##HOOK##_1)
-#define HOOK_INIT_FS2(HOOK) LSM_HOOK_INIT(HOOK, landlock_hook_FS_##HOOK##_2)
-#define HOOK_INIT_FS3(HOOK) LSM_HOOK_INIT(HOOK, landlock_hook_FS_##HOOK##_3)
-#define HOOK_INIT_FS4(HOOK) LSM_HOOK_INIT(HOOK, landlock_hook_FS_##HOOK##_4)
+#define HOOK_NEW_FS(...) HOOK_NEW(1, FS, 2, __VA_ARGS__)
+#define HOOK_NEW_FS2(...) HOOK_NEW(2, FS, 2, __VA_ARGS__)
+#define HOOK_NEW_FS3(...) HOOK_NEW(3, FS, 2, __VA_ARGS__)
+#define HOOK_NEW_FS4(...) HOOK_NEW(4, FS, 2, __VA_ARGS__)
+
+#define HOOK_INIT_FS(HOOK) HOOK_INIT(FS, HOOK, 1)
+#define HOOK_INIT_FS2(HOOK) HOOK_INIT(FS, HOOK, 2)
+#define HOOK_INIT_FS3(HOOK) HOOK_INIT(FS, HOOK, 3)
+#define HOOK_INIT_FS4(HOOK) HOOK_INIT(FS, HOOK, 4)
 
 /* WRAP_TYPE_FS */
 #define WRAP_TYPE_FS_BPF	CONST_PTR_TO_HANDLE_FS
@@ -451,30 +451,50 @@ HOOK_NEW_FS(file_permission, 2,
  * for some commands but a Landlock rule should check the ioctl command to
  * whitelist them.
  */
-HOOK_NEW_FS_CMD(file_ioctl, 3,
+HOOK_NEW_FS(file_ioctl, 3,
 	struct file *, file,
 	unsigned int, cmd,
 	unsigned long, arg,
 	WRAP_ARG_FILE, file,
-	WRAP_ARG_RAW, LANDLOCK_ACTION_FS_IOCTL,
-	cmd
+	WRAP_ARG_RAW, LANDLOCK_ACTION_FS_IOCTL
 );
 
-HOOK_NEW_FS_CMD(file_lock, 2,
-	struct file *, file,
-	unsigned int, cmd,
-	WRAP_ARG_FILE, file,
-	WRAP_ARG_RAW, LANDLOCK_ACTION_FS_LOCK,
-	cmd
-);
-
-HOOK_NEW_FS_CMD(file_fcntl, 3,
+HOOK_NEW(1, FS_IOCTL, 2, file_ioctl, 3,
 	struct file *, file,
 	unsigned int, cmd,
 	unsigned long, arg,
 	WRAP_ARG_FILE, file,
-	WRAP_ARG_RAW, LANDLOCK_ACTION_FS_FCNTL,
-	cmd
+	WRAP_ARG_RAW, cmd
+);
+
+HOOK_NEW_FS(file_lock, 2,
+	struct file *, file,
+	unsigned int, cmd,
+	WRAP_ARG_FILE, file,
+	WRAP_ARG_RAW, LANDLOCK_ACTION_FS_LOCK
+);
+
+HOOK_NEW(1, FS_LOCK, 2, file_lock, 2,
+	struct file *, file,
+	unsigned int, cmd,
+	WRAP_ARG_FILE, file,
+	WRAP_ARG_RAW, cmd
+);
+
+HOOK_NEW_FS(file_fcntl, 3,
+	struct file *, file,
+	unsigned int, cmd,
+	unsigned long, arg,
+	WRAP_ARG_FILE, file,
+	WRAP_ARG_RAW, LANDLOCK_ACTION_FS_FCNTL
+);
+
+HOOK_NEW(1, FS_FCNTL, 2, file_fcntl, 3,
+	struct file *, file,
+	unsigned int, cmd,
+	unsigned long, arg,
+	WRAP_ARG_FILE, file,
+	WRAP_ARG_RAW, cmd
 );
 
 HOOK_NEW_FS(mmap_file, 4,
@@ -549,8 +569,11 @@ static struct security_hook_list landlock_hooks[] = {
 
 	HOOK_INIT_FS(file_permission),
 	HOOK_INIT_FS(file_ioctl),
+	HOOK_INIT(FS_IOCTL, file_ioctl, 1),
 	HOOK_INIT_FS(file_lock),
+	HOOK_INIT(FS_LOCK, file_lock, 1),
 	HOOK_INIT_FS(file_fcntl),
+	HOOK_INIT(FS_FCNTL, file_fcntl, 1),
 	HOOK_INIT_FS(mmap_file),
 	HOOK_INIT_FS(file_mprotect),
 	HOOK_INIT_FS(file_receive),
@@ -559,5 +582,5 @@ static struct security_hook_list landlock_hooks[] = {
 
 __init void landlock_add_hooks_fs(void)
 {
-	landlock_register_hooks(landlock_hooks, ARRAY_SIZE(landlock_hooks));
+	security_add_hooks(landlock_hooks, ARRAY_SIZE(landlock_hooks), LANDLOCK_NAME);
 }

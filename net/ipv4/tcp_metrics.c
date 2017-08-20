@@ -524,7 +524,7 @@ reset:
 		tp->snd_cwnd = 1;
 	else
 		tp->snd_cwnd = tcp_init_cwnd(tp, dst);
-	tp->snd_cwnd_stamp = tcp_time_stamp;
+	tp->snd_cwnd_stamp = tcp_jiffies32;
 }
 
 bool tcp_peer_is_proven(struct request_sock *req, struct dst_entry *dst)
@@ -1011,10 +1011,7 @@ static int __net_init tcp_net_metrics_init(struct net *net)
 	tcp_metrics_hash_log = order_base_2(slots);
 	size = sizeof(struct tcpm_hash_bucket) << tcp_metrics_hash_log;
 
-	tcp_metrics_hash = kzalloc(size, GFP_KERNEL | __GFP_NOWARN);
-	if (!tcp_metrics_hash)
-		tcp_metrics_hash = vzalloc(size);
-
+	tcp_metrics_hash = kvzalloc(size, GFP_KERNEL);
 	if (!tcp_metrics_hash)
 		return -ENOMEM;
 

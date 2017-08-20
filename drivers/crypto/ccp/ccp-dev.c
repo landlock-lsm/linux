@@ -31,8 +31,9 @@
 #include "ccp-dev.h"
 
 MODULE_AUTHOR("Tom Lendacky <thomas.lendacky@amd.com>");
+MODULE_AUTHOR("Gary R Hook <gary.hook@amd.com>");
 MODULE_LICENSE("GPL");
-MODULE_VERSION("1.0.0");
+MODULE_VERSION("1.1.0");
 MODULE_DESCRIPTION("AMD Cryptographic Coprocessor driver");
 
 struct ccp_tasklet_data {
@@ -283,10 +284,13 @@ EXPORT_SYMBOL_GPL(ccp_version);
  */
 int ccp_enqueue_cmd(struct ccp_cmd *cmd)
 {
-	struct ccp_device *ccp = ccp_get_device();
+	struct ccp_device *ccp;
 	unsigned long flags;
 	unsigned int i;
 	int ret;
+
+	/* Some commands might need to be sent to a specific device */
+	ccp = cmd->ccp ? cmd->ccp : ccp_get_device();
 
 	if (!ccp)
 		return -ENODEV;

@@ -1106,7 +1106,7 @@
 #define RT5665_HP_DRIVER_MASK			(0x3 << 2)
 #define RT5665_HP_DRIVER_1X			(0x0 << 2)
 #define RT5665_HP_DRIVER_3X			(0x1 << 2)
-#define RT5665_HP_DRIVER_5X			(0x2 << 2)
+#define RT5665_HP_DRIVER_5X			(0x3 << 2)
 #define RT5665_LDO1_DVO_MASK			(0x3)
 #define RT5665_LDO1_DVO_09			(0x0)
 #define RT5665_LDO1_DVO_10			(0x1)
@@ -1692,8 +1692,8 @@
 #define RT5665_GP6_PIN_MASK			(0x3 << 5)
 #define RT5665_GP6_PIN_SFT			5
 #define RT5665_GP6_PIN_GPIO6			(0x0 << 5)
-#define RT5665_GP6_PIN_BCLK3			(0x0 << 5)
-#define RT5665_GP6_PIN_PDM_SCL			(0x1 << 5)
+#define RT5665_GP6_PIN_BCLK3			(0x1 << 5)
+#define RT5665_GP6_PIN_PDM_SCL			(0x2 << 5)
 #define RT5665_GP7_PIN_MASK			(0x3 << 3)
 #define RT5665_GP7_PIN_SFT			3
 #define RT5665_GP7_PIN_GPIO7			(0x0 << 3)
@@ -1984,7 +1984,5 @@ enum {
 
 int rt5665_sel_asrc_clk_src(struct snd_soc_codec *codec,
 		unsigned int filter_mask, unsigned int clk_src);
-int rt5665_set_jack_detect(struct snd_soc_codec *codec,
-	struct snd_soc_jack *hs_jack);
 
 #endif /* __RT5665_H__ */

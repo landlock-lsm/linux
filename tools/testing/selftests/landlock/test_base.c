@@ -17,11 +17,7 @@ TEST(seccomp_landlock)
 {
 	int ret;
 
-	ret = prctl(PR_SET_NO_NEW_PRIVS, 1, NULL, 0, 0);
-	ASSERT_EQ(0, ret) {
-		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS");
-	}
-	ret = seccomp(SECCOMP_APPEND_LANDLOCK_RULE, 0, NULL);
+	ret = seccomp(SECCOMP_PREPEND_LANDLOCK_RULE, 0, NULL);
 	EXPECT_EQ(-1, ret);
 	EXPECT_EQ(EFAULT, errno) {
 		TH_LOG("Kernel does not support CONFIG_SECURITY_LANDLOCK");

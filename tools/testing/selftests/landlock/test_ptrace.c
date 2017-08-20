@@ -25,14 +25,14 @@ static void apply_null_sandbox(struct __test_metadata *_metadata)
 	};
 	const union bpf_prog_subtype subtype = {
 		.landlock_rule = {
-			.version = 1,
+			.abi = 1,
 			.event = LANDLOCK_SUBTYPE_EVENT_FS,
 		}
 	};
 	int prog;
 	char log[256] = "";
 
-	prog = bpf_load_program(BPF_PROG_TYPE_LANDLOCK,
+	prog = bpf_load_program(BPF_PROG_TYPE_LANDLOCK_RULE,
 			(const struct bpf_insn *)&prog_accept,
 			sizeof(prog_accept) / sizeof(struct bpf_insn), "GPL",
 			0, log, sizeof(log), &subtype);
@@ -40,10 +40,7 @@ static void apply_null_sandbox(struct __test_metadata *_metadata)
 		TH_LOG("Failed to load minimal rule: %s\n%s",
 				strerror(errno), log);
 	}
-	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, NULL, 0, 0)) {
-		TH_LOG("Kernel does not support PR_SET_NO_NEW_PRIVS");
-	}
-	ASSERT_EQ(0, seccomp(SECCOMP_APPEND_LANDLOCK_RULE, 0, &prog)) {
+	ASSERT_EQ(0, seccomp(SECCOMP_PREPEND_LANDLOCK_RULE, 0, &prog)) {
 		TH_LOG("Failed to apply minimal rule: %s", strerror(errno));
 	}
 	EXPECT_EQ(0, close(prog));

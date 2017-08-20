@@ -93,7 +93,7 @@ int kvmppc_allocate_hpt(struct kvm_hpt_info *info, u32 order)
 	}
 
 	if (!hpt)
-		hpt = __get_free_pages(GFP_KERNEL|__GFP_ZERO|__GFP_REPEAT
+		hpt = __get_free_pages(GFP_KERNEL|__GFP_ZERO|__GFP_RETRY_MAYFAIL
 				       |__GFP_NOWARN, order - PAGE_SHIFT);
 
 	if (!hpt)
@@ -164,8 +164,10 @@ long kvmppc_alloc_reset_hpt(struct kvm *kvm, int order)
 		goto out;
 	}
 
-	if (kvm->arch.hpt.virt)
+	if (kvm->arch.hpt.virt) {
 		kvmppc_free_hpt(&kvm->arch.hpt);
+		kvmppc_rmap_reset(kvm);
+	}
 
 	err = kvmppc_allocate_hpt(&info, order);
 	if (err < 0)
@@ -1487,6 +1489,10 @@ long kvm_vm_ioctl_resize_hpt_prepare(struct kvm *kvm,
 	/* start new resize */
 
 	resize = kzalloc(sizeof(*resize), GFP_KERNEL);
+	if (!resize) {
+		ret = -ENOMEM;
+		goto out;
+	}
 	resize->order = shift;
 	resize->kvm = kvm;
 	INIT_WORK(&resize->work, resize_hpt_prepare_work);

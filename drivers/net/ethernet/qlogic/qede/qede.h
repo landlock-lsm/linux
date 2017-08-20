@@ -40,7 +40,11 @@
 #include <linux/kernel.h>
 #include <linux/mutex.h>
 #include <linux/bpf.h>
+#include <linux/qed/qede_rdma.h>
 #include <linux/io.h>
+#ifdef CONFIG_RFS_ACCEL
+#include <linux/cpu_rmap.h>
+#endif
 #include <linux/qed/common_hsi.h>
 #include <linux/qed/eth_common.h>
 #include <linux/qed/qed_if.h>
@@ -150,11 +154,13 @@ struct qede_vlan {
 struct qede_rdma_dev {
 	struct qedr_dev *qedr_dev;
 	struct list_head entry;
-	struct list_head roce_event_list;
-	struct workqueue_struct *roce_wq;
+	struct list_head rdma_event_list;
+	struct workqueue_struct *rdma_wq;
 };
 
 struct qede_ptp;
+
+#define QEDE_RFS_MAX_FLTR	256
 
 struct qede_dev {
 	struct qed_dev			*cdev;
@@ -164,10 +170,11 @@ struct qede_dev {
 	u32				dp_module;
 	u8				dp_level;
 
-	u32 flags;
-#define QEDE_FLAG_IS_VF	BIT(0)
+	unsigned long flags;
+#define QEDE_FLAG_IS_VF			BIT(0)
 #define IS_VF(edev)	(!!((edev)->flags & QEDE_FLAG_IS_VF))
 #define QEDE_TX_TIMESTAMPING_EN		BIT(1)
+#define QEDE_FLAGS_PTP_TX_IN_PRORGESS	BIT(2)
 
 	const struct qed_eth_ops	*ops;
 	struct qede_ptp			*ptp;
@@ -193,7 +200,6 @@ struct qede_dev {
 #define QEDE_TSS_COUNT(edev)	((edev)->num_queues - (edev)->fp_num_rx)
 
 	struct qed_int_info		int_info;
-	unsigned char			primary_mac[ETH_ALEN];
 
 	/* Smaller private varaiant of the RTNL lock */
 	struct mutex			qede_lock;
@@ -237,7 +243,8 @@ struct qede_dev {
 	u16				vxlan_dst_port;
 	u16				geneve_dst_port;
 
-	bool wol_enabled;
+	struct qede_arfs		*arfs;
+	bool				wol_enabled;
 
 	struct qede_rdma_dev		rdma_info;
 
@@ -313,20 +320,23 @@ struct qede_rx_queue {
 	u8 data_direction;
 	u8 rxq_id;
 
+	/* Used once per each NAPI run */
+	u16 num_rx_buffers;
+
+	u16 rx_headroom;
+
 	u32 rx_buf_size;
 	u32 rx_buf_seg_size;
-
-	u64 rcv_pkts;
 
 	struct sw_rx_data *sw_rx_ring;
 	struct qed_chain rx_bd_ring;
 	struct qed_chain rx_comp_ring ____cacheline_aligned;
 
-	/* Used once per each NAPI run */
-	u16 num_rx_buffers;
-
 	/* GRO */
 	struct qede_agg_info tpa_info[ETH_TPA_MAX_AGGS_NUM];
+
+	/* Used once per each NAPI run */
+	u64 rcv_pkts;
 
 	u64 rx_hw_errors;
 	u64 rx_alloc_errors;
@@ -347,6 +357,11 @@ struct sw_tx_bd {
 	u8 flags;
 /* Set on the first BD descriptor when there is a split BD */
 #define QEDE_TSO_SPLIT_BD		BIT(0)
+};
+
+struct sw_tx_xdp {
+	struct page *page;
+	dma_addr_t mapping;
 };
 
 struct qede_tx_queue {
@@ -372,11 +387,11 @@ struct qede_tx_queue {
 #define QEDE_TXQ_IDX_TO_XDP(edev, idx)	((idx) + QEDE_MAX_TSS_CNT(edev))
 
 	/* Regular Tx requires skb + metadata for release purpose,
-	 * while XDP requires only the pages themselves.
+	 * while XDP requires the pages and the mapped address.
 	 */
 	union {
 		struct sw_tx_bd *skbs;
-		struct page **pages;
+		struct sw_tx_xdp *xdp;
 	} sw_tx_ring;
 
 	struct qed_chain tx_pbl;
@@ -428,8 +443,25 @@ struct qede_fastpath {
 #define QEDE_TUNN_CSUM_UNNECESSARY	BIT(2)
 
 #define QEDE_SP_RX_MODE			1
-#define QEDE_SP_VXLAN_PORT_CONFIG	2
-#define QEDE_SP_GENEVE_PORT_CONFIG	3
+
+#ifdef CONFIG_RFS_ACCEL
+int qede_rx_flow_steer(struct net_device *dev, const struct sk_buff *skb,
+		       u16 rxq_index, u32 flow_id);
+#define QEDE_SP_ARFS_CONFIG	4
+#define QEDE_SP_TASK_POLL_DELAY	(5 * HZ)
+#endif
+
+void qede_process_arfs_filters(struct qede_dev *edev, bool free_fltr);
+void qede_poll_for_freeing_arfs_filters(struct qede_dev *edev);
+void qede_arfs_filter_op(void *dev, void *filter, u8 fw_rc);
+void qede_free_arfs(struct qede_dev *edev);
+int qede_alloc_arfs(struct qede_dev *edev);
+int qede_add_cls_rule(struct qede_dev *edev, struct ethtool_rxnfc *info);
+int qede_del_cls_rule(struct qede_dev *edev, struct ethtool_rxnfc *info);
+int qede_get_cls_rule_entry(struct qede_dev *edev, struct ethtool_rxnfc *cmd);
+int qede_get_cls_rule_all(struct qede_dev *edev, struct ethtool_rxnfc *info,
+			  u32 *rule_locs);
+int qede_get_arfs_filter_count(struct qede_dev *edev);
 
 struct qede_reload_args {
 	void (*func)(struct qede_dev *edev, struct qede_reload_args *args);
@@ -454,6 +486,7 @@ irqreturn_t qede_msix_fp_int(int irq, void *fp_cookie);
 
 /* Filtering function definitions */
 void qede_force_mac(void *dev, u8 *mac, bool forced);
+void qede_udp_ports_update(void *dev, u16 vxlan_port, u16 geneve_port);
 int qede_set_mac_addr(struct net_device *ndev, void *p);
 
 int qede_vlan_rx_add_vid(struct net_device *dev, __be16 proto, u16 vid);

@@ -13,6 +13,7 @@
 #include <linux/err.h>
 #include <linux/export.h>
 #include <linux/kernel.h>
+#include <linux/kref.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/reset.h>
@@ -40,7 +41,7 @@ struct reset_control {
 	struct reset_controller_dev *rcdev;
 	struct list_head list;
 	unsigned int id;
-	unsigned int refcnt;
+	struct kref refcnt;
 	bool shared;
 	atomic_t deassert_count;
 	atomic_t triggered_count;
@@ -275,7 +276,7 @@ int reset_control_status(struct reset_control *rstc)
 }
 EXPORT_SYMBOL_GPL(reset_control_status);
 
-static struct reset_control *__reset_control_get(
+static struct reset_control *__reset_control_get_internal(
 				struct reset_controller_dev *rcdev,
 				unsigned int index, bool shared)
 {
@@ -288,7 +289,7 @@ static struct reset_control *__reset_control_get(
 			if (WARN_ON(!rstc->shared || !shared))
 				return ERR_PTR(-EBUSY);
 
-			rstc->refcnt++;
+			kref_get(&rstc->refcnt);
 			return rstc;
 		}
 	}
@@ -302,23 +303,30 @@ static struct reset_control *__reset_control_get(
 	rstc->rcdev = rcdev;
 	list_add(&rstc->list, &rcdev->reset_control_head);
 	rstc->id = index;
-	rstc->refcnt = 1;
+	kref_init(&rstc->refcnt);
 	rstc->shared = shared;
 
 	return rstc;
 }
 
-static void __reset_control_put(struct reset_control *rstc)
+static void __reset_control_release(struct kref *kref)
 {
-	lockdep_assert_held(&reset_list_mutex);
+	struct reset_control *rstc = container_of(kref, struct reset_control,
+						  refcnt);
 
-	if (--rstc->refcnt)
-		return;
+	lockdep_assert_held(&reset_list_mutex);
 
 	module_put(rstc->rcdev->owner);
 
 	list_del(&rstc->list);
 	kfree(rstc);
+}
+
+static void __reset_control_put_internal(struct reset_control *rstc)
+{
+	lockdep_assert_held(&reset_list_mutex);
+
+	kref_put(&rstc->refcnt, __reset_control_release);
 }
 
 struct reset_control *__of_reset_control_get(struct device_node *node,
@@ -377,7 +385,7 @@ struct reset_control *__of_reset_control_get(struct device_node *node,
 	}
 
 	/* reset_list_mutex also protects the rcdev's reset_control list */
-	rstc = __reset_control_get(rcdev, rstc_id, shared);
+	rstc = __reset_control_get_internal(rcdev, rstc_id, shared);
 
 	mutex_unlock(&reset_list_mutex);
 
@@ -385,18 +393,28 @@ struct reset_control *__of_reset_control_get(struct device_node *node,
 }
 EXPORT_SYMBOL_GPL(__of_reset_control_get);
 
+struct reset_control *__reset_control_get(struct device *dev, const char *id,
+					  int index, bool shared, bool optional)
+{
+	if (dev->of_node)
+		return __of_reset_control_get(dev->of_node, id, index, shared,
+					      optional);
+
+	return optional ? NULL : ERR_PTR(-EINVAL);
+}
+EXPORT_SYMBOL_GPL(__reset_control_get);
+
 /**
  * reset_control_put - free the reset controller
  * @rstc: reset controller
  */
-
 void reset_control_put(struct reset_control *rstc)
 {
 	if (IS_ERR_OR_NULL(rstc))
 		return;
 
 	mutex_lock(&reset_list_mutex);
-	__reset_control_put(rstc);
+	__reset_control_put_internal(rstc);
 	mutex_unlock(&reset_list_mutex);
 }
 EXPORT_SYMBOL_GPL(reset_control_put);
@@ -417,8 +435,7 @@ struct reset_control *__devm_reset_control_get(struct device *dev,
 	if (!ptr)
 		return ERR_PTR(-ENOMEM);
 
-	rstc = __of_reset_control_get(dev ? dev->of_node : NULL,
-				      id, index, shared, optional);
+	rstc = __reset_control_get(dev, id, index, shared, optional);
 	if (!IS_ERR(rstc)) {
 		*ptr = rstc;
 		devres_add(dev, ptr);

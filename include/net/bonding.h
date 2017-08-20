@@ -166,7 +166,7 @@ struct slave {
 	u32    link_failure_count;
 	u32    speed;
 	u16    queue_id;
-	u8     perm_hwaddr[ETH_ALEN];
+	u8     perm_hwaddr[MAX_ADDR_LEN];
 	struct ad_slave_info *ad_info;
 	struct tlb_slave_info tlb_info;
 #ifdef CONFIG_NET_POLL_CONTROLLER
@@ -275,6 +275,11 @@ static inline bool bond_is_lb(const struct bonding *bond)
 {
 	return BOND_MODE(bond) == BOND_MODE_TLB ||
 	       BOND_MODE(bond) == BOND_MODE_ALB;
+}
+
+static inline bool bond_needs_speed_duplex(const struct bonding *bond)
+{
+	return BOND_MODE(bond) == BOND_MODE_8023AD || bond_is_lb(bond);
 }
 
 static inline bool bond_is_nondyn_tlb(const struct bonding *bond)
@@ -400,6 +405,16 @@ static inline bool bond_slave_can_tx(struct slave *slave)
 {
 	return bond_slave_is_up(slave) && slave->link == BOND_LINK_UP &&
 	       bond_is_active_slave(slave);
+}
+
+static inline void bond_hw_addr_copy(u8 *dst, const u8 *src, unsigned int len)
+{
+	if (len == ETH_ALEN) {
+		ether_addr_copy(dst, src);
+		return;
+	}
+
+	memcpy(dst, src, len);
 }
 
 #define BOND_PRI_RESELECT_ALWAYS	0
@@ -604,6 +619,7 @@ struct bond_vlan_tag *bond_verify_device_path(struct net_device *start_dev,
 					      int level);
 int bond_update_slave_arr(struct bonding *bond, struct slave *skipslave);
 void bond_slave_arr_work_rearm(struct bonding *bond, unsigned long delay);
+void bond_work_init_all(struct bonding *bond);
 
 #ifdef CONFIG_PROC_FS
 void bond_create_proc_entry(struct bonding *bond);

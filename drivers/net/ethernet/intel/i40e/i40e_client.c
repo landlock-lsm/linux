@@ -1,7 +1,7 @@
 /*******************************************************************************
  *
  * Intel Ethernet Controller XL710 Family Linux Driver
- * Copyright(c) 2013 - 2015 Intel Corporation.
+ * Copyright(c) 2013 - 2017 Intel Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -273,8 +273,8 @@ int i40e_vf_client_capable(struct i40e_pf *pf, u32 vf_id)
 	if (!cdev || !cdev->client)
 		goto out;
 	if (!cdev->client->ops || !cdev->client->ops->vf_capable) {
-		dev_info(&pf->pdev->dev,
-			 "Cannot locate client instance VF capability routine\n");
+		dev_dbg(&pf->pdev->dev,
+			"Cannot locate client instance VF capability routine\n");
 		goto out;
 	}
 	if (!test_bit(__I40E_CLIENT_INSTANCE_OPENED, &cdev->state))
@@ -371,8 +371,8 @@ void i40e_client_subtask(struct i40e_pf *pf)
 	cdev = pf->cinst;
 
 	/* If we're down or resetting, just bail */
-	if (test_bit(__I40E_DOWN, &pf->state) ||
-	    test_bit(__I40E_CONFIG_BUSY, &pf->state))
+	if (test_bit(__I40E_DOWN, pf->state) ||
+	    test_bit(__I40E_CONFIG_BUSY, pf->state))
 		return;
 
 	if (!client || !cdev)
@@ -382,7 +382,7 @@ void i40e_client_subtask(struct i40e_pf *pf)
 	 * the netdev is up, then open the client.
 	 */
 	if (!test_bit(__I40E_CLIENT_INSTANCE_OPENED, &cdev->state)) {
-		if (!test_bit(__I40E_DOWN, &vsi->state) &&
+		if (!test_bit(__I40E_VSI_DOWN, vsi->state) &&
 		    client->ops && client->ops->open) {
 			set_bit(__I40E_CLIENT_INSTANCE_OPENED, &cdev->state);
 			ret = client->ops->open(&cdev->lan_info, client);
@@ -397,7 +397,7 @@ void i40e_client_subtask(struct i40e_pf *pf)
 	/* Likewise for client close. If the client is up, but the netdev
 	 * is down, then close the client.
 	 */
-		if (test_bit(__I40E_DOWN, &vsi->state) &&
+		if (test_bit(__I40E_VSI_DOWN, vsi->state) &&
 		    client->ops && client->ops->close) {
 			clear_bit(__I40E_CLIENT_INSTANCE_OPENED, &cdev->state);
 			client->ops->close(&cdev->lan_info, client, false);
@@ -436,6 +436,12 @@ int i40e_lan_add_device(struct i40e_pf *pf)
 		 pf->hw.pf_id, pf->hw.bus.bus_id,
 		 pf->hw.bus.device, pf->hw.bus.func);
 
+	/* If a client has already been registered, we need to add an instance
+	 * of it to our new LAN device.
+	 */
+	if (registered_client)
+		i40e_client_add_instance(pf);
+
 	/* Since in some cases register may have happened before a device gets
 	 * added, we can schedule a subtask to go initiate the clients if
 	 * they can be launched at probe time.
@@ -458,6 +464,9 @@ int i40e_lan_del_device(struct i40e_pf *pf)
 {
 	struct i40e_device *ldev, *tmp;
 	int ret = -ENODEV;
+
+	/* First, remove any client instance. */
+	i40e_client_del_instance(pf);
 
 	mutex_lock(&i40e_device_mutex);
 	list_for_each_entry_safe(ldev, tmp, &i40e_devices, list) {
@@ -494,7 +503,7 @@ static void i40e_client_release(struct i40e_client *client)
 			continue;
 
 		while (test_and_set_bit(__I40E_SERVICE_SCHED,
-					&pf->state))
+					pf->state))
 			usleep_range(500, 1000);
 
 		if (test_bit(__I40E_CLIENT_INSTANCE_OPENED, &cdev->state)) {
@@ -512,7 +521,7 @@ static void i40e_client_release(struct i40e_client *client)
 		i40e_client_del_instance(pf);
 		dev_info(&pf->pdev->dev, "Deleted client instance of Client %s\n",
 			 client->name);
-		clear_bit(__I40E_SERVICE_SCHED, &pf->state);
+		clear_bit(__I40E_SERVICE_SCHED, pf->state);
 	}
 	mutex_unlock(&i40e_device_mutex);
 }
@@ -556,7 +565,7 @@ static int i40e_client_virtchnl_send(struct i40e_info *ldev,
 	struct i40e_hw *hw = &pf->hw;
 	i40e_status err;
 
-	err = i40e_aq_send_msg_to_vf(hw, vf_id, I40E_VIRTCHNL_OP_IWARP,
+	err = i40e_aq_send_msg_to_vf(hw, vf_id, VIRTCHNL_OP_IWARP,
 				     0, msg, len, NULL);
 	if (err)
 		dev_err(&pf->pdev->dev, "Unable to send iWarp message to VF, error %d, aq status %d\n",
@@ -586,6 +595,8 @@ static int i40e_client_setup_qvlist(struct i40e_info *ldev,
 	size = sizeof(struct i40e_qvlist_info) +
 	       (sizeof(struct i40e_qv_info) * (qvlist_info->num_vectors - 1));
 	ldev->qvlist_info = kzalloc(size, GFP_KERNEL);
+	if (!ldev->qvlist_info)
+		return -ENOMEM;
 	ldev->qvlist_info->num_vectors = qvlist_info->num_vectors;
 
 	for (i = 0; i < qvlist_info->num_vectors; i++) {
@@ -652,10 +663,10 @@ static void i40e_client_request_reset(struct i40e_info *ldev,
 
 	switch (reset_level) {
 	case I40E_CLIENT_RESET_LEVEL_PF:
-		set_bit(__I40E_PF_RESET_REQUESTED, &pf->state);
+		set_bit(__I40E_PF_RESET_REQUESTED, pf->state);
 		break;
 	case I40E_CLIENT_RESET_LEVEL_CORE:
-		set_bit(__I40E_PF_RESET_REQUESTED, &pf->state);
+		set_bit(__I40E_PF_RESET_REQUESTED, pf->state);
 		break;
 	default:
 		dev_warn(&pf->pdev->dev,

@@ -9,14 +9,14 @@
  */
 
 #include <asm/current.h>
+#include <linux/errno.h>
 #include <linux/kernel.h> /* ARRAY_SIZE */
-#include <linux/landlock.h> /* struct landlock_events */
 #include <linux/lsm_hooks.h>
 #include <linux/sched.h> /* struct task_struct */
 #include <linux/seccomp.h>
 
+#include "common.h" /* struct landlock_events */
 #include "hooks.h" /* landlocked() */
-
 #include "hooks_ptrace.h"
 
 
@@ -60,6 +60,21 @@ static bool landlock_task_has_subset_events(const struct task_struct *parent,
 	return false;
 }
 
+static int landlock_task_ptrace(const struct task_struct *parent,
+		const struct task_struct *child)
+{
+	if (!landlocked(parent))
+		return 0;
+
+	if (!landlocked(child))
+		return -EPERM;
+
+	if (landlock_task_has_subset_events(parent, child))
+		return 0;
+
+	return -EPERM;
+}
+
 /**
  * landlock_ptrace_access_check - determine whether the current process may
  *				  access another
@@ -76,16 +91,7 @@ static bool landlock_task_has_subset_events(const struct task_struct *parent,
 static int landlock_ptrace_access_check(struct task_struct *child,
 		unsigned int mode)
 {
-	if (!landlocked(current))
-		return 0;
-
-	if (!landlocked(child))
-		return -EPERM;
-
-	if (landlock_task_has_subset_events(current, child))
-		return 0;
-
-	return -EPERM;
+	return landlock_task_ptrace(current, child);
 }
 
 /**
@@ -103,16 +109,7 @@ static int landlock_ptrace_access_check(struct task_struct *child,
  */
 static int landlock_ptrace_traceme(struct task_struct *parent)
 {
-	if (!landlocked(parent))
-		return 0;
-
-	if (!landlocked(current))
-		return -EPERM;
-
-	if (landlock_task_has_subset_events(parent, current))
-		return 0;
-
-	return -EPERM;
+	return landlock_task_ptrace(parent, current);
 }
 
 static struct security_hook_list landlock_hooks[] = {
@@ -122,5 +119,5 @@ static struct security_hook_list landlock_hooks[] = {
 
 __init void landlock_add_hooks_ptrace(void)
 {
-	landlock_register_hooks(landlock_hooks, ARRAY_SIZE(landlock_hooks));
+	security_add_hooks(landlock_hooks, ARRAY_SIZE(landlock_hooks), LANDLOCK_NAME);
 }

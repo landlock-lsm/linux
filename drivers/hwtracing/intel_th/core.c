@@ -139,7 +139,6 @@ static int intel_th_remove(struct device *dev)
 
 static struct bus_type intel_th_bus = {
 	.name		= "intel_th",
-	.dev_attrs	= NULL,
 	.match		= intel_th_match,
 	.probe		= intel_th_probe,
 	.remove		= intel_th_remove,
@@ -221,8 +220,10 @@ static int intel_th_output_activate(struct intel_th_device *thdev)
 	else
 		intel_th_trace_enable(thdev);
 
-	if (ret)
+	if (ret) {
 		pm_runtime_put(&thdev->dev);
+		module_put(thdrv->driver.owner);
+	}
 
 	return ret;
 }

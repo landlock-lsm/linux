@@ -33,9 +33,7 @@
 #include <linux/pci.h>
 #include <linux/mlx5/driver.h>
 #include "mlx5_core.h"
-#ifdef CONFIG_MLX5_CORE_EN
 #include "eswitch.h"
-#endif
 
 bool mlx5_sriov_is_enabled(struct mlx5_core_dev *dev)
 {
@@ -57,14 +55,12 @@ static int mlx5_device_enable_sriov(struct mlx5_core_dev *dev, int num_vfs)
 		return -EBUSY;
 	}
 
-#ifdef CONFIG_MLX5_CORE_EN
 	err = mlx5_eswitch_enable_sriov(dev->priv.eswitch, num_vfs, SRIOV_LEGACY);
 	if (err) {
 		mlx5_core_warn(dev,
 			       "failed to enable eswitch SRIOV (%d)\n", err);
 		return err;
 	}
-#endif
 
 	for (vf = 0; vf < num_vfs; vf++) {
 		err = mlx5_core_enable_hca(dev, vf + 1);
@@ -88,7 +84,7 @@ static void mlx5_device_disable_sriov(struct mlx5_core_dev *dev)
 	int vf;
 
 	if (!sriov->enabled_vfs)
-		return;
+		goto out;
 
 	for (vf = 0; vf < sriov->num_vfs; vf++) {
 		if (!sriov->vfs_ctx[vf].enabled)
@@ -102,9 +98,8 @@ static void mlx5_device_disable_sriov(struct mlx5_core_dev *dev)
 		sriov->enabled_vfs--;
 	}
 
-#ifdef CONFIG_MLX5_CORE_EN
+out:
 	mlx5_eswitch_disable_sriov(dev->priv.eswitch);
-#endif
 
 	if (mlx5_wait_for_vf_pages(dev))
 		mlx5_core_warn(dev, "timeout reclaiming VFs pages\n");
@@ -175,15 +170,20 @@ int mlx5_core_sriov_configure(struct pci_dev *pdev, int num_vfs)
 	if (!mlx5_core_is_pf(dev))
 		return -EPERM;
 
-	if (num_vfs && mlx5_lag_is_active(dev)) {
-		mlx5_core_warn(dev, "can't turn sriov on while LAG is active");
-		return -EINVAL;
+	if (num_vfs) {
+		int ret;
+
+		ret = mlx5_lag_forbid(dev);
+		if (ret && (ret != -ENODEV))
+			return ret;
 	}
 
-	if (num_vfs)
+	if (num_vfs) {
 		err = mlx5_sriov_enable(pdev, num_vfs);
-	else
+	} else {
 		mlx5_sriov_disable(pdev);
+		mlx5_lag_allow(dev);
+	}
 
 	return err ? err : num_vfs;
 }

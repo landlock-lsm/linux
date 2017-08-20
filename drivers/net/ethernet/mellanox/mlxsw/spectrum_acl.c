@@ -53,6 +53,7 @@ struct mlxsw_sp_acl {
 	struct mlxsw_sp *mlxsw_sp;
 	struct mlxsw_afk *afk;
 	struct mlxsw_afa *afa;
+	struct mlxsw_sp_fid *dummy_fid;
 	const struct mlxsw_sp_acl_ops *ops;
 	struct rhashtable ruleset_ht;
 	struct list_head rules;
@@ -111,6 +112,11 @@ static const struct rhashtable_params mlxsw_sp_acl_rule_ht_params = {
 	.head_offset = offsetof(struct mlxsw_sp_acl_rule, ht_node),
 	.automatic_shrinking = true,
 };
+
+struct mlxsw_sp_fid *mlxsw_sp_acl_dummy_fid(struct mlxsw_sp *mlxsw_sp)
+{
+	return mlxsw_sp->acl->dummy_fid;
+}
 
 static struct mlxsw_sp_acl_ruleset *
 mlxsw_sp_acl_ruleset_create(struct mlxsw_sp *mlxsw_sp,
@@ -341,6 +347,11 @@ int mlxsw_sp_acl_rulei_act_drop(struct mlxsw_sp_acl_rule_info *rulei)
 	return mlxsw_afa_block_append_drop(rulei->act_block);
 }
 
+int mlxsw_sp_acl_rulei_act_trap(struct mlxsw_sp_acl_rule_info *rulei)
+{
+	return mlxsw_afa_block_append_trap(rulei->act_block);
+}
+
 int mlxsw_sp_acl_rulei_act_fwd(struct mlxsw_sp *mlxsw_sp,
 			       struct mlxsw_sp_acl_rule_info *rulei,
 			       struct net_device *out_dev)
@@ -358,7 +369,7 @@ int mlxsw_sp_acl_rulei_act_fwd(struct mlxsw_sp *mlxsw_sp,
 		local_port = mlxsw_sp_port->local_port;
 		in_port = false;
 	} else {
-		/* If out_dev is NULL, the called wants to
+		/* If out_dev is NULL, the caller wants to
 		 * set forward to ingress port.
 		 */
 		local_port = 0;
@@ -401,6 +412,13 @@ int mlxsw_sp_acl_rulei_act_count(struct mlxsw_sp *mlxsw_sp,
 {
 	return mlxsw_afa_block_append_counter(rulei->act_block,
 					      rulei->counter_index);
+}
+
+int mlxsw_sp_acl_rulei_act_fid_set(struct mlxsw_sp *mlxsw_sp,
+				   struct mlxsw_sp_acl_rule_info *rulei,
+				   u16 fid)
+{
+	return mlxsw_afa_block_append_fid_set(rulei->act_block, fid);
 }
 
 struct mlxsw_sp_acl_rule *
@@ -669,6 +687,7 @@ static const struct mlxsw_afa_ops mlxsw_sp_act_afa_ops = {
 int mlxsw_sp_acl_init(struct mlxsw_sp *mlxsw_sp)
 {
 	const struct mlxsw_sp_acl_ops *acl_ops = &mlxsw_sp_acl_tcam_ops;
+	struct mlxsw_sp_fid *fid;
 	struct mlxsw_sp_acl *acl;
 	int err;
 
@@ -699,6 +718,13 @@ int mlxsw_sp_acl_init(struct mlxsw_sp *mlxsw_sp)
 	if (err)
 		goto err_rhashtable_init;
 
+	fid = mlxsw_sp_fid_dummy_get(mlxsw_sp);
+	if (IS_ERR(fid)) {
+		err = PTR_ERR(fid);
+		goto err_fid_get;
+	}
+	acl->dummy_fid = fid;
+
 	INIT_LIST_HEAD(&acl->rules);
 	err = acl_ops->init(mlxsw_sp, acl->priv);
 	if (err)
@@ -714,6 +740,8 @@ int mlxsw_sp_acl_init(struct mlxsw_sp *mlxsw_sp)
 	return 0;
 
 err_acl_ops_init:
+	mlxsw_sp_fid_put(fid);
+err_fid_get:
 	rhashtable_destroy(&acl->ruleset_ht);
 err_rhashtable_init:
 	mlxsw_afa_destroy(acl->afa);
@@ -732,6 +760,7 @@ void mlxsw_sp_acl_fini(struct mlxsw_sp *mlxsw_sp)
 	cancel_delayed_work_sync(&mlxsw_sp->acl->rule_activity_update.dw);
 	acl_ops->fini(mlxsw_sp, acl->priv);
 	WARN_ON(!list_empty(&acl->rules));
+	mlxsw_sp_fid_put(acl->dummy_fid);
 	rhashtable_destroy(&acl->ruleset_ht);
 	mlxsw_afa_destroy(acl->afa);
 	mlxsw_afk_destroy(acl->afk);

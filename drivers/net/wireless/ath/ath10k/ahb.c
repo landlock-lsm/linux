@@ -640,6 +640,7 @@ static int ath10k_ahb_hif_start(struct ath10k *ar)
 {
 	ath10k_dbg(ar, ATH10K_DBG_BOOT, "boot ahb hif start\n");
 
+	napi_enable(&ar->napi);
 	ath10k_ce_enable_interrupts(ar);
 	ath10k_pci_enable_legacy_irq(ar);
 
@@ -692,7 +693,6 @@ static int ath10k_ahb_hif_power_up(struct ath10k *ar)
 		ath10k_err(ar, "could not wake up target CPU: %d\n", ret);
 		goto err_ce_deinit;
 	}
-	napi_enable(&ar->napi);
 
 	return 0;
 
@@ -787,8 +787,9 @@ static int ath10k_ahb_probe(struct platform_device *pdev)
 	ar_pci->mem = ar_ahb->mem;
 	ar_pci->mem_len = ar_ahb->mem_len;
 	ar_pci->ar = ar;
-	ar_pci->bus_ops = &ath10k_ahb_bus_ops;
+	ar_pci->ce.bus_ops = &ath10k_ahb_bus_ops;
 	ar_pci->targ_cpu_to_ce_addr = ath10k_ahb_qca4019_targ_cpu_to_ce_addr;
+	ar->ce_priv = &ar_pci->ce;
 
 	ret = ath10k_pci_setup_resource(ar);
 	if (ret) {

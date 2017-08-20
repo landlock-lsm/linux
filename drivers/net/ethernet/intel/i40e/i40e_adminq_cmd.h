@@ -1,7 +1,7 @@
 /*******************************************************************************
  *
  * Intel Ethernet Controller XL710 Family Linux Driver
- * Copyright(c) 2013 - 2016 Intel Corporation.
+ * Copyright(c) 2013 - 2017 Intel Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -189,6 +189,10 @@ enum i40e_admin_queue_opc {
 
 	i40e_aqc_opc_add_mirror_rule	= 0x0260,
 	i40e_aqc_opc_delete_mirror_rule	= 0x0261,
+
+	/* Pipeline Personalization Profile */
+	i40e_aqc_opc_write_personalization_profile	= 0x0270,
+	i40e_aqc_opc_get_personalization_profile_list	= 0x0271,
 
 	/* DCB commands */
 	i40e_aqc_opc_dcb_ignore_pfc	= 0x0301,
@@ -527,7 +531,7 @@ struct i40e_aqc_mac_address_read {
 #define I40E_AQC_PORT_ADDR_VALID	0x40
 #define I40E_AQC_WOL_ADDR_VALID		0x80
 #define I40E_AQC_MC_MAG_EN_VALID	0x100
-#define I40E_AQC_ADDR_VALID_MASK	0x1F0
+#define I40E_AQC_ADDR_VALID_MASK	0x3F0
 	u8	reserved[6];
 	__le32	addr_high;
 	__le32	addr_low;
@@ -1430,6 +1434,36 @@ struct i40e_aqc_add_delete_mirror_rule_completion {
 };
 
 I40E_CHECK_CMD_LENGTH(i40e_aqc_add_delete_mirror_rule_completion);
+
+/* Pipeline Personalization Profile */
+struct i40e_aqc_write_personalization_profile {
+	u8      flags;
+	u8      reserved[3];
+	__le32  profile_track_id;
+	__le32  addr_high;
+	__le32  addr_low;
+};
+
+I40E_CHECK_CMD_LENGTH(i40e_aqc_write_personalization_profile);
+
+struct i40e_aqc_write_ppp_resp {
+	__le32 error_offset;
+	__le32 error_info;
+	__le32 addr_high;
+	__le32 addr_low;
+};
+
+struct i40e_aqc_get_applied_profiles {
+	u8      flags;
+#define I40E_AQC_GET_PPP_GET_CONF	0x1
+#define I40E_AQC_GET_PPP_GET_RDPU_CONF	0x2
+	u8      rsv[3];
+	__le32  reserved;
+	__le32  addr_high;
+	__le32  addr_low;
+};
+
+I40E_CHECK_CMD_LENGTH(i40e_aqc_get_applied_profiles);
 
 /* DCB 0x03xx*/
 

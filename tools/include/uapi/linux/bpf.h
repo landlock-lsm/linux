@@ -30,9 +30,14 @@
 #define BPF_FROM_LE	BPF_TO_LE
 #define BPF_FROM_BE	BPF_TO_BE
 
+/* jmp encodings */
 #define BPF_JNE		0x50	/* jump != */
+#define BPF_JLT		0xa0	/* LT is unsigned, '<' */
+#define BPF_JLE		0xb0	/* LE is unsigned, '<=' */
 #define BPF_JSGT	0x60	/* SGT is signed '>', GT in x86 */
 #define BPF_JSGE	0x70	/* SGE is signed '>=', GE in x86 */
+#define BPF_JSLT	0xc0	/* SLT is signed, '<' */
+#define BPF_JSLE	0xd0	/* SLE is signed, '<=' */
 #define BPF_CALL	0x80	/* function call */
 #define BPF_EXIT	0x90	/* function return */
 
@@ -81,6 +86,12 @@ enum bpf_cmd {
 	BPF_OBJ_GET,
 	BPF_PROG_ATTACH,
 	BPF_PROG_DETACH,
+	BPF_PROG_TEST_RUN,
+	BPF_PROG_GET_NEXT_ID,
+	BPF_MAP_GET_NEXT_ID,
+	BPF_PROG_GET_FD_BY_ID,
+	BPF_MAP_GET_FD_BY_ID,
+	BPF_OBJ_GET_INFO_BY_FD,
 };
 
 enum bpf_map_type {
@@ -98,6 +109,8 @@ enum bpf_map_type {
 	BPF_MAP_TYPE_LPM_TRIE,
 	BPF_MAP_TYPE_ARRAY_OF_MAPS,
 	BPF_MAP_TYPE_HASH_OF_MAPS,
+	BPF_MAP_TYPE_DEVMAP,
+	BPF_MAP_TYPE_SOCKMAP,
 };
 
 enum bpf_prog_type {
@@ -114,23 +127,40 @@ enum bpf_prog_type {
 	BPF_PROG_TYPE_LWT_IN,
 	BPF_PROG_TYPE_LWT_OUT,
 	BPF_PROG_TYPE_LWT_XMIT,
-	BPF_PROG_TYPE_LANDLOCK,
+	BPF_PROG_TYPE_SOCK_OPS,
+	BPF_PROG_TYPE_SK_SKB,
+	BPF_PROG_TYPE_LANDLOCK_RULE,
 };
 
 enum bpf_attach_type {
 	BPF_CGROUP_INET_INGRESS,
 	BPF_CGROUP_INET_EGRESS,
 	BPF_CGROUP_INET_SOCK_CREATE,
+	BPF_CGROUP_SOCK_OPS,
+	BPF_CGROUP_SMAP_INGRESS,
 	__MAX_BPF_ATTACH_TYPE
 };
 
 #define MAX_BPF_ATTACH_TYPE __MAX_BPF_ATTACH_TYPE
+
+enum bpf_sockmap_flags {
+	BPF_SOCKMAP_UNSPEC,
+	BPF_SOCKMAP_STRPARSER,
+	__MAX_BPF_SOCKMAP_FLAG
+};
 
 /* If BPF_F_ALLOW_OVERRIDE flag is used in BPF_PROG_ATTACH command
  * to the given target_fd cgroup the descendent cgroup will be able to
  * override effective bpf program that was inherited from this cgroup
  */
 #define BPF_F_ALLOW_OVERRIDE	(1U << 0)
+
+/* If BPF_F_STRICT_ALIGNMENT is used in BPF_PROG_LOAD command, the
+ * verifier will perform strict alignment checking as if the kernel
+ * has been built with CONFIG_EFFICIENT_UNALIGNED_ACCESS not set,
+ * and NET_IP_ALIGN defined to 2.
+ */
+#define BPF_F_STRICT_ALIGNMENT	(1U << 0)
 
 #define BPF_PSEUDO_MAP_FD	1
 
@@ -139,6 +169,7 @@ enum bpf_attach_type {
 #define BPF_NOEXIST	1 /* create new element if it didn't exist */
 #define BPF_EXIST	2 /* update existing element */
 
+/* flags for BPF_MAP_CREATE command */
 #define BPF_F_NO_PREALLOC	(1U << 0)
 /* Instead of having one common LRU list in the
  * BPF_MAP_TYPE_LRU_[PERCPU_]HASH map, use a percpu LRU list
@@ -147,10 +178,12 @@ enum bpf_attach_type {
  * across different LRU lists.
  */
 #define BPF_F_NO_COMMON_LRU	(1U << 1)
+/* Specify numa node during map creation */
+#define BPF_F_NUMA_NODE		(1U << 2)
 
 union bpf_prog_subtype {
 	struct {
-		__u32		version; /* cf. documentation */
+		__u32		abi; /* minimal ABI version, cf. user doc */
 		__u32		event; /* enum landlock_subtype_event */
 		__aligned_u64	ability; /* LANDLOCK_SUBTYPE_ABILITY_* */
 		__aligned_u64	option; /* LANDLOCK_SUBTYPE_OPTION_* */
@@ -163,8 +196,13 @@ union bpf_attr {
 		__u32	key_size;	/* size of key in bytes */
 		__u32	value_size;	/* size of value in bytes */
 		__u32	max_entries;	/* max number of entries in a map */
-		__u32	map_flags;	/* prealloc or not */
+		__u32	map_flags;	/* BPF_MAP_CREATE related
+					 * flags defined above.
+					 */
 		__u32	inner_map_fd;	/* fd pointing to the inner map */
+		__u32	numa_node;	/* numa node (effective only if
+					 * BPF_F_NUMA_NODE is set).
+					 */
 	};
 
 	struct { /* anonymous struct used by BPF_MAP_*_ELEM commands */
@@ -186,6 +224,7 @@ union bpf_attr {
 		__u32		log_size;	/* size of user buffer */
 		__aligned_u64	log_buf;	/* user supplied buffer */
 		__u32		kern_version;	/* checked when prog_type=kprobe */
+		__u32		prog_flags;
 		__aligned_u64	prog_subtype;	/* bpf_prog_subtype address */
 		__u32		prog_subtype_size;
 	};
@@ -200,7 +239,34 @@ union bpf_attr {
 		__u32		attach_bpf_fd;	/* eBPF program to attach */
 		__u32		attach_type;
 		__u32		attach_flags;
+		__u32		attach_bpf_fd2;
 	};
+
+	struct { /* anonymous struct used by BPF_PROG_TEST_RUN command */
+		__u32		prog_fd;
+		__u32		retval;
+		__u32		data_size_in;
+		__u32		data_size_out;
+		__aligned_u64	data_in;
+		__aligned_u64	data_out;
+		__u32		repeat;
+		__u32		duration;
+	} test;
+
+	struct { /* anonymous struct used by BPF_*_GET_*_ID */
+		union {
+			__u32		start_id;
+			__u32		prog_id;
+			__u32		map_id;
+		};
+		__u32		next_id;
+	};
+
+	struct { /* anonymous struct used by BPF_OBJ_GET_INFO_BY_FD */
+		__u32		bpf_fd;
+		__u32		info_len;
+		__aligned_u64	info;
+	} info;
 } __attribute__((aligned(8)));
 
 /* BPF helper function descriptions:
@@ -305,8 +371,11 @@ union bpf_attr {
  *     @flags: room for future extensions
  *     Return: 0 on success or negative error
  *
- * u64 bpf_perf_event_read(&map, index)
- *     Return: Number events read or error code
+ * u64 bpf_perf_event_read(map, flags)
+ *     read perf event counter value
+ *     @map: pointer to perf_event_array map
+ *     @flags: index of event in the map or bitmask flags
+ *     Return: value of perf event counter read or error code
  *
  * int bpf_redirect(ifindex, flags)
  *     redirect to another netdev
@@ -320,11 +389,11 @@ union bpf_attr {
  *     @skb: pointer to skb
  *     Return: realm if != 0
  *
- * int bpf_perf_event_output(ctx, map, index, data, size)
+ * int bpf_perf_event_output(ctx, map, flags, data, size)
  *     output perf raw sample
  *     @ctx: struct pt_regs*
  *     @map: pointer to perf_event_array map
- *     @index: index of event in the map
+ *     @flags: index of event in the map or bitmask flags
  *     @data: data on stack to be output as raw data
  *     @size: size of data
  *     Return: 0 on success or negative error
@@ -472,6 +541,58 @@ union bpf_attr {
  *       > 0 length of the string including the trailing NUL on success
  *       < 0 error
  *
+ * u64 bpf_get_socket_cookie(skb)
+ *     Get the cookie for the socket stored inside sk_buff.
+ *     @skb: pointer to skb
+ *     Return: 8 Bytes non-decreasing number on success or 0 if the socket
+ *     field is missing inside sk_buff
+ *
+ * u32 bpf_get_socket_uid(skb)
+ *     Get the owner uid of the socket stored inside sk_buff.
+ *     @skb: pointer to skb
+ *     Return: uid of the socket owner on success or overflowuid if failed.
+ *
+ * u32 bpf_set_hash(skb, hash)
+ *     Set full skb->hash.
+ *     @skb: pointer to skb
+ *     @hash: hash to set
+ *
+ * int bpf_setsockopt(bpf_socket, level, optname, optval, optlen)
+ *     Calls setsockopt. Not all opts are available, only those with
+ *     integer optvals plus TCP_CONGESTION.
+ *     Supported levels: SOL_SOCKET and IPROTO_TCP
+ *     @bpf_socket: pointer to bpf_socket
+ *     @level: SOL_SOCKET or IPROTO_TCP
+ *     @optname: option name
+ *     @optval: pointer to option value
+ *     @optlen: length of optval in byes
+ *     Return: 0 or negative error
+ *
+ * int bpf_skb_adjust_room(skb, len_diff, mode, flags)
+ *     Grow or shrink room in sk_buff.
+ *     @skb: pointer to skb
+ *     @len_diff: (signed) amount of room to grow/shrink
+ *     @mode: operation mode (enum bpf_adj_room_mode)
+ *     @flags: reserved for future use
+ *     Return: 0 on success or negative error code
+ *
+ * int bpf_sk_redirect_map(map, key, flags)
+ *     Redirect skb to a sock in map using key as a lookup key for the
+ *     sock in map.
+ *     @map: pointer to sockmap
+ *     @key: key to lookup sock in map
+ *     @flags: reserved for future use
+ *     Return: SK_REDIRECT
+ *
+ * int bpf_sock_map_update(skops, map, key, flags, map_flags)
+ *	@skops: pointer to bpf_sock_ops
+ *	@map: pointer to sockmap to update
+ *	@key: key to insert/update sock in map
+ *	@flags: same flags as map update elem
+ *	@map_flags: sock map specific flags
+ *	   bit 1: Enable strparser
+ *	   other bits: reserved
+ *
  * s64 bpf_handle_fs_get_mode(handle_fs)
  *     Get the mode of a struct bpf_handle_fs
  *     fs: struct bpf_handle_fs address
@@ -528,7 +649,13 @@ union bpf_attr {
 	FN(probe_read_str),		\
 	FN(get_socket_cookie),		\
 	FN(get_socket_uid),		\
-	FN(handle_fs_get_mode),
+	FN(set_hash),			\
+	FN(setsockopt),			\
+	FN(skb_adjust_room),		\
+	FN(redirect_map),		\
+	FN(sk_redirect_map),		\
+	FN(sock_map_update),		\
+	FN(handle_fs_get_mode),		\
 
 /* integer value in 'imm' field of BPF_CALL instruction selects which helper
  * function eBPF program intends to call
@@ -578,6 +705,11 @@ enum bpf_func_id {
 /* BPF_FUNC_perf_event_output for sk_buff input context. */
 #define BPF_F_CTXLEN_MASK		(0xfffffULL << 32)
 
+/* Mode for BPF_FUNC_skb_adjust_room helper. */
+enum bpf_adj_room_mode {
+	BPF_ADJ_ROOM_NET_OPTS,
+};
+
 /* user accessible mirror of in-kernel sk_buff.
  * new fields can only be added to the end of this structure
  */
@@ -599,6 +731,16 @@ struct __sk_buff {
 	__u32 tc_classid;
 	__u32 data;
 	__u32 data_end;
+	__u32 napi_id;
+
+	/* accessed by BPF_PROG_TYPE_sk_skb types */
+	__u32 family;
+	__u32 remote_ip4;	/* Stored in network byte order */
+	__u32 local_ip4;	/* Stored in network byte order */
+	__u32 remote_ip6[4];	/* Stored in network byte order */
+	__u32 local_ip6[4];	/* Stored in network byte order */
+	__u32 remote_port;	/* Stored in network byte order */
+	__u32 local_port;	/* stored in host byte order */
 };
 
 struct bpf_tunnel_key {
@@ -658,6 +800,83 @@ struct xdp_md {
 	__u32 data_end;
 };
 
+enum sk_action {
+	SK_ABORTED = 0,
+	SK_DROP,
+	SK_REDIRECT,
+};
+
+#define BPF_TAG_SIZE	8
+
+struct bpf_prog_info {
+	__u32 type;
+	__u32 id;
+	__u8  tag[BPF_TAG_SIZE];
+	__u32 jited_prog_len;
+	__u32 xlated_prog_len;
+	__aligned_u64 jited_prog_insns;
+	__aligned_u64 xlated_prog_insns;
+} __attribute__((aligned(8)));
+
+struct bpf_map_info {
+	__u32 type;
+	__u32 id;
+	__u32 key_size;
+	__u32 value_size;
+	__u32 max_entries;
+	__u32 map_flags;
+} __attribute__((aligned(8)));
+
+/* User bpf_sock_ops struct to access socket values and specify request ops
+ * and their replies.
+ * New fields can only be added at the end of this structure
+ */
+struct bpf_sock_ops {
+	__u32 op;
+	union {
+		__u32 reply;
+		__u32 replylong[4];
+	};
+	__u32 family;
+	__u32 remote_ip4;
+	__u32 local_ip4;
+	__u32 remote_ip6[4];
+	__u32 local_ip6[4];
+	__u32 remote_port;
+	__u32 local_port;
+};
+
+/* List of known BPF sock_ops operators.
+ * New entries can only be added at the end
+ */
+enum {
+	BPF_SOCK_OPS_VOID,
+	BPF_SOCK_OPS_TIMEOUT_INIT,	/* Should return SYN-RTO value to use or
+					 * -1 if default value should be used
+					 */
+	BPF_SOCK_OPS_RWND_INIT,		/* Should return initial advertized
+					 * window (in packets) or -1 if default
+					 * value should be used
+					 */
+	BPF_SOCK_OPS_TCP_CONNECT_CB,	/* Calls BPF program right before an
+					 * active connection is initialized
+					 */
+	BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB,	/* Calls BPF program when an
+						 * active connection is
+						 * established
+						 */
+	BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB,	/* Calls BPF program when a
+						 * passive connection is
+						 * established
+						 */
+	BPF_SOCK_OPS_NEEDS_ECN,		/* If connection's congestion control
+					 * needs ECN
+					 */
+};
+
+#define TCP_BPF_IW		1001	/* Set TCP initial congestion window */
+#define TCP_BPF_SNDCWND_CLAMP	1002	/* Set sndcwnd_clamp */
+
 /**
  * enum landlock_subtype_event - event occurring when an action is performed on
  * a particular kernel object
@@ -667,26 +886,29 @@ struct xdp_md {
  *
  * @LANDLOCK_SUBTYPE_EVENT_UNSPEC: invalid value
  * @LANDLOCK_SUBTYPE_EVENT_FS: generic filesystem event
+ * @LANDLOCK_SUBTYPE_EVENT_FS_IOCTL: custom IOCTL sub-event
+ * @LANDLOCK_SUBTYPE_EVENT_FS_LOCK: custom LOCK sub-event
+ * @LANDLOCK_SUBTYPE_EVENT_FS_FCNTL: custom FCNTL sub-event
  */
 enum landlock_subtype_event {
 	LANDLOCK_SUBTYPE_EVENT_UNSPEC,
 	LANDLOCK_SUBTYPE_EVENT_FS,
+	LANDLOCK_SUBTYPE_EVENT_FS_IOCTL,
+	LANDLOCK_SUBTYPE_EVENT_FS_LOCK,
+	LANDLOCK_SUBTYPE_EVENT_FS_FCNTL,
 };
-#define _LANDLOCK_SUBTYPE_EVENT_LAST LANDLOCK_SUBTYPE_EVENT_FS
+#define _LANDLOCK_SUBTYPE_EVENT_LAST LANDLOCK_SUBTYPE_EVENT_FS_FCNTL
 
 /**
- * DOC: landlock_subtype_access
+ * DOC: landlock_subtype_ability
  *
  * eBPF context and functions allowed for a rule
  *
- * - LANDLOCK_SUBTYPE_ABILITY_WRITE: allows to directly send notification to
- *   userland (e.g. through a map), which may leaks sensitive information
  * - LANDLOCK_SUBTYPE_ABILITY_DEBUG: allows to do debug actions (e.g. writing
  *   logs), which may be dangerous and should only be used for rule testing
  */
-#define LANDLOCK_SUBTYPE_ABILITY_WRITE		(1ULL << 0)
-#define LANDLOCK_SUBTYPE_ABILITY_DEBUG		(1ULL << 1)
-#define _LANDLOCK_SUBTYPE_ABILITY_NB		2
+#define LANDLOCK_SUBTYPE_ABILITY_DEBUG		(1ULL << 0)
+#define _LANDLOCK_SUBTYPE_ABILITY_NB		1
 #define _LANDLOCK_SUBTYPE_ABILITY_MASK		((1ULL << _LANDLOCK_SUBTYPE_ABILITY_NB) - 1)
 
 /*
@@ -716,9 +938,8 @@ enum landlock_subtype_event {
  * - %LANDLOCK_ACTION_FS_GET: open or receive a file
  * - %LANDLOCK_ACTION_FS_REMOVE: unlink a file or remove a directory
  *
- * Each of the following actions are specific to syscall multiplexers. They
- * fill the syscall_cmd field from &struct landlock_context with their custom
- * command.
+ * Each of the following actions are specific to syscall multiplexers. Each of
+ * them trigger a dedicated Landlock event where their command can be read.
  *
  * - %LANDLOCK_ACTION_FS_IOCTL: ioctl command
  * - %LANDLOCK_ACTION_FS_LOCK: flock or fcntl lock command
@@ -741,23 +962,13 @@ enum landlock_subtype_event {
  * struct landlock_context - context accessible to a Landlock rule
  *
  * @status: bitfield for future use (LANDLOCK_SUBTYPE_STATUS_*)
- * @arch: indicates system call convention as an AUDIT_ARCH_* value
- *        as defined in <linux/audit.h>
- * @syscall_nr: the system call number called by the current process (may be
- *              useful to debug: find out from which syscall this request came
- *              from)
- * @syscall_cmd: contains the command used by a multiplexer syscall (e.g.
- *               ioctl, fcntl, flock)
  * @event: event type (&enum landlock_subtype_event)
  * @arg1: event's first optional argument
  * @arg2: event's second optional argument
  */
 struct landlock_context {
 	__u64 status;
-	__u32 arch;
-	__u32 syscall_nr;
-	__u32 syscall_cmd;
-	__u32 event;
+	__u64 event;
 	__u64 arg1;
 	__u64 arg2;
 };

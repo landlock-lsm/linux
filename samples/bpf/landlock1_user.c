@@ -34,9 +34,6 @@ static int seccomp(unsigned int op, unsigned int flags, void *args)
 }
 #endif
 
-#define ARRAY_SIZE(a)	(sizeof(a) / sizeof(a[0]))
-#define MAX_ERRNO	4095
-
 
 struct landlock_rule {
 	enum landlock_subtype_event event;
@@ -48,12 +45,13 @@ static int apply_sandbox(int prog_fd)
 {
 	int ret = 0;
 
-	/* set up the test sandbox */
+	/* safer to set no_new_privs */
 	if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) {
 		perror("prctl(no_new_priv)");
 		return 1;
 	}
-	if (seccomp(SECCOMP_APPEND_LANDLOCK_RULE, 0, &prog_fd)) {
+	/* set up the test sandbox */
+	if (seccomp(SECCOMP_PREPEND_LANDLOCK_RULE, 0, &prog_fd)) {
 		perror("seccomp(set_hook)");
 		ret = 1;
 	}

@@ -12,11 +12,11 @@
 #include <sys/prctl.h>
 #include <sys/syscall.h>
 
-#include "../seccomp/test_harness.h"
+#include "../kselftest_harness.h"
 #include "../../../../samples/bpf/bpf_load.h"
 
-#ifndef SECCOMP_APPEND_LANDLOCK_RULE
-#define SECCOMP_APPEND_LANDLOCK_RULE	2
+#ifndef SECCOMP_PREPEND_LANDLOCK_RULE
+#define SECCOMP_PREPEND_LANDLOCK_RULE	2
 #endif
 
 #ifndef seccomp
@@ -26,10 +26,3 @@ static int seccomp(unsigned int op, unsigned int flags, void *args)
 	return syscall(__NR_seccomp, op, flags, args);
 }
 #endif
-
-#define ASSERT_STEP(cond) \
-	{ \
-		step--; \
-		if (!(cond)) \
-			_exit(step); \
-	}
