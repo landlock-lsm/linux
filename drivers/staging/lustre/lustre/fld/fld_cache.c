@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * GPL HEADER START
  *
@@ -39,18 +40,18 @@
 
 #define DEBUG_SUBSYSTEM S_FLD
 
-#include "../../include/linux/libcfs/libcfs.h"
+#include <linux/libcfs/libcfs.h>
 #include <linux/module.h>
 #include <asm/div64.h>
 
-#include "../include/obd.h"
-#include "../include/obd_class.h"
-#include "../include/lustre_ver.h"
-#include "../include/obd_support.h"
-#include "../include/lprocfs_status.h"
+#include <obd.h>
+#include <obd_class.h>
+#include <uapi/linux/lustre/lustre_ver.h>
+#include <obd_support.h>
+#include <lprocfs_status.h>
 
-#include "../include/lustre_req_layout.h"
-#include "../include/lustre_fld.h"
+#include <lustre_req_layout.h>
+#include <lustre_fld.h>
 #include "fld_internal.h"
 
 /**
@@ -212,19 +213,18 @@ static inline void fld_cache_entry_add(struct fld_cache *cache,
  */
 static int fld_cache_shrink(struct fld_cache *cache)
 {
-	struct fld_cache_entry *flde;
-	struct list_head *curr;
 	int num = 0;
 
 	if (cache->fci_cache_count < cache->fci_cache_size)
 		return 0;
 
-	curr = cache->fci_lru.prev;
-
 	while (cache->fci_cache_count + cache->fci_threshold >
-	       cache->fci_cache_size && curr != &cache->fci_lru) {
-		flde = list_entry(curr, struct fld_cache_entry, fce_lru);
-		curr = curr->prev;
+	       cache->fci_cache_size &&
+	       !list_empty(&cache->fci_lru)) {
+		struct fld_cache_entry *flde =
+			list_last_entry(&cache->fci_lru,
+					struct fld_cache_entry, fce_lru);
+
 		fld_cache_entry_delete(cache, flde);
 		num++;
 	}
@@ -348,9 +348,10 @@ static void fld_cache_overlap_handle(struct fld_cache *cache,
 
 		f_curr->fce_range.lsr_end = new_start;
 		fld_cache_entry_add(cache, f_new, &f_curr->fce_list);
-	} else
+	} else {
 		CERROR("NEW range =" DRANGE " curr = " DRANGE "\n",
 		       PRANGE(range), PRANGE(&f_curr->fce_range));
+	}
 }
 
 struct fld_cache_entry

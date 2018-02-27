@@ -339,9 +339,9 @@ static int restart_video_queue(struct viu_dmaqueue *vidq)
 	}
 }
 
-static void viu_vid_timeout(unsigned long data)
+static void viu_vid_timeout(struct timer_list *t)
 {
-	struct viu_dev *dev = (struct viu_dev *)data;
+	struct viu_dev *dev = from_timer(dev, t, vidq.timeout);
 	struct viu_buf *buf;
 	struct viu_dmaqueue *vidq = &dev->vidq;
 
@@ -549,7 +549,7 @@ static void buffer_release(struct videobuf_queue *vq,
 	free_buffer(vq, buf);
 }
 
-static struct videobuf_queue_ops viu_video_qops = {
+static const struct videobuf_queue_ops viu_video_qops = {
 	.buf_setup      = buffer_setup,
 	.buf_prepare    = buffer_prepare,
 	.buf_queue      = buffer_queue,
@@ -1263,18 +1263,18 @@ static ssize_t viu_read(struct file *file, char __user *data, size_t count,
 	return 0;
 }
 
-static unsigned int viu_poll(struct file *file, struct poll_table_struct *wait)
+static __poll_t viu_poll(struct file *file, struct poll_table_struct *wait)
 {
 	struct viu_fh *fh = file->private_data;
 	struct videobuf_queue *q = &fh->vb_vidq;
 	struct viu_dev *dev = fh->dev;
-	unsigned long req_events = poll_requested_events(wait);
-	unsigned int res = v4l2_ctrl_poll(file, wait);
+	__poll_t req_events = poll_requested_events(wait);
+	__poll_t res = v4l2_ctrl_poll(file, wait);
 
 	if (V4L2_BUF_TYPE_VIDEO_CAPTURE != fh->type)
-		return POLLERR;
+		return EPOLLERR;
 
-	if (!(req_events & (POLLIN | POLLRDNORM)))
+	if (!(req_events & (EPOLLIN | EPOLLRDNORM)))
 		return res;
 
 	mutex_lock(&dev->lock);
@@ -1340,7 +1340,7 @@ static int viu_mmap(struct file *file, struct vm_area_struct *vma)
 	return ret;
 }
 
-static struct v4l2_file_operations viu_fops = {
+static const struct v4l2_file_operations viu_fops = {
 	.owner		= THIS_MODULE,
 	.open		= viu_open,
 	.release	= viu_release,
@@ -1380,7 +1380,7 @@ static const struct v4l2_ioctl_ops viu_ioctl_ops = {
 	.vidioc_unsubscribe_event = v4l2_event_unsubscribe,
 };
 
-static struct video_device viu_template = {
+static const struct video_device viu_template = {
 	.name		= "FSL viu",
 	.fops		= &viu_fops,
 	.minor		= -1,
@@ -1466,8 +1466,7 @@ static int viu_of_probe(struct platform_device *op)
 	viu_dev->decoder = v4l2_i2c_new_subdev(&viu_dev->v4l2_dev, ad,
 			"saa7113", VIU_VIDEO_DECODER_ADDR, NULL);
 
-	setup_timer(&viu_dev->vidq.timeout, viu_vid_timeout,
-		    (unsigned long)viu_dev);
+	timer_setup(&viu_dev->vidq.timeout, viu_vid_timeout, 0);
 	viu_dev->std = V4L2_STD_NTSC_M;
 	viu_dev->first = 1;
 

@@ -192,7 +192,7 @@ static int ttm_bo_man_takedown(struct ttm_mem_type_manager *man)
 }
 
 static void ttm_bo_man_debug(struct ttm_mem_type_manager *man,
-			     const char *prefix)
+			     struct drm_printer *printer)
 {
 }
 
@@ -234,7 +234,7 @@ static int virtio_gpu_init_mem_type(struct ttm_bo_device *bdev, uint32_t type,
 static void virtio_gpu_evict_flags(struct ttm_buffer_object *bo,
 				struct ttm_placement *placement)
 {
-	static struct ttm_place placements = {
+	static const struct ttm_place placements = {
 		.fpfn  = 0,
 		.lpfn  = 0,
 		.flags = TTM_PL_MASK_CACHING | TTM_PL_FLAG_SYSTEM,
@@ -324,12 +324,13 @@ static struct ttm_backend_func virtio_gpu_backend_func = {
 	.destroy = &virtio_gpu_ttm_backend_destroy,
 };
 
-static int virtio_gpu_ttm_tt_populate(struct ttm_tt *ttm)
+static int virtio_gpu_ttm_tt_populate(struct ttm_tt *ttm,
+		struct ttm_operation_ctx *ctx)
 {
 	if (ttm->state != tt_unpopulated)
 		return 0;
 
-	return ttm_pool_populate(ttm);
+	return ttm_pool_populate(ttm, ctx);
 }
 
 static void virtio_gpu_ttm_tt_unpopulate(struct ttm_tt *ttm)
@@ -369,14 +370,13 @@ static void virtio_gpu_move_null(struct ttm_buffer_object *bo,
 	new_mem->mm_node = NULL;
 }
 
-static int virtio_gpu_bo_move(struct ttm_buffer_object *bo,
-			      bool evict, bool interruptible,
-			      bool no_wait_gpu,
+static int virtio_gpu_bo_move(struct ttm_buffer_object *bo, bool evict,
+			      struct ttm_operation_ctx *ctx,
 			      struct ttm_mem_reg *new_mem)
 {
 	int ret;
 
-	ret = ttm_bo_wait(bo, interruptible, no_wait_gpu);
+	ret = ttm_bo_wait(bo, ctx->interruptible, ctx->no_wait_gpu);
 	if (ret)
 		return ret;
 
@@ -431,7 +431,6 @@ static struct ttm_bo_driver virtio_gpu_bo_driver = {
 	.verify_access = &virtio_gpu_verify_access,
 	.io_mem_reserve = &virtio_gpu_ttm_io_mem_reserve,
 	.io_mem_free = &virtio_gpu_ttm_io_mem_free,
-	.io_mem_pfn = ttm_bo_default_io_mem_pfn,
 	.move_notify = &virtio_gpu_bo_move_notify,
 	.swap_notify = &virtio_gpu_bo_swap_notify,
 };

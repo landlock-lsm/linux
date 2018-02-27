@@ -24,6 +24,9 @@ OPTIONS
 -a::
 --add=::
         Add specified file to the cache.
+-f::
+--force::
+	Don't complain, do it.
 -k::
 --kcore::
         Add specified kcore file to the cache. For the current host that is
@@ -60,6 +63,11 @@ OPTIONS
 -v::
 --verbose::
 	Be more verbose.
+
+--target-ns=PID:
+	Obtain mount namespace information from the target pid.  This is
+	used when creating a uprobe for a process that resides in a
+	different mount namespace from the perf(1) utility.
 
 SEE ALSO
 --------

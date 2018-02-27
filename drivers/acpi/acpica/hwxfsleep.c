@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2017, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -72,13 +72,16 @@ static acpi_status acpi_hw_sleep_dispatch(u8 sleep_state, u32 function_id);
 static struct acpi_sleep_functions acpi_sleep_dispatch[] = {
 	{ACPI_STRUCT_INIT(legacy_function,
 			  ACPI_HW_OPTIONAL_FUNCTION(acpi_hw_legacy_sleep)),
-	 ACPI_STRUCT_INIT(extended_function, acpi_hw_extended_sleep) },
+	 ACPI_STRUCT_INIT(extended_function,
+			  acpi_hw_extended_sleep)},
 	{ACPI_STRUCT_INIT(legacy_function,
 			  ACPI_HW_OPTIONAL_FUNCTION(acpi_hw_legacy_wake_prep)),
-	 ACPI_STRUCT_INIT(extended_function, acpi_hw_extended_wake_prep) },
+	 ACPI_STRUCT_INIT(extended_function,
+			  acpi_hw_extended_wake_prep)},
 	{ACPI_STRUCT_INIT(legacy_function,
 			  ACPI_HW_OPTIONAL_FUNCTION(acpi_hw_legacy_wake)),
-	 ACPI_STRUCT_INIT(extended_function, acpi_hw_extended_wake) }
+	 ACPI_STRUCT_INIT(extended_function,
+			  acpi_hw_extended_wake)}
 };
 
 /*

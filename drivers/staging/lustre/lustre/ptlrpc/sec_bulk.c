@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * GPL HEADER START
  *
@@ -36,16 +37,16 @@
 
 #define DEBUG_SUBSYSTEM S_SEC
 
-#include "../../include/linux/libcfs/libcfs.h"
+#include <linux/libcfs/libcfs.h>
 
-#include "../include/obd.h"
-#include "../include/obd_cksum.h"
-#include "../include/obd_class.h"
-#include "../include/obd_support.h"
-#include "../include/lustre_net.h"
-#include "../include/lustre_import.h"
-#include "../include/lustre_dlm.h"
-#include "../include/lustre_sec.h"
+#include <obd.h>
+#include <obd_cksum.h>
+#include <obd_class.h>
+#include <obd_support.h>
+#include <lustre_net.h>
+#include <lustre_import.h>
+#include <lustre_dlm.h>
+#include <lustre_sec.h>
 
 #include "ptlrpc_internal.h"
 
@@ -395,6 +396,8 @@ static struct shrinker pools_shrinker = {
 
 int sptlrpc_enc_pool_init(void)
 {
+	int rc;
+
 	/*
 	 * maximum capacity is 1/8 of total physical memory.
 	 * is the 1/8 a good number?
@@ -431,9 +434,11 @@ int sptlrpc_enc_pool_init(void)
 	if (!page_pools.epp_pools)
 		return -ENOMEM;
 
-	register_shrinker(&pools_shrinker);
+	rc = register_shrinker(&pools_shrinker);
+	if (rc)
+		enc_pools_free();
 
-	return 0;
+	return rc;
 }
 
 void sptlrpc_enc_pool_fini(void)

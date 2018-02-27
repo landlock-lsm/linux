@@ -20,7 +20,8 @@
 struct rcar_du_format_info;
 struct rcar_du_group;
 
-/* The RCAR DU has 8 hardware planes, shared between primary and overlay planes.
+/*
+ * The RCAR DU has 8 hardware planes, shared between primary and overlay planes.
  * As using overlay planes requires at least one of the CRTCs being enabled, no
  * more than 7 overlay planes can be available. We thus create 1 primary plane
  * per CRTC and 7 overlay planes, for a total of up to 9 KMS planes.
@@ -71,6 +72,10 @@ to_rcar_plane_state(struct drm_plane_state *state)
 
 int rcar_du_atomic_check_planes(struct drm_device *dev,
 				struct drm_atomic_state *state);
+
+int __rcar_du_plane_atomic_check(struct drm_plane *plane,
+				 struct drm_plane_state *state,
+				 const struct rcar_du_format_info **format);
 
 int rcar_du_planes_init(struct rcar_du_group *rgrp);
 

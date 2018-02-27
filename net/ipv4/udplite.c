@@ -75,7 +75,6 @@ static struct inet_protosw udplite4_protosw = {
 #ifdef CONFIG_PROC_FS
 
 static const struct file_operations udplite_afinfo_seq_fops = {
-	.owner    = THIS_MODULE,
 	.open     = udp_seq_open,
 	.read     = seq_read,
 	.llseek   = seq_lseek,
@@ -105,6 +104,7 @@ static void __net_exit udplite4_proc_exit_net(struct net *net)
 static struct pernet_operations udplite4_net_ops = {
 	.init = udplite4_proc_init_net,
 	.exit = udplite4_proc_exit_net,
+	.async = true,
 };
 
 static __init int udplite4_proc_init(void)

@@ -338,8 +338,8 @@ static int svc_recvfrom(struct svc_rqst *rqstp, struct kvec *iov, int nr,
 	rqstp->rq_xprt_hlen = 0;
 
 	clear_bit(XPT_DATA, &svsk->sk_xprt.xpt_flags);
-	len = kernel_recvmsg(svsk->sk_sock, &msg, iov, nr, buflen,
-				msg.msg_flags);
+	iov_iter_kvec(&msg.msg_iter, READ | ITER_KVEC, iov, nr, buflen);
+	len = sock_recvmsg(svsk->sk_sock, &msg, msg.msg_flags);
 	/* If we read a full record, then assume there may be more
 	 * data to read (stream based sockets only!)
 	 */
@@ -384,25 +384,11 @@ static int svc_partial_recvfrom(struct svc_rqst *rqstp,
 static void svc_sock_setbufsize(struct socket *sock, unsigned int snd,
 				unsigned int rcv)
 {
-#if 0
-	mm_segment_t	oldfs;
-	oldfs = get_fs(); set_fs(KERNEL_DS);
-	sock_setsockopt(sock, SOL_SOCKET, SO_SNDBUF,
-			(char*)&snd, sizeof(snd));
-	sock_setsockopt(sock, SOL_SOCKET, SO_RCVBUF,
-			(char*)&rcv, sizeof(rcv));
-#else
-	/* sock_setsockopt limits use to sysctl_?mem_max,
-	 * which isn't acceptable.  Until that is made conditional
-	 * on not having CAP_SYS_RESOURCE or similar, we go direct...
-	 * DaveM said I could!
-	 */
 	lock_sock(sock->sk);
 	sock->sk->sk_sndbuf = snd * 2;
 	sock->sk->sk_rcvbuf = rcv * 2;
 	sock->sk->sk_write_space(sock->sk);
 	release_sock(sock->sk);
-#endif
 }
 
 static int svc_sock_secure_port(struct svc_rqst *rqstp)
@@ -421,6 +407,9 @@ static void svc_data_ready(struct sock *sk)
 		dprintk("svc: socket %p(inet %p), busy=%d\n",
 			svsk, sk,
 			test_bit(XPT_BUSY, &svsk->sk_xprt.xpt_flags));
+
+		/* Refer to svc_setup_socket() for details. */
+		rmb();
 		svsk->sk_odata(sk);
 		if (!test_and_set_bit(XPT_DATA, &svsk->sk_xprt.xpt_flags))
 			svc_xprt_enqueue(&svsk->sk_xprt);
@@ -437,6 +426,9 @@ static void svc_write_space(struct sock *sk)
 	if (svsk) {
 		dprintk("svc: socket %p(inet %p), write_space busy=%d\n",
 			svsk, sk, test_bit(XPT_BUSY, &svsk->sk_xprt.xpt_flags));
+
+		/* Refer to svc_setup_socket() for details. */
+		rmb();
 		svsk->sk_owspace(sk);
 		svc_xprt_enqueue(&svsk->sk_xprt);
 	}
@@ -687,7 +679,7 @@ static struct svc_xprt *svc_udp_create(struct svc_serv *serv,
 	return svc_create_socket(serv, IPPROTO_UDP, net, sa, salen, flags);
 }
 
-static struct svc_xprt_ops svc_udp_ops = {
+static const struct svc_xprt_ops svc_udp_ops = {
 	.xpo_create = svc_udp_create,
 	.xpo_recvfrom = svc_udp_recvfrom,
 	.xpo_sendto = svc_udp_sendto,
@@ -760,8 +752,12 @@ static void svc_tcp_listen_data_ready(struct sock *sk)
 	dprintk("svc: socket %p TCP (listen) state change %d\n",
 		sk, sk->sk_state);
 
-	if (svsk)
+	if (svsk) {
+		/* Refer to svc_setup_socket() for details. */
+		rmb();
 		svsk->sk_odata(sk);
+	}
+
 	/*
 	 * This callback may called twice when a new connection
 	 * is established as a child socket inherits everything
@@ -794,6 +790,8 @@ static void svc_tcp_state_change(struct sock *sk)
 	if (!svsk)
 		printk("svc: socket %p: no user data\n", sk);
 	else {
+		/* Refer to svc_setup_socket() for details. */
+		rmb();
 		svsk->sk_ostate(sk);
 		if (sk->sk_state != TCP_ESTABLISHED) {
 			set_bit(XPT_CLOSE, &svsk->sk_xprt.xpt_flags);
@@ -834,12 +832,13 @@ static struct svc_xprt *svc_tcp_accept(struct svc_xprt *xprt)
 	}
 	set_bit(XPT_CONN, &svsk->sk_xprt.xpt_flags);
 
-	err = kernel_getpeername(newsock, sin, &slen);
+	err = kernel_getpeername(newsock, sin);
 	if (err < 0) {
 		net_warn_ratelimited("%s: peername failed (err %d)!\n",
 				     serv->sv_name, -err);
 		goto failed;		/* aborted connection or whatever */
 	}
+	slen = err;
 
 	/* Ideally, we would want to reject connections from unauthorized
 	 * hosts here, but when we get encryption, the IP of the host won't
@@ -868,7 +867,8 @@ static struct svc_xprt *svc_tcp_accept(struct svc_xprt *xprt)
 	if (IS_ERR(newsvsk))
 		goto failed;
 	svc_xprt_set_remote(&newsvsk->sk_xprt, sin, slen);
-	err = kernel_getsockname(newsock, sin, &slen);
+	err = kernel_getsockname(newsock, sin);
+	slen = err;
 	if (unlikely(err < 0)) {
 		dprintk("svc_tcp_accept: kernel_getsockname error %d\n", -err);
 		slen = offsetof(struct sockaddr, sa_data);
@@ -1001,7 +1001,7 @@ static int receive_cb_reply(struct svc_sock *svsk, struct svc_rqst *rqstp)
 
 	if (!bc_xprt)
 		return -EAGAIN;
-	spin_lock_bh(&bc_xprt->transport_lock);
+	spin_lock(&bc_xprt->recv_lock);
 	req = xprt_lookup_rqst(bc_xprt, xid);
 	if (!req)
 		goto unlock_notfound;
@@ -1019,7 +1019,7 @@ static int receive_cb_reply(struct svc_sock *svsk, struct svc_rqst *rqstp)
 	memcpy(dst->iov_base, src->iov_base, src->iov_len);
 	xprt_complete_rqst(req->rq_task, rqstp->rq_arg.len);
 	rqstp->rq_arg.len = 0;
-	spin_unlock_bh(&bc_xprt->transport_lock);
+	spin_unlock(&bc_xprt->recv_lock);
 	return 0;
 unlock_notfound:
 	printk(KERN_NOTICE
@@ -1028,7 +1028,7 @@ unlock_notfound:
 		__func__, ntohl(calldir),
 		bc_xprt, ntohl(xid));
 unlock_eagain:
-	spin_unlock_bh(&bc_xprt->transport_lock);
+	spin_unlock(&bc_xprt->recv_lock);
 	return -EAGAIN;
 }
 
@@ -1229,7 +1229,7 @@ static void svc_bc_tcp_sock_detach(struct svc_xprt *xprt)
 {
 }
 
-static struct svc_xprt_ops svc_tcp_bc_ops = {
+static const struct svc_xprt_ops svc_tcp_bc_ops = {
 	.xpo_create = svc_bc_tcp_create,
 	.xpo_detach = svc_bc_tcp_sock_detach,
 	.xpo_free = svc_bc_sock_free,
@@ -1263,7 +1263,7 @@ static void svc_cleanup_bc_xprt_sock(void)
 }
 #endif /* CONFIG_SUNRPC_BACKCHANNEL */
 
-static struct svc_xprt_ops svc_tcp_ops = {
+static const struct svc_xprt_ops svc_tcp_ops = {
 	.xpo_create = svc_tcp_create,
 	.xpo_recvfrom = svc_tcp_recvfrom,
 	.xpo_sendto = svc_tcp_sendto,
@@ -1381,12 +1381,18 @@ static struct svc_sock *svc_setup_socket(struct svc_serv *serv,
 		return ERR_PTR(err);
 	}
 
-	inet->sk_user_data = svsk;
 	svsk->sk_sock = sock;
 	svsk->sk_sk = inet;
 	svsk->sk_ostate = inet->sk_state_change;
 	svsk->sk_odata = inet->sk_data_ready;
 	svsk->sk_owspace = inet->sk_write_space;
+	/*
+	 * This barrier is necessary in order to prevent race condition
+	 * with svc_data_ready(), svc_listen_data_ready() and others
+	 * when calling callbacks above.
+	 */
+	wmb();
+	inet->sk_user_data = svsk;
 
 	/* Initialize the socket */
 	if (sock->type == SOCK_DGRAM)
@@ -1461,7 +1467,8 @@ int svc_addsock(struct svc_serv *serv, const int fd, char *name_return,
 		err = PTR_ERR(svsk);
 		goto out;
 	}
-	if (kernel_getsockname(svsk->sk_sock, sin, &salen) == 0)
+	salen = kernel_getsockname(svsk->sk_sock, sin);
+	if (salen >= 0)
 		svc_xprt_set_local(&svsk->sk_xprt, sin, salen);
 	svc_add_new_perm_xprt(serv, &svsk->sk_xprt);
 	return svc_one_sock_name(svsk, name_return, len);
@@ -1535,10 +1542,10 @@ static struct svc_xprt *svc_create_socket(struct svc_serv *serv,
 	if (error < 0)
 		goto bummer;
 
-	newlen = len;
-	error = kernel_getsockname(sock, newsin, &newlen);
+	error = kernel_getsockname(sock, newsin);
 	if (error < 0)
 		goto bummer;
+	newlen = error;
 
 	if (protocol == IPPROTO_TCP) {
 		if ((error = kernel_listen(sock, 64)) < 0)

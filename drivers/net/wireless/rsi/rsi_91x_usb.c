@@ -73,8 +73,7 @@ static int rsi_write_multiple(struct rsi_hw *adapter,
 			      u8 *data,
 			      u32 count)
 {
-	struct rsi_91x_usbdev *dev =
-		(struct rsi_91x_usbdev *)adapter->rsi_dev;
+	struct rsi_91x_usbdev *dev;
 
 	if (!adapter)
 		return -ENODEV;
@@ -82,6 +81,7 @@ static int rsi_write_multiple(struct rsi_hw *adapter,
 	if (endpoint == 0)
 		return -EINVAL;
 
+	dev = (struct rsi_91x_usbdev *)adapter->rsi_dev;
 	if (dev->write_fail)
 		return -ENETDOWN;
 
@@ -162,12 +162,12 @@ static int rsi_usb_reg_read(struct usb_device *usbdev,
 	u8 *buf;
 	int status = -ENOMEM;
 
+	if (len > RSI_USB_CTRL_BUF_SIZE)
+		return -EINVAL;
+
 	buf  = kmalloc(RSI_USB_CTRL_BUF_SIZE, GFP_KERNEL);
 	if (!buf)
 		return status;
-
-	if (len > RSI_USB_CTRL_BUF_SIZE)
-		return -EINVAL;
 
 	status = usb_control_msg(usbdev,
 				 usb_rcvctrlpipe(usbdev, 0),
@@ -207,12 +207,12 @@ static int rsi_usb_reg_write(struct usb_device *usbdev,
 	u8 *usb_reg_buf;
 	int status = -ENOMEM;
 
+	if (len > RSI_USB_CTRL_BUF_SIZE)
+		return -EINVAL;
+
 	usb_reg_buf  = kmalloc(RSI_USB_CTRL_BUF_SIZE, GFP_KERNEL);
 	if (!usb_reg_buf)
 		return status;
-
-	if (len > RSI_USB_CTRL_BUF_SIZE)
-		return -EINVAL;
 
 	usb_reg_buf[0] = (value & 0x00ff);
 	usb_reg_buf[1] = (value & 0xff00) >> 8;
@@ -439,7 +439,6 @@ static int rsi_usb_load_data_master_write(struct rsi_hw *adapter,
 	rsi_dbg(INFO_ZONE, "num_blocks: %d\n", num_blocks);
 
 	for (cur_indx = 0, i = 0; i < num_blocks; i++, cur_indx += block_size) {
-		memset(temp_buf, 0, block_size);
 		memcpy(temp_buf, ta_firmware + cur_indx, block_size);
 		status = rsi_usb_write_register_multiple(adapter, base_address,
 							 (u8 *)(temp_buf),

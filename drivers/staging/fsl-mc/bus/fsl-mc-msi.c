@@ -1,23 +1,21 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Freescale Management Complex (MC) bus driver MSI support
  *
  * Copyright (C) 2015-2016 Freescale Semiconductor, Inc.
  * Author: German Rivera <German.Rivera@freescale.com>
  *
- * This file is licensed under the terms of the GNU General Public
- * License version 2. This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  */
 
 #include <linux/of_device.h>
 #include <linux/of_address.h>
-#include <linux/irqchip/arm-gic-v3.h>
 #include <linux/of_irq.h>
 #include <linux/irq.h>
 #include <linux/irqdomain.h>
 #include <linux/msi.h>
 #include "fsl-mc-private.h"
 
+#ifdef GENERIC_MSI_DOMAIN_OPS
 /*
  * Generate a unique ID identifying the interrupt (only used within the MSI
  * irqdomain.  Combine the icid with the interrupt index.
@@ -39,12 +37,15 @@ static void fsl_mc_msi_set_desc(msi_alloc_info_t *arg,
 	arg->hwirq = fsl_mc_domain_calc_hwirq(to_fsl_mc_device(desc->dev),
 					      desc);
 }
+#else
+#define fsl_mc_msi_set_desc NULL
+#endif
 
 static void fsl_mc_msi_update_dom_ops(struct msi_domain_info *info)
 {
 	struct msi_domain_ops *ops = info->ops;
 
-	if (WARN_ON(!ops))
+	if (!ops)
 		return;
 
 	/*
@@ -70,7 +71,7 @@ static void __fsl_mc_msi_write_msg(struct fsl_mc_device *mc_bus_dev,
 	if (msi_desc->msg.address_lo == 0x0 && msi_desc->msg.address_hi == 0x0)
 		return;
 
-	if (WARN_ON(!owner_mc_dev))
+	if (!owner_mc_dev)
 		return;
 
 	irq_cfg.paddr = ((u64)msi_desc->msg.address_hi << 32) |
@@ -121,7 +122,6 @@ static void fsl_mc_msi_write_msg(struct irq_data *irq_data,
 	struct fsl_mc_device_irq *mc_dev_irq =
 		&mc_bus->irq_resources[msi_desc->fsl_mc.msi_index];
 
-	WARN_ON(mc_dev_irq->msi_desc != msi_desc);
 	msi_desc->msg = *msg;
 
 	/*
@@ -134,7 +134,7 @@ static void fsl_mc_msi_update_chip_ops(struct msi_domain_info *info)
 {
 	struct irq_chip *chip = info->chip;
 
-	if (WARN_ON((!chip)))
+	if (!chip)
 		return;
 
 	/*
@@ -183,8 +183,8 @@ int fsl_mc_find_msi_domain(struct device *mc_platform_dev,
 	msi_domain = of_msi_get_domain(mc_platform_dev, mc_of_node,
 				       DOMAIN_BUS_FSL_MC_MSI);
 	if (!msi_domain) {
-		pr_err("Unable to find fsl-mc MSI domain for %s\n",
-		       mc_of_node->full_name);
+		pr_err("Unable to find fsl-mc MSI domain for %pOF\n",
+		       mc_of_node);
 
 		return -ENOENT;
 	}
@@ -236,7 +236,7 @@ int fsl_mc_msi_domain_alloc_irqs(struct device *dev,
 	struct irq_domain *msi_domain;
 	int error;
 
-	if (WARN_ON(!list_empty(dev_to_msi_list(dev))))
+	if (!list_empty(dev_to_msi_list(dev)))
 		return -EINVAL;
 
 	error = fsl_mc_msi_alloc_descs(dev, irq_count);
@@ -244,7 +244,7 @@ int fsl_mc_msi_domain_alloc_irqs(struct device *dev,
 		return error;
 
 	msi_domain = dev_get_msi_domain(dev);
-	if (WARN_ON(!msi_domain)) {
+	if (!msi_domain) {
 		error = -EINVAL;
 		goto cleanup_msi_descs;
 	}
@@ -272,12 +272,12 @@ void fsl_mc_msi_domain_free_irqs(struct device *dev)
 	struct irq_domain *msi_domain;
 
 	msi_domain = dev_get_msi_domain(dev);
-	if (WARN_ON(!msi_domain))
+	if (!msi_domain)
 		return;
 
 	msi_domain_free_irqs(msi_domain, dev);
 
-	if (WARN_ON(list_empty(dev_to_msi_list(dev))))
+	if (list_empty(dev_to_msi_list(dev)))
 		return;
 
 	fsl_mc_msi_free_descs(dev);

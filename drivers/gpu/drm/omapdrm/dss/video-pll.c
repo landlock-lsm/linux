@@ -1,13 +1,15 @@
 /*
-* Copyright (C) 2014 Texas Instruments Ltd
-*
-* This program is free software; you can redistribute it and/or modify it
-* under the terms of the GNU General Public License version 2 as published by
-* the Free Software Foundation.
-*
-* You should have received a copy of the GNU General Public License along with
-* this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
+ * Copyright (C) 2014 Texas Instruments Incorporated - http://www.ti.com/
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License version 2 as published by
+ * the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
+ */
 
 #include <linux/clk.h>
 #include <linux/delay.h>
@@ -19,7 +21,6 @@
 
 #include "omapdss.h"
 #include "dss.h"
-#include "dss_features.h"
 
 struct dss_video_pll {
 	struct dss_pll pll;
@@ -131,6 +132,8 @@ static const struct dss_pll_hw dss_dra7_video_pll_hw = {
 	.mX_lsb[3] = 5,
 
 	.has_refsel = true,
+
+	.errata_i886 = true,
 };
 
 struct dss_pll *dss_video_pll_init(struct platform_device *pdev, int id,

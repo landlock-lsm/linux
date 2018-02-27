@@ -1082,10 +1082,8 @@ static int add_map_configs(struct device *dev,
 
 	dup_configs = kmemdup(configs, num_configs * sizeof(*dup_configs),
 			      GFP_KERNEL);
-	if (!dup_configs) {
-		dev_err(dev, "kmemdup(configs) failed\n");
+	if (!dup_configs)
 		return -ENOMEM;
-	}
 
 	(*map)[*num_maps].type = PIN_MAP_TYPE_CONFIGS_GROUP;
 	(*map)[*num_maps].data.configs.group_or_pin = group;
@@ -1201,7 +1199,7 @@ static int tz1090_pinctrl_dt_node_to_map(struct pinctrl_dev *pctldev,
 	return 0;
 }
 
-static struct pinctrl_ops tz1090_pinctrl_ops = {
+static const struct pinctrl_ops tz1090_pinctrl_ops = {
 	.get_groups_count	= tz1090_pinctrl_get_groups_count,
 	.get_group_name		= tz1090_pinctrl_get_group_name,
 	.get_group_pins		= tz1090_pinctrl_get_group_pins,
@@ -1513,7 +1511,7 @@ static void tz1090_pinctrl_gpio_disable_free(struct pinctrl_dev *pctldev,
 	tz1090_pinctrl_gpio_select(pmx, pin, false);
 }
 
-static struct pinmux_ops tz1090_pinmux_ops = {
+static const struct pinmux_ops tz1090_pinmux_ops = {
 	.get_functions_count	= tz1090_pinctrl_get_funcs_count,
 	.get_function_name	= tz1090_pinctrl_get_func_name,
 	.get_function_groups	= tz1090_pinctrl_get_func_groups,
@@ -1920,7 +1918,7 @@ next_config:
 	return 0;
 }
 
-static struct pinconf_ops tz1090_pinconf_ops = {
+static const struct pinconf_ops tz1090_pinconf_ops = {
 	.is_generic			= true,
 	.pin_config_get			= tz1090_pinconf_get,
 	.pin_config_set			= tz1090_pinconf_set,
@@ -1946,10 +1944,9 @@ static int tz1090_pinctrl_probe(struct platform_device *pdev)
 	struct resource *res;
 
 	pmx = devm_kzalloc(&pdev->dev, sizeof(*pmx), GFP_KERNEL);
-	if (!pmx) {
-		dev_err(&pdev->dev, "Can't alloc tz1090_pmx\n");
+	if (!pmx)
 		return -ENOMEM;
-	}
+
 	pmx->dev = &pdev->dev;
 	spin_lock_init(&pmx->lock);
 

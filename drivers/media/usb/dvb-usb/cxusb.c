@@ -26,6 +26,7 @@
 #include <media/tuner.h>
 #include <linux/vmalloc.h>
 #include <linux/slab.h>
+#include <linux/kernel.h>
 
 #include "cxusb.h"
 
@@ -56,7 +57,7 @@ DVB_DEFINE_MOD_OPT_ADAPTER_NR(adapter_nr);
 #define deb_i2c(args...)    dprintk(dvb_usb_cxusb_debug, 0x02, args)
 
 static int cxusb_ctrl_msg(struct dvb_usb_device *d,
-			  u8 cmd, u8 *wbuf, int wlen, u8 *rbuf, int rlen)
+			  u8 cmd, const u8 *wbuf, int wlen, u8 *rbuf, int rlen)
 {
 	struct cxusb_state *st = d->priv;
 	int ret;
@@ -290,7 +291,8 @@ static int cxusb_aver_power_ctrl(struct dvb_usb_device *d, int onoff)
 		/* FIXME: We don't know why, but we need to configure the
 		 * lgdt3303 with the register settings below on resume */
 		int i;
-		u8 buf, bufs[] = {
+		u8 buf;
+		static const u8 bufs[] = {
 			0x0e, 0x2, 0x00, 0x7f,
 			0x0e, 0x2, 0x02, 0xfe,
 			0x0e, 0x2, 0x02, 0x01,
@@ -303,7 +305,7 @@ static int cxusb_aver_power_ctrl(struct dvb_usb_device *d, int onoff)
 			0x0e, 0x2, 0x47, 0x88,
 		};
 		msleep(20);
-		for (i = 0; i < sizeof(bufs)/sizeof(u8); i += 4/sizeof(u8)) {
+		for (i = 0; i < ARRAY_SIZE(bufs); i += 4 / sizeof(u8)) {
 			ret = cxusb_ctrl_msg(d, CMD_I2C_WRITE,
 					     bufs+i, 4, &buf, 1);
 			if (ret)
@@ -458,7 +460,7 @@ static int cxusb_rc_query(struct dvb_usb_device *d)
 	cxusb_ctrl_msg(d, CMD_GET_IR_CODE, NULL, 0, ircode, 4);
 
 	if (ircode[2] || ircode[3])
-		rc_keydown(d->rc_dev, RC_TYPE_NEC,
+		rc_keydown(d->rc_dev, RC_PROTO_NEC,
 			   RC_SCANCODE_NEC(~ircode[2] & 0xff, ircode[3]), 0);
 	return 0;
 }
@@ -473,7 +475,7 @@ static int cxusb_bluebird2_rc_query(struct dvb_usb_device *d)
 		return 0;
 
 	if (ircode[1] || ircode[2])
-		rc_keydown(d->rc_dev, RC_TYPE_NEC,
+		rc_keydown(d->rc_dev, RC_PROTO_NEC,
 			   RC_SCANCODE_NEC(~ircode[1] & 0xff, ircode[2]), 0);
 	return 0;
 }
@@ -486,7 +488,7 @@ static int cxusb_d680_dmb_rc_query(struct dvb_usb_device *d)
 		return 0;
 
 	if (ircode[0] || ircode[1])
-		rc_keydown(d->rc_dev, RC_TYPE_UNKNOWN,
+		rc_keydown(d->rc_dev, RC_PROTO_UNKNOWN,
 			   RC_SCANCODE_RC5(ircode[0], ircode[1]), 0);
 	return 0;
 }
@@ -676,6 +678,8 @@ static int dvico_bluebird_xc2028_callback(void *ptr, int component,
 		break;
 	case XC2028_RESET_CLK:
 		deb_info("%s: XC2028_RESET_CLK %d\n", __func__, arg);
+		break;
+	case XC2028_I2C_FLUSH:
 		break;
 	default:
 		deb_info("%s: unknown command %d, arg %d\n", __func__,
@@ -1646,7 +1650,7 @@ static struct dvb_usb_device_properties cxusb_bluebird_lgh064f_properties = {
 		.rc_codes	= RC_MAP_DVICO_PORTABLE,
 		.module_name	= KBUILD_MODNAME,
 		.rc_query	= cxusb_rc_query,
-		.allowed_protos = RC_BIT_NEC,
+		.allowed_protos = RC_PROTO_BIT_NEC,
 	},
 
 	.generic_bulk_ctrl_endpoint = 0x01,
@@ -1703,7 +1707,7 @@ static struct dvb_usb_device_properties cxusb_bluebird_dee1601_properties = {
 		.rc_codes	= RC_MAP_DVICO_MCE,
 		.module_name	= KBUILD_MODNAME,
 		.rc_query	= cxusb_rc_query,
-		.allowed_protos = RC_BIT_NEC,
+		.allowed_protos = RC_PROTO_BIT_NEC,
 	},
 
 	.generic_bulk_ctrl_endpoint = 0x01,
@@ -1768,7 +1772,7 @@ static struct dvb_usb_device_properties cxusb_bluebird_lgz201_properties = {
 		.rc_codes	= RC_MAP_DVICO_PORTABLE,
 		.module_name	= KBUILD_MODNAME,
 		.rc_query	= cxusb_rc_query,
-		.allowed_protos = RC_BIT_NEC,
+		.allowed_protos = RC_PROTO_BIT_NEC,
 	},
 
 	.generic_bulk_ctrl_endpoint = 0x01,
@@ -1824,7 +1828,7 @@ static struct dvb_usb_device_properties cxusb_bluebird_dtt7579_properties = {
 		.rc_codes	= RC_MAP_DVICO_PORTABLE,
 		.module_name	= KBUILD_MODNAME,
 		.rc_query	= cxusb_rc_query,
-		.allowed_protos = RC_BIT_NEC,
+		.allowed_protos = RC_PROTO_BIT_NEC,
 	},
 
 	.generic_bulk_ctrl_endpoint = 0x01,
@@ -1879,7 +1883,7 @@ static struct dvb_usb_device_properties cxusb_bluebird_dualdig4_properties = {
 		.rc_codes	= RC_MAP_DVICO_MCE,
 		.module_name	= KBUILD_MODNAME,
 		.rc_query	= cxusb_bluebird2_rc_query,
-		.allowed_protos = RC_BIT_NEC,
+		.allowed_protos = RC_PROTO_BIT_NEC,
 	},
 
 	.num_device_descs = 1,
@@ -1933,7 +1937,7 @@ static struct dvb_usb_device_properties cxusb_bluebird_nano2_properties = {
 		.rc_codes	= RC_MAP_DVICO_PORTABLE,
 		.module_name	= KBUILD_MODNAME,
 		.rc_query       = cxusb_bluebird2_rc_query,
-		.allowed_protos = RC_BIT_NEC,
+		.allowed_protos = RC_PROTO_BIT_NEC,
 	},
 
 	.num_device_descs = 1,
@@ -1989,7 +1993,7 @@ static struct dvb_usb_device_properties cxusb_bluebird_nano2_needsfirmware_prope
 		.rc_codes	= RC_MAP_DVICO_PORTABLE,
 		.module_name	= KBUILD_MODNAME,
 		.rc_query	= cxusb_rc_query,
-		.allowed_protos = RC_BIT_NEC,
+		.allowed_protos = RC_PROTO_BIT_NEC,
 	},
 
 	.num_device_descs = 1,
@@ -2088,7 +2092,7 @@ struct dvb_usb_device_properties cxusb_bluebird_dualdig4_rev2_properties = {
 		.rc_codes	= RC_MAP_DVICO_MCE,
 		.module_name	= KBUILD_MODNAME,
 		.rc_query	= cxusb_rc_query,
-		.allowed_protos = RC_BIT_NEC,
+		.allowed_protos = RC_PROTO_BIT_NEC,
 	},
 
 	.num_device_descs = 1,
@@ -2142,7 +2146,7 @@ static struct dvb_usb_device_properties cxusb_d680_dmb_properties = {
 		.rc_codes	= RC_MAP_D680_DMB,
 		.module_name	= KBUILD_MODNAME,
 		.rc_query       = cxusb_d680_dmb_rc_query,
-		.allowed_protos = RC_BIT_UNKNOWN,
+		.allowed_protos = RC_PROTO_BIT_UNKNOWN,
 	},
 
 	.num_device_descs = 1,
@@ -2197,7 +2201,7 @@ static struct dvb_usb_device_properties cxusb_mygica_d689_properties = {
 		.rc_codes	= RC_MAP_D680_DMB,
 		.module_name	= KBUILD_MODNAME,
 		.rc_query       = cxusb_d680_dmb_rc_query,
-		.allowed_protos = RC_BIT_UNKNOWN,
+		.allowed_protos = RC_PROTO_BIT_UNKNOWN,
 	},
 
 	.num_device_descs = 1,
@@ -2251,7 +2255,7 @@ static struct dvb_usb_device_properties cxusb_mygica_t230_properties = {
 		.rc_codes	= RC_MAP_TOTAL_MEDIA_IN_HAND_02,
 		.module_name	= KBUILD_MODNAME,
 		.rc_query       = cxusb_d680_dmb_rc_query,
-		.allowed_protos = RC_BIT_UNKNOWN,
+		.allowed_protos = RC_PROTO_BIT_UNKNOWN,
 	},
 
 	.num_device_descs = 1,
@@ -2305,7 +2309,7 @@ static struct dvb_usb_device_properties cxusb_mygica_t230c_properties = {
 		.rc_codes	= RC_MAP_TOTAL_MEDIA_IN_HAND_02,
 		.module_name	= KBUILD_MODNAME,
 		.rc_query       = cxusb_d680_dmb_rc_query,
-		.allowed_protos = RC_BIT_UNKNOWN,
+		.allowed_protos = RC_PROTO_BIT_UNKNOWN,
 	},
 
 	.num_device_descs = 1,

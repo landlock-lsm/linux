@@ -150,7 +150,7 @@ static void of_get_regulation_constraints(struct device_node *np,
 			suspend_state = &constraints->state_disk;
 			break;
 		case PM_SUSPEND_ON:
-		case PM_SUSPEND_FREEZE:
+		case PM_SUSPEND_TO_IDLE:
 		case PM_SUSPEND_STANDBY:
 		default:
 			continue;
@@ -177,14 +177,30 @@ static void of_get_regulation_constraints(struct device_node *np,
 
 		if (of_property_read_bool(suspend_np,
 					"regulator-on-in-suspend"))
-			suspend_state->enabled = true;
+			suspend_state->enabled = ENABLE_IN_SUSPEND;
 		else if (of_property_read_bool(suspend_np,
 					"regulator-off-in-suspend"))
-			suspend_state->disabled = true;
+			suspend_state->enabled = DISABLE_IN_SUSPEND;
+		else
+			suspend_state->enabled = DO_NOTHING_IN_SUSPEND;
+
+		if (!of_property_read_u32(np, "regulator-suspend-min-microvolt",
+					  &pval))
+			suspend_state->min_uV = pval;
+
+		if (!of_property_read_u32(np, "regulator-suspend-max-microvolt",
+					  &pval))
+			suspend_state->max_uV = pval;
 
 		if (!of_property_read_u32(suspend_np,
 					"regulator-suspend-microvolt", &pval))
 			suspend_state->uV = pval;
+		else /* otherwise use min_uV as default suspend voltage */
+			suspend_state->uV = suspend_state->min_uV;
+
+		if (of_property_read_bool(suspend_np,
+					"regulator-changeable-in-suspend"))
+			suspend_state->changeable = true;
 
 		if (i == PM_SUSPEND_MEM)
 			constraints->initial_state = PM_SUSPEND_MEM;
@@ -333,7 +349,7 @@ struct regulator_init_data *regulator_of_get_init_data(struct device *dev,
 		search = of_get_child_by_name(dev->of_node,
 					      desc->regulators_node);
 	else
-		search = dev->of_node;
+		search = of_node_get(dev->of_node);
 
 	if (!search) {
 		dev_dbg(dev, "Failed to find regulator container node '%s'\n",
@@ -375,4 +391,18 @@ struct regulator_init_data *regulator_of_get_init_data(struct device *dev,
 	of_node_put(search);
 
 	return init_data;
+}
+
+static int of_node_match(struct device *dev, const void *data)
+{
+	return dev->of_node == data;
+}
+
+struct regulator_dev *of_find_regulator_by_node(struct device_node *np)
+{
+	struct device *dev;
+
+	dev = class_find_device(&regulator_class, NULL, np, of_node_match);
+
+	return dev ? dev_to_rdev(dev) : NULL;
 }

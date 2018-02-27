@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /* Copyright (c) 2011-2014 PLUMgrid, http://plumgrid.com
  *
  * This program is free software; you can redistribute it and/or
@@ -16,7 +17,7 @@
 #define BPF_ALU64	0x07	/* alu mode in double word width */
 
 /* ld/ldx fields */
-#define BPF_DW		0x18	/* double word */
+#define BPF_DW		0x18	/* double word (64-bit) */
 #define BPF_XADD	0xc0	/* exclusive add */
 
 /* alu/jmp fields */
@@ -92,6 +93,7 @@ enum bpf_cmd {
 	BPF_PROG_GET_FD_BY_ID,
 	BPF_MAP_GET_FD_BY_ID,
 	BPF_OBJ_GET_INFO_BY_FD,
+	BPF_PROG_QUERY,
 };
 
 enum bpf_map_type {
@@ -111,6 +113,8 @@ enum bpf_map_type {
 	BPF_MAP_TYPE_HASH_OF_MAPS,
 	BPF_MAP_TYPE_DEVMAP,
 	BPF_MAP_TYPE_SOCKMAP,
+	BPF_MAP_TYPE_CPUMAP,
+	BPF_MAP_TYPE_INODE,
 };
 
 enum bpf_prog_type {
@@ -129,7 +133,8 @@ enum bpf_prog_type {
 	BPF_PROG_TYPE_LWT_XMIT,
 	BPF_PROG_TYPE_SOCK_OPS,
 	BPF_PROG_TYPE_SK_SKB,
-	BPF_PROG_TYPE_LANDLOCK_RULE,
+	BPF_PROG_TYPE_CGROUP_DEVICE,
+	BPF_PROG_TYPE_LANDLOCK_HOOK,
 };
 
 enum bpf_attach_type {
@@ -137,20 +142,55 @@ enum bpf_attach_type {
 	BPF_CGROUP_INET_EGRESS,
 	BPF_CGROUP_INET_SOCK_CREATE,
 	BPF_CGROUP_SOCK_OPS,
-	BPF_CGROUP_SMAP_INGRESS,
+	BPF_SK_SKB_STREAM_PARSER,
+	BPF_SK_SKB_STREAM_VERDICT,
+	BPF_CGROUP_DEVICE,
 	__MAX_BPF_ATTACH_TYPE
 };
 
 #define MAX_BPF_ATTACH_TYPE __MAX_BPF_ATTACH_TYPE
 
-/* If BPF_SOCKMAP_STRPARSER is used sockmap will use strparser on receive */
-#define BPF_SOCKMAP_STRPARSER	(1U << 0)
-
-/* If BPF_F_ALLOW_OVERRIDE flag is used in BPF_PROG_ATTACH command
- * to the given target_fd cgroup the descendent cgroup will be able to
- * override effective bpf program that was inherited from this cgroup
+/* cgroup-bpf attach flags used in BPF_PROG_ATTACH command
+ *
+ * NONE(default): No further bpf programs allowed in the subtree.
+ *
+ * BPF_F_ALLOW_OVERRIDE: If a sub-cgroup installs some bpf program,
+ * the program in this cgroup yields to sub-cgroup program.
+ *
+ * BPF_F_ALLOW_MULTI: If a sub-cgroup installs some bpf program,
+ * that cgroup program gets run in addition to the program in this cgroup.
+ *
+ * Only one program is allowed to be attached to a cgroup with
+ * NONE or BPF_F_ALLOW_OVERRIDE flag.
+ * Attaching another program on top of NONE or BPF_F_ALLOW_OVERRIDE will
+ * release old program and attach the new one. Attach flags has to match.
+ *
+ * Multiple programs are allowed to be attached to a cgroup with
+ * BPF_F_ALLOW_MULTI flag. They are executed in FIFO order
+ * (those that were attached first, run first)
+ * The programs of sub-cgroup are executed first, then programs of
+ * this cgroup and then programs of parent cgroup.
+ * When children program makes decision (like picking TCP CA or sock bind)
+ * parent program has a chance to override it.
+ *
+ * A cgroup with MULTI or OVERRIDE flag allows any attach flags in sub-cgroups.
+ * A cgroup with NONE doesn't allow any programs in sub-cgroups.
+ * Ex1:
+ * cgrp1 (MULTI progs A, B) ->
+ *    cgrp2 (OVERRIDE prog C) ->
+ *      cgrp3 (MULTI prog D) ->
+ *        cgrp4 (OVERRIDE prog E) ->
+ *          cgrp5 (NONE prog F)
+ * the event in cgrp5 triggers execution of F,D,A,B in that order.
+ * if prog F is detached, the execution is E,D,A,B
+ * if prog F and D are detached, the execution is E,A,B
+ * if prog F, E and D are detached, the execution is C,A,B
+ *
+ * All eligible programs are executed regardless of return code from
+ * earlier programs.
  */
 #define BPF_F_ALLOW_OVERRIDE	(1U << 0)
+#define BPF_F_ALLOW_MULTI	(1U << 1)
 
 /* If BPF_F_STRICT_ALIGNMENT is used in BPF_PROG_LOAD command, the
  * verifier will perform strict alignment checking as if the kernel
@@ -159,7 +199,13 @@ enum bpf_attach_type {
  */
 #define BPF_F_STRICT_ALIGNMENT	(1U << 0)
 
+/* when bpf_ldimm64->src_reg == BPF_PSEUDO_MAP_FD, bpf_ldimm64->imm == fd */
 #define BPF_PSEUDO_MAP_FD	1
+
+/* when bpf_call->src_reg == BPF_PSEUDO_CALL, bpf_call->imm == pc-relative
+ * offset to another bpf function
+ */
+#define BPF_PSEUDO_CALL		1
 
 /* flags for BPF_MAP_UPDATE_ELEM command */
 #define BPF_ANY		0 /* create new element or update existing */
@@ -178,13 +224,22 @@ enum bpf_attach_type {
 /* Specify numa node during map creation */
 #define BPF_F_NUMA_NODE		(1U << 2)
 
+/* flags for BPF_PROG_QUERY */
+#define BPF_F_QUERY_EFFECTIVE	(1U << 0)
+
+#define BPF_OBJ_NAME_LEN 16U
+
+/* Flags for accessing BPF object */
+#define BPF_F_RDONLY		(1U << 3)
+#define BPF_F_WRONLY		(1U << 4)
+
 union bpf_prog_subtype {
 	struct {
-		__u32		abi; /* minimal ABI version, cf. user doc */
-		__u32		event; /* enum landlock_subtype_event */
-		__aligned_u64	ability; /* LANDLOCK_SUBTYPE_ABILITY_* */
-		__aligned_u64	option; /* LANDLOCK_SUBTYPE_OPTION_* */
-	} landlock_rule;
+		__u32		type; /* enum landlock_hook_type */
+		__aligned_u64	triggers; /* LANDLOCK_TRIGGER_* */
+		__aligned_u64	options; /* LANDLOCK_OPTION_* */
+		__u32		previous; /* chained program FD */
+	} landlock_hook;
 } __attribute__((aligned(8)));
 
 union bpf_attr {
@@ -200,6 +255,8 @@ union bpf_attr {
 		__u32	numa_node;	/* numa node (effective only if
 					 * BPF_F_NUMA_NODE is set).
 					 */
+		char	map_name[BPF_OBJ_NAME_LEN];
+		__u32	map_ifindex;	/* ifindex of netdev to create on */
 	};
 
 	struct { /* anonymous struct used by BPF_MAP_*_ELEM commands */
@@ -222,6 +279,8 @@ union bpf_attr {
 		__aligned_u64	log_buf;	/* user supplied buffer */
 		__u32		kern_version;	/* checked when prog_type=kprobe */
 		__u32		prog_flags;
+		char		prog_name[BPF_OBJ_NAME_LEN];
+		__u32		prog_ifindex;	/* ifindex of netdev to prep for */
 		__aligned_u64	prog_subtype;	/* bpf_prog_subtype address */
 		__u32		prog_subtype_size;
 	};
@@ -229,6 +288,7 @@ union bpf_attr {
 	struct { /* anonymous struct used by BPF_OBJ_* commands */
 		__aligned_u64	pathname;
 		__u32		bpf_fd;
+		__u32		file_flags;
 	};
 
 	struct { /* anonymous struct used by BPF_PROG_ATTACH/DETACH commands */
@@ -236,7 +296,6 @@ union bpf_attr {
 		__u32		attach_bpf_fd;	/* eBPF program to attach */
 		__u32		attach_type;
 		__u32		attach_flags;
-		__u32		attach_bpf_fd2;
 	};
 
 	struct { /* anonymous struct used by BPF_PROG_TEST_RUN command */
@@ -257,6 +316,7 @@ union bpf_attr {
 			__u32		map_id;
 		};
 		__u32		next_id;
+		__u32		open_flags;
 	};
 
 	struct { /* anonymous struct used by BPF_OBJ_GET_INFO_BY_FD */
@@ -264,6 +324,15 @@ union bpf_attr {
 		__u32		info_len;
 		__aligned_u64	info;
 	} info;
+
+	struct { /* anonymous struct used by BPF_PROG_QUERY command */
+		__u32		target_fd;	/* container object to query */
+		__u32		attach_type;
+		__u32		query_flags;
+		__u32		attach_flags;
+		__aligned_u64	prog_ids;
+		__u32		prog_cnt;
+	} query;
 } __attribute__((aligned(8)));
 
 /* BPF helper function descriptions:
@@ -327,7 +396,7 @@ union bpf_attr {
  *     jump into another BPF program
  *     @ctx: context pointer passed to next program
  *     @prog_array_map: pointer to map which type is BPF_MAP_TYPE_PROG_ARRAY
- *     @index: index inside array that selects specific program to run
+ *     @index: 32-bit index inside array that selects specific program to run
  *     Return: 0 on success or negative error
  *
  * int bpf_clone_redirect(skb, ifindex, flags)
@@ -568,13 +637,31 @@ union bpf_attr {
  * int bpf_setsockopt(bpf_socket, level, optname, optval, optlen)
  *     Calls setsockopt. Not all opts are available, only those with
  *     integer optvals plus TCP_CONGESTION.
- *     Supported levels: SOL_SOCKET and IPROTO_TCP
+ *     Supported levels: SOL_SOCKET and IPPROTO_TCP
  *     @bpf_socket: pointer to bpf_socket
- *     @level: SOL_SOCKET or IPROTO_TCP
+ *     @level: SOL_SOCKET or IPPROTO_TCP
  *     @optname: option name
  *     @optval: pointer to option value
- *     @optlen: length of optval in byes
+ *     @optlen: length of optval in bytes
  *     Return: 0 or negative error
+ *
+ * int bpf_getsockopt(bpf_socket, level, optname, optval, optlen)
+ *     Calls getsockopt. Not all opts are available.
+ *     Supported levels: IPPROTO_TCP
+ *     @bpf_socket: pointer to bpf_socket
+ *     @level: IPPROTO_TCP
+ *     @optname: option name
+ *     @optval: pointer to option value
+ *     @optlen: length of optval in bytes
+ *     Return: 0 or negative error
+ *
+ * int bpf_sock_ops_cb_flags_set(bpf_sock_ops, flags)
+ *     Set callback flags for sock_ops
+ *     @bpf_sock_ops: pointer to bpf_sock_ops_kern struct
+ *     @flags: flags value
+ *     Return: 0 for no error
+ *             -EINVAL if there is no full tcp socket
+ *             bits in flags that are not supported by current kernel
  *
  * int bpf_skb_adjust_room(skb, len_diff, mode, flags)
  *     Grow or shrink room in sk_buff.
@@ -590,23 +677,54 @@ union bpf_attr {
  *     @map: pointer to sockmap
  *     @key: key to lookup sock in map
  *     @flags: reserved for future use
- *     Return: SK_REDIRECT
+ *     Return: SK_PASS
  *
- * int bpf_sock_map_update(skops, map, key, flags, map_flags)
+ * int bpf_sock_map_update(skops, map, key, flags)
  *	@skops: pointer to bpf_sock_ops
  *	@map: pointer to sockmap to update
  *	@key: key to insert/update sock in map
  *	@flags: same flags as map update elem
- *	@map_flags: sock map specific flags
- *	   bit 1: Enable strparser
- *	   other bits: reserved
  *
- * s64 bpf_handle_fs_get_mode(handle_fs)
- *     Get the mode of a struct bpf_handle_fs
- *     fs: struct bpf_handle_fs address
- *     Return:
- *       >= 0 file mode
- *       < 0 error
+ * int bpf_xdp_adjust_meta(xdp_md, delta)
+ *     Adjust the xdp_md.data_meta by delta
+ *     @xdp_md: pointer to xdp_md
+ *     @delta: An positive/negative integer to be added to xdp_md.data_meta
+ *     Return: 0 on success or negative on error
+ *
+ * int bpf_perf_event_read_value(map, flags, buf, buf_size)
+ *     read perf event counter value and perf event enabled/running time
+ *     @map: pointer to perf_event_array map
+ *     @flags: index of event in the map or bitmask flags
+ *     @buf: buf to fill
+ *     @buf_size: size of the buf
+ *     Return: 0 on success or negative error code
+ *
+ * int bpf_perf_prog_read_value(ctx, buf, buf_size)
+ *     read perf prog attached perf event counter and enabled/running time
+ *     @ctx: pointer to ctx
+ *     @buf: buf to fill
+ *     @buf_size: size of the buf
+ *     Return : 0 on success or negative error code
+ *
+ * int bpf_override_return(pt_regs, rc)
+ *	@pt_regs: pointer to struct pt_regs
+ *	@rc: the return value to set
+ *
+ * u64 bpf_inode_map_lookup(map, key)
+ *     @map: pointer to inode map
+ *     @key: pointer to inode
+ *     Return: value tied to this key, or zero if none
+ *
+ * u64 bpf_inode_get_tag(inode, chain)
+ *     @inode: pointer to struct inode
+ *     @chain: pointer to struct landlock_chain
+ *     Return: tag tied to this inode and chain, or zero if none
+ *
+ * int bpf_landlock_set_tag(tag_obj, chain, value)
+ *     @tag_obj: pointer pointing to a taggable object (e.g. inode)
+ *     @chain: pointer to struct landlock_chain
+ *     @value: value of the tag
+ *     Return: 0 on success or negative error code
  */
 #define __BPF_FUNC_MAPPER(FN)		\
 	FN(unspec),			\
@@ -663,7 +781,15 @@ union bpf_attr {
 	FN(redirect_map),		\
 	FN(sk_redirect_map),		\
 	FN(sock_map_update),		\
-	FN(handle_fs_get_mode),		\
+	FN(xdp_adjust_meta),		\
+	FN(perf_event_read_value),	\
+	FN(perf_prog_read_value),	\
+	FN(getsockopt),			\
+	FN(override_return),		\
+	FN(sock_ops_cb_flags_set),	\
+	FN(inode_map_lookup),		\
+	FN(inode_get_tag),		\
+	FN(landlock_set_tag),
 
 /* integer value in 'imm' field of BPF_CALL instruction selects which helper
  * function eBPF program intends to call
@@ -707,7 +833,9 @@ enum bpf_func_id {
 #define BPF_F_ZERO_CSUM_TX		(1ULL << 1)
 #define BPF_F_DONT_FRAGMENT		(1ULL << 2)
 
-/* BPF_FUNC_perf_event_output and BPF_FUNC_perf_event_read flags. */
+/* BPF_FUNC_perf_event_output, BPF_FUNC_perf_event_read and
+ * BPF_FUNC_perf_event_read_value flags.
+ */
 #define BPF_F_INDEX_MASK		0xffffffffULL
 #define BPF_F_CURRENT_CPU		BPF_F_INDEX_MASK
 /* BPF_FUNC_perf_event_output for sk_buff input context. */
@@ -741,7 +869,7 @@ struct __sk_buff {
 	__u32 data_end;
 	__u32 napi_id;
 
-	/* accessed by BPF_PROG_TYPE_sk_skb types */
+	/* Accessed by BPF_PROG_TYPE_sk_skb types from here to ... */
 	__u32 family;
 	__u32 remote_ip4;	/* Stored in network byte order */
 	__u32 local_ip4;	/* Stored in network byte order */
@@ -749,6 +877,9 @@ struct __sk_buff {
 	__u32 local_ip6[4];	/* Stored in network byte order */
 	__u32 remote_port;	/* Stored in network byte order */
 	__u32 local_port;	/* stored in host byte order */
+	/* ... here. */
+
+	__u32 data_meta;
 };
 
 struct bpf_tunnel_key {
@@ -784,14 +915,16 @@ struct bpf_sock {
 	__u32 family;
 	__u32 type;
 	__u32 protocol;
+	__u32 mark;
+	__u32 priority;
 };
 
 #define XDP_PACKET_HEADROOM 256
 
 /* User return codes for XDP prog type.
  * A valid XDP program must return one of these defined values. All other
- * return codes are reserved for future use. Unknown return codes will result
- * in packet drop.
+ * return codes are reserved for future use. Unknown return codes will
+ * result in packet drops and a warning via bpf_warn_invalid_xdp_action().
  */
 enum xdp_action {
 	XDP_ABORTED = 0,
@@ -807,12 +940,15 @@ enum xdp_action {
 struct xdp_md {
 	__u32 data;
 	__u32 data_end;
+	__u32 data_meta;
+	/* Below access go through struct xdp_rxq_info */
+	__u32 ingress_ifindex; /* rxq->dev->ifindex */
+	__u32 rx_queue_index;  /* rxq->queue_index  */
 };
 
 enum sk_action {
-	SK_ABORTED = 0,
-	SK_DROP,
-	SK_REDIRECT,
+	SK_DROP = 0,
+	SK_PASS,
 };
 
 #define BPF_TAG_SIZE	8
@@ -825,6 +961,14 @@ struct bpf_prog_info {
 	__u32 xlated_prog_len;
 	__aligned_u64 jited_prog_insns;
 	__aligned_u64 xlated_prog_insns;
+	__u64 load_time;	/* ns since boottime */
+	__u32 created_by_uid;
+	__u32 nr_map_ids;
+	__aligned_u64 map_ids;
+	char name[BPF_OBJ_NAME_LEN];
+	__u32 ifindex;
+	__u64 netns_dev;
+	__u64 netns_ino;
 } __attribute__((aligned(8)));
 
 struct bpf_map_info {
@@ -834,6 +978,10 @@ struct bpf_map_info {
 	__u32 value_size;
 	__u32 max_entries;
 	__u32 map_flags;
+	char  name[BPF_OBJ_NAME_LEN];
+	__u32 ifindex;
+	__u64 netns_dev;
+	__u64 netns_ino;
 } __attribute__((aligned(8)));
 
 /* User bpf_sock_ops struct to access socket values and specify request ops
@@ -845,8 +993,9 @@ struct bpf_map_info {
 struct bpf_sock_ops {
 	__u32 op;
 	union {
-		__u32 reply;
-		__u32 replylong[4];
+		__u32 args[4];		/* Optionally passed to bpf program */
+		__u32 reply;		/* Returned by bpf program	    */
+		__u32 replylong[4];	/* Optionally returned by bpf prog  */
 	};
 	__u32 family;
 	__u32 remote_ip4;	/* Stored in network byte order */
@@ -855,7 +1004,44 @@ struct bpf_sock_ops {
 	__u32 local_ip6[4];	/* Stored in network byte order */
 	__u32 remote_port;	/* Stored in network byte order */
 	__u32 local_port;	/* stored in host byte order */
+	__u32 is_fullsock;	/* Some TCP fields are only valid if
+				 * there is a full socket. If not, the
+				 * fields read as zero.
+				 */
+	__u32 snd_cwnd;
+	__u32 srtt_us;		/* Averaged RTT << 3 in usecs */
+	__u32 bpf_sock_ops_cb_flags; /* flags defined in uapi/linux/tcp.h */
+	__u32 state;
+	__u32 rtt_min;
+	__u32 snd_ssthresh;
+	__u32 rcv_nxt;
+	__u32 snd_nxt;
+	__u32 snd_una;
+	__u32 mss_cache;
+	__u32 ecn_flags;
+	__u32 rate_delivered;
+	__u32 rate_interval_us;
+	__u32 packets_out;
+	__u32 retrans_out;
+	__u32 total_retrans;
+	__u32 segs_in;
+	__u32 data_segs_in;
+	__u32 segs_out;
+	__u32 data_segs_out;
+	__u32 lost_out;
+	__u32 sacked_out;
+	__u32 sk_txhash;
+	__u64 bytes_received;
+	__u64 bytes_acked;
 };
+
+/* Definitions for bpf_sock_ops_cb_flags */
+#define BPF_SOCK_OPS_RTO_CB_FLAG	(1<<0)
+#define BPF_SOCK_OPS_RETRANS_CB_FLAG	(1<<1)
+#define BPF_SOCK_OPS_STATE_CB_FLAG	(1<<2)
+#define BPF_SOCK_OPS_ALL_CB_FLAGS       0x7		/* Mask of all currently
+							 * supported cb flags
+							 */
 
 /* List of known BPF sock_ops operators.
  * New entries can only be added at the end
@@ -883,105 +1069,73 @@ enum {
 	BPF_SOCK_OPS_NEEDS_ECN,		/* If connection's congestion control
 					 * needs ECN
 					 */
+	BPF_SOCK_OPS_BASE_RTT,		/* Get base RTT. The correct value is
+					 * based on the path and may be
+					 * dependent on the congestion control
+					 * algorithm. In general it indicates
+					 * a congestion threshold. RTTs above
+					 * this indicate congestion
+					 */
+	BPF_SOCK_OPS_RTO_CB,		/* Called when an RTO has triggered.
+					 * Arg1: value of icsk_retransmits
+					 * Arg2: value of icsk_rto
+					 * Arg3: whether RTO has expired
+					 */
+	BPF_SOCK_OPS_RETRANS_CB,	/* Called when skb is retransmitted.
+					 * Arg1: sequence number of 1st byte
+					 * Arg2: # segments
+					 * Arg3: return value of
+					 *       tcp_transmit_skb (0 => success)
+					 */
+	BPF_SOCK_OPS_STATE_CB,		/* Called when TCP changes state.
+					 * Arg1: old_state
+					 * Arg2: new_state
+					 */
+};
+
+/* List of TCP states. There is a build check in net/ipv4/tcp.c to detect
+ * changes between the TCP and BPF versions. Ideally this should never happen.
+ * If it does, we need to add code to convert them before calling
+ * the BPF sock_ops function.
+ */
+enum {
+	BPF_TCP_ESTABLISHED = 1,
+	BPF_TCP_SYN_SENT,
+	BPF_TCP_SYN_RECV,
+	BPF_TCP_FIN_WAIT1,
+	BPF_TCP_FIN_WAIT2,
+	BPF_TCP_TIME_WAIT,
+	BPF_TCP_CLOSE,
+	BPF_TCP_CLOSE_WAIT,
+	BPF_TCP_LAST_ACK,
+	BPF_TCP_LISTEN,
+	BPF_TCP_CLOSING,	/* Now a valid state */
+	BPF_TCP_NEW_SYN_RECV,
+
+	BPF_TCP_MAX_STATES	/* Leave at the end! */
 };
 
 #define TCP_BPF_IW		1001	/* Set TCP initial congestion window */
 #define TCP_BPF_SNDCWND_CLAMP	1002	/* Set sndcwnd_clamp */
 
-/**
- * enum landlock_subtype_event - event occurring when an action is performed on
- * a particular kernel object
- *
- * An event is a policy decision point which exposes the same context type
- * (especially the same arg[0-9] field types) for each rule execution.
- *
- * @LANDLOCK_SUBTYPE_EVENT_UNSPEC: invalid value
- * @LANDLOCK_SUBTYPE_EVENT_FS: generic filesystem event
- * @LANDLOCK_SUBTYPE_EVENT_FS_IOCTL: custom IOCTL sub-event
- * @LANDLOCK_SUBTYPE_EVENT_FS_LOCK: custom LOCK sub-event
- * @LANDLOCK_SUBTYPE_EVENT_FS_FCNTL: custom FCNTL sub-event
- */
-enum landlock_subtype_event {
-	LANDLOCK_SUBTYPE_EVENT_UNSPEC,
-	LANDLOCK_SUBTYPE_EVENT_FS,
-	LANDLOCK_SUBTYPE_EVENT_FS_IOCTL,
-	LANDLOCK_SUBTYPE_EVENT_FS_LOCK,
-	LANDLOCK_SUBTYPE_EVENT_FS_FCNTL,
+struct bpf_perf_event_value {
+	__u64 counter;
+	__u64 enabled;
+	__u64 running;
 };
-#define _LANDLOCK_SUBTYPE_EVENT_LAST LANDLOCK_SUBTYPE_EVENT_FS_FCNTL
 
-/**
- * DOC: landlock_subtype_ability
- *
- * eBPF context and functions allowed for a rule
- *
- * - LANDLOCK_SUBTYPE_ABILITY_DEBUG: allows to do debug actions (e.g. writing
- *   logs), which may be dangerous and should only be used for rule testing
- */
-#define LANDLOCK_SUBTYPE_ABILITY_DEBUG		(1ULL << 0)
-#define _LANDLOCK_SUBTYPE_ABILITY_NB		1
-#define _LANDLOCK_SUBTYPE_ABILITY_MASK		((1ULL << _LANDLOCK_SUBTYPE_ABILITY_NB) - 1)
+#define BPF_DEVCG_ACC_MKNOD	(1ULL << 0)
+#define BPF_DEVCG_ACC_READ	(1ULL << 1)
+#define BPF_DEVCG_ACC_WRITE	(1ULL << 2)
 
-/*
- * Future options for a Landlock rule (e.g. run even if a previous rule denied
- * an action).
- */
-#define _LANDLOCK_SUBTYPE_OPTION_NB		0
-#define _LANDLOCK_SUBTYPE_OPTION_MASK		((1ULL << _LANDLOCK_SUBTYPE_OPTION_NB) - 1)
+#define BPF_DEVCG_DEV_BLOCK	(1ULL << 0)
+#define BPF_DEVCG_DEV_CHAR	(1ULL << 1)
 
-/*
- * Status visible in the @status field of a context (e.g. already called in
- * this syscall session, with same args...).
- *
- * The @status field exposed to a rule shall depend on the rule version.
- */
-#define _LANDLOCK_SUBTYPE_STATUS_NB		0
-#define _LANDLOCK_SUBTYPE_STATUS_MASK		((1ULL << _LANDLOCK_SUBTYPE_STATUS_NB) - 1)
-
-/**
- * DOC: landlock_action_fs
- *
- * - %LANDLOCK_ACTION_FS_EXEC: execute a file or walk through a directory
- * - %LANDLOCK_ACTION_FS_WRITE: modify a file or a directory view (which
- *   include mount actions)
- * - %LANDLOCK_ACTION_FS_READ: read a file or a directory
- * - %LANDLOCK_ACTION_FS_NEW: create a file or a directory
- * - %LANDLOCK_ACTION_FS_GET: open or receive a file
- * - %LANDLOCK_ACTION_FS_REMOVE: unlink a file or remove a directory
- *
- * Each of the following actions are specific to syscall multiplexers. Each of
- * them trigger a dedicated Landlock event where their command can be read.
- *
- * - %LANDLOCK_ACTION_FS_IOCTL: ioctl command
- * - %LANDLOCK_ACTION_FS_LOCK: flock or fcntl lock command
- * - %LANDLOCK_ACTION_FS_FCNTL: fcntl command
- */
-#define LANDLOCK_ACTION_FS_EXEC			(1ULL << 0)
-#define LANDLOCK_ACTION_FS_WRITE		(1ULL << 1)
-#define LANDLOCK_ACTION_FS_READ			(1ULL << 2)
-#define LANDLOCK_ACTION_FS_NEW			(1ULL << 3)
-#define LANDLOCK_ACTION_FS_GET			(1ULL << 4)
-#define LANDLOCK_ACTION_FS_REMOVE		(1ULL << 5)
-#define LANDLOCK_ACTION_FS_IOCTL		(1ULL << 6)
-#define LANDLOCK_ACTION_FS_LOCK			(1ULL << 7)
-#define LANDLOCK_ACTION_FS_FCNTL		(1ULL << 8)
-#define _LANDLOCK_ACTION_FS_NB			9
-#define _LANDLOCK_ACTION_FS_MASK		((1ULL << _LANDLOCK_ACTION_FS_NB) - 1)
-
-
-/**
- * struct landlock_context - context accessible to a Landlock rule
- *
- * @status: bitfield for future use (LANDLOCK_SUBTYPE_STATUS_*)
- * @event: event type (&enum landlock_subtype_event)
- * @arg1: event's first optional argument
- * @arg2: event's second optional argument
- */
-struct landlock_context {
-	__u64 status;
-	__u64 event;
-	__u64 arg1;
-	__u64 arg2;
+struct bpf_cgroup_dev_ctx {
+	/* access_type encoded as (BPF_DEVCG_ACC_* << 16) | BPF_DEVCG_DEV_* */
+	__u32 access_type;
+	__u32 major;
+	__u32 minor;
 };
 
 #endif /* _UAPI__LINUX_BPF_H__ */

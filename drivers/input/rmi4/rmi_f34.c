@@ -11,7 +11,6 @@
 #include <linux/rmi.h>
 #include <linux/firmware.h>
 #include <asm/unaligned.h>
-#include <asm/unaligned.h>
 #include <linux/bitops.h>
 
 #include "rmi_driver.h"
@@ -516,7 +515,7 @@ static struct attribute *rmi_firmware_attrs[] = {
 	NULL
 };
 
-static struct attribute_group rmi_firmware_attr_group = {
+static const struct attribute_group rmi_firmware_attr_group = {
 	.attrs = rmi_firmware_attrs,
 };
 

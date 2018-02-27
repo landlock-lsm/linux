@@ -22,11 +22,10 @@
  */
 
 #include "amdgpu.h"
-#include "vega10/soc15ip.h"
-#include "vega10/NBIO/nbio_6_1_offset.h"
-#include "vega10/NBIO/nbio_6_1_sh_mask.h"
-#include "vega10/GC/gc_9_0_offset.h"
-#include "vega10/GC/gc_9_0_sh_mask.h"
+#include "nbio/nbio_6_1_offset.h"
+#include "nbio/nbio_6_1_sh_mask.h"
+#include "gc/gc_9_0_offset.h"
+#include "gc/gc_9_0_sh_mask.h"
 #include "soc15.h"
 #include "vega10_ih.h"
 #include "soc15_common.h"
@@ -70,21 +69,6 @@ static void xgpu_ai_mailbox_set_valid(struct amdgpu_device *adev, bool val)
 			    TRN_MSG_VALID, val ? 1 : 0);
 	WREG32_NO_KIQ(SOC15_REG_OFFSET(NBIO, 0, mmBIF_BX_PF0_MAILBOX_CONTROL),
 		      reg);
-}
-
-static void xgpu_ai_mailbox_trans_msg(struct amdgpu_device *adev,
-				      enum idh_request req)
-{
-	u32 reg;
-
-	reg = RREG32_NO_KIQ(SOC15_REG_OFFSET(NBIO, 0,
-					     mmBIF_BX_PF0_MAILBOX_MSGBUF_TRN_DW0));
-	reg = REG_SET_FIELD(reg, BIF_BX_PF0_MAILBOX_MSGBUF_TRN_DW0,
-			    MSGBUF_DATA, req);
-	WREG32_NO_KIQ(SOC15_REG_OFFSET(NBIO, 0, mmBIF_BX_PF0_MAILBOX_MSGBUF_TRN_DW0),
-		      reg);
-
-	xgpu_ai_mailbox_set_valid(adev, true);
 }
 
 static int xgpu_ai_mailbox_rcv_msg(struct amdgpu_device *adev,
@@ -154,13 +138,25 @@ static int xgpu_ai_poll_msg(struct amdgpu_device *adev, enum idh_event event)
 	return r;
 }
 
-
-static int xgpu_ai_send_access_requests(struct amdgpu_device *adev,
-					enum idh_request req)
-{
+static void xgpu_ai_mailbox_trans_msg (struct amdgpu_device *adev,
+	      enum idh_request req, u32 data1, u32 data2, u32 data3) {
+	u32 reg;
 	int r;
 
-	xgpu_ai_mailbox_trans_msg(adev, req);
+	reg = RREG32_NO_KIQ(SOC15_REG_OFFSET(NBIO, 0,
+					     mmBIF_BX_PF0_MAILBOX_MSGBUF_TRN_DW0));
+	reg = REG_SET_FIELD(reg, BIF_BX_PF0_MAILBOX_MSGBUF_TRN_DW0,
+			    MSGBUF_DATA, req);
+	WREG32_NO_KIQ(SOC15_REG_OFFSET(NBIO, 0, mmBIF_BX_PF0_MAILBOX_MSGBUF_TRN_DW0),
+		      reg);
+	WREG32_NO_KIQ(SOC15_REG_OFFSET(NBIO, 0, mmBIF_BX_PF0_MAILBOX_MSGBUF_TRN_DW1),
+				data1);
+	WREG32_NO_KIQ(SOC15_REG_OFFSET(NBIO, 0, mmBIF_BX_PF0_MAILBOX_MSGBUF_TRN_DW2),
+				data2);
+	WREG32_NO_KIQ(SOC15_REG_OFFSET(NBIO, 0, mmBIF_BX_PF0_MAILBOX_MSGBUF_TRN_DW3),
+				data3);
+
+	xgpu_ai_mailbox_set_valid(adev, true);
 
 	/* start to poll ack */
 	r = xgpu_ai_poll_ack(adev);
@@ -168,6 +164,14 @@ static int xgpu_ai_send_access_requests(struct amdgpu_device *adev,
 		pr_err("Doesn't get ack from pf, continue\n");
 
 	xgpu_ai_mailbox_set_valid(adev, false);
+}
+
+static int xgpu_ai_send_access_requests(struct amdgpu_device *adev,
+					enum idh_request req)
+{
+	int r;
+
+	xgpu_ai_mailbox_trans_msg(adev, req, 0, 0, 0);
 
 	/* start to check msg if request is idh_req_gpu_init_access */
 	if (req == IDH_REQ_GPU_INIT_ACCESS ||
@@ -177,6 +181,12 @@ static int xgpu_ai_send_access_requests(struct amdgpu_device *adev,
 		if (r) {
 			pr_err("Doesn't get READY_TO_ACCESS_GPU from pf, give up\n");
 			return r;
+		}
+		/* Retrieve checksum from mailbox2 */
+		if (req == IDH_REQ_GPU_INIT_ACCESS) {
+			adev->virt.fw_reserve.checksum_key =
+				RREG32_NO_KIQ(SOC15_REG_OFFSET(NBIO, 0,
+					mmBIF_BX_PF0_MAILBOX_MSGBUF_RCV_DW2));
 		}
 	}
 
@@ -243,7 +253,7 @@ static void xgpu_ai_mailbox_flr_work(struct work_struct *work)
 	}
 
 	/* Trigger recovery due to world switch failure */
-	amdgpu_sriov_gpu_reset(adev, NULL);
+	amdgpu_device_gpu_recover(adev, NULL, false);
 }
 
 static int xgpu_ai_set_mailbox_rcv_irq(struct amdgpu_device *adev,
@@ -267,13 +277,21 @@ static int xgpu_ai_mailbox_rcv_irq(struct amdgpu_device *adev,
 	int r;
 
 	/* trigger gpu-reset by hypervisor only if TDR disbaled */
-	if (amdgpu_lockup_timeout == 0) {
+	if (!amdgpu_gpu_recovery) {
 		/* see what event we get */
 		r = xgpu_ai_mailbox_rcv_msg(adev, IDH_FLR_NOTIFICATION);
 
-		/* only handle FLR_NOTIFY now */
-		if (!r)
-			schedule_work(&adev->virt.flr_work);
+		/* sometimes the interrupt is delayed to inject to VM, so under such case
+		 * the IDH_FLR_NOTIFICATION is overwritten by VF FLR from GIM side, thus
+		 * above recieve message could be failed, we should schedule the flr_work
+		 * anyway
+		 */
+		if (r) {
+			DRM_ERROR("FLR_NOTIFICATION is missed\n");
+			xgpu_ai_mailbox_send_ack(adev);
+		}
+
+		schedule_work(&adev->virt.flr_work);
 	}
 
 	return 0;
@@ -342,4 +360,6 @@ const struct amdgpu_virt_ops xgpu_ai_virt_ops = {
 	.req_full_gpu	= xgpu_ai_request_full_gpu_access,
 	.rel_full_gpu	= xgpu_ai_release_full_gpu_access,
 	.reset_gpu = xgpu_ai_request_reset,
+	.wait_reset = NULL,
+	.trans_msg = xgpu_ai_mailbox_trans_msg,
 };

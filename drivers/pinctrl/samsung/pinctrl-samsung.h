@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
 /*
  * pin-controller/pin-mux/pin-config/gpio-driver for Samsung's SoC's.
  *
@@ -7,11 +8,6 @@
  *		http://www.linaro.org
  *
  * Author: Thomas Abraham <thomas.ab@samsung.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #ifndef __PINCTRL_SAMSUNG_H
@@ -24,10 +20,6 @@
 #include <linux/pinctrl/machine.h>
 
 #include <linux/gpio.h>
-
-/* pinmux function number for pin as gpio output line */
-#define FUNC_INPUT	0x0
-#define FUNC_OUTPUT	0x1
 
 /**
  * enum pincfg_type - possible pin configuration types supported.
@@ -234,8 +226,8 @@ struct samsung_retention_data {
  */
 struct samsung_pin_ctrl {
 	const struct samsung_pin_bank_data *pin_banks;
-	u32		nr_banks;
-	int		nr_ext_resources;
+	unsigned int	nr_banks;
+	unsigned int	nr_ext_resources;
 	const struct samsung_retention_data *retention_data;
 
 	int		(*eint_gpio_init)(struct samsung_pinctrl_drv_data *);
@@ -247,6 +239,10 @@ struct samsung_pin_ctrl {
 /**
  * struct samsung_pinctrl_drv_data: wrapper for holding driver data together.
  * @node: global list node
+ * @virt_base: register base address of the controller; this will be equal
+ *             to each bank samsung_pin_bank->pctl_base and used on legacy
+ *             platforms (like S3C24XX or S3C64XX) which has to access the base
+ *             through samsung_pinctrl_drv_data, not samsung_pin_bank).
  * @dev: device instance representing the controller.
  * @irq: interrpt number used by the controller to notify gpio interrupts.
  * @ctrl: pin controller instance managed by the driver.
@@ -262,6 +258,7 @@ struct samsung_pin_ctrl {
  */
 struct samsung_pinctrl_drv_data {
 	struct list_head		node;
+	void __iomem			*virt_base;
 	struct device			*dev;
 	int				irq;
 
@@ -274,7 +271,7 @@ struct samsung_pinctrl_drv_data {
 	unsigned int			nr_functions;
 
 	struct samsung_pin_bank		*pin_banks;
-	u32				nr_banks;
+	unsigned int			nr_banks;
 	unsigned int			pin_base;
 	unsigned int			nr_pins;
 

@@ -102,15 +102,18 @@ static struct inet_peer *lookup(const struct inetpeer_addr *daddr,
 				struct rb_node **parent_p,
 				struct rb_node ***pp_p)
 {
-	struct rb_node **pp, *parent;
+	struct rb_node **pp, *parent, *next;
 	struct inet_peer *p;
 
 	pp = &base->rb_root.rb_node;
 	parent = NULL;
-	while (*pp) {
+	while (1) {
 		int cmp;
 
-		parent = rcu_dereference_raw(*pp);
+		next = rcu_dereference_raw(*pp);
+		if (!next)
+			break;
+		parent = next;
 		p = rb_entry(parent, struct inet_peer, rb_node);
 		cmp = inetpeer_addr_cmp(daddr, &p->daddr);
 		if (cmp == 0) {
@@ -125,9 +128,9 @@ static struct inet_peer *lookup(const struct inetpeer_addr *daddr,
 			break;
 		}
 		if (cmp == -1)
-			pp = &(*pp)->rb_left;
+			pp = &next->rb_left;
 		else
-			pp = &(*pp)->rb_right;
+			pp = &next->rb_right;
 	}
 	*parent_p = parent;
 	*pp_p = pp;
@@ -281,14 +284,17 @@ EXPORT_SYMBOL(inet_peer_xrlim_allow);
 
 void inetpeer_invalidate_tree(struct inet_peer_base *base)
 {
-	struct inet_peer *p, *n;
+	struct rb_node *p = rb_first(&base->rb_root);
 
-	rbtree_postorder_for_each_entry_safe(p, n, &base->rb_root, rb_node) {
-		inet_putpeer(p);
+	while (p) {
+		struct inet_peer *peer = rb_entry(p, struct inet_peer, rb_node);
+
+		p = rb_next(p);
+		rb_erase(&peer->rb_node, &base->rb_root);
+		inet_putpeer(peer);
 		cond_resched();
 	}
 
-	base->rb_root = RB_ROOT;
 	base->total = 0;
 }
 EXPORT_SYMBOL(inetpeer_invalidate_tree);

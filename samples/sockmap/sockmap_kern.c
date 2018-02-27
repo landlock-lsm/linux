@@ -62,7 +62,7 @@ int bpf_prog2(struct __sk_buff *skb)
 		ret = 1;
 
 	bpf_printk("sockmap: %d -> %d @ %d\n", lport, bpf_ntohl(rport), ret);
-	return bpf_sk_redirect_map(&sock_map, ret, 0);
+	return bpf_sk_redirect_map(skb, &sock_map, ret, 0);
 }
 
 SEC("sockops")
@@ -82,8 +82,7 @@ int bpf_sockmap(struct bpf_sock_ops *skops)
 		if (lport == 10000) {
 			ret = 1;
 			err = bpf_sock_map_update(skops, &sock_map, &ret,
-						  BPF_NOEXIST,
-						  BPF_SOCKMAP_STRPARSER);
+						  BPF_NOEXIST);
 			bpf_printk("passive(%i -> %i) map ctx update err: %d\n",
 				   lport, bpf_ntohl(rport), err);
 		}
@@ -95,8 +94,7 @@ int bpf_sockmap(struct bpf_sock_ops *skops)
 		if (bpf_ntohl(rport) == 10001) {
 			ret = 10;
 			err = bpf_sock_map_update(skops, &sock_map, &ret,
-						  BPF_NOEXIST,
-						  BPF_SOCKMAP_STRPARSER);
+						  BPF_NOEXIST);
 			bpf_printk("active(%i -> %i) map ctx update err: %d\n",
 				   lport, bpf_ntohl(rport), err);
 		}

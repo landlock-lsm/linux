@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __BPF_LOAD_H
 #define __BPF_LOAD_H
 
@@ -21,6 +22,13 @@ struct bpf_map_data {
 	char *name;
 	size_t elf_offset;
 	struct bpf_map_def def;
+};
+
+struct bpf_subtype_data {
+	char *name;
+	int prog_id;
+	int prog_fd;
+	union bpf_prog_subtype subtype;
 };
 
 typedef void (*fixup_map_cb)(struct bpf_map_data *map, int idx);
@@ -60,5 +68,5 @@ struct ksym {
 
 int load_kallsyms(void);
 struct ksym *ksym_search(long key);
-int set_link_xdp_fd(int ifindex, int fd, __u32 flags);
+int bpf_set_link_xdp_fd(int ifindex, int fd, __u32 flags);
 #endif

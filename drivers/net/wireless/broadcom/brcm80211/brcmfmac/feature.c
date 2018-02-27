@@ -130,13 +130,19 @@ static void brcmf_feat_iovar_data_set(struct brcmf_if *ifp,
 	}
 }
 
+#define MAX_CAPS_BUFFER_SIZE	512
 static void brcmf_feat_firmware_capabilities(struct brcmf_if *ifp)
 {
-	char caps[256];
+	char caps[MAX_CAPS_BUFFER_SIZE];
 	enum brcmf_feat_id id;
-	int i;
+	int i, err;
 
-	brcmf_fil_iovar_data_get(ifp, "cap", caps, sizeof(caps));
+	err = brcmf_fil_iovar_data_get(ifp, "cap", caps, sizeof(caps));
+	if (err) {
+		brcmf_err("could not get firmware cap (%d)\n", err);
+		return;
+	}
+
 	brcmf_dbg(INFO, "[ %s]\n", caps);
 
 	for (i = 0; i < ARRAY_SIZE(brcmf_fwcap_map); i++) {
@@ -159,7 +165,8 @@ void brcmf_feat_attach(struct brcmf_pub *drvr)
 
 	brcmf_feat_firmware_capabilities(ifp);
 	memset(&gscan_cfg, 0, sizeof(gscan_cfg));
-	if (drvr->bus_if->chip != BRCM_CC_43430_CHIP_ID)
+	if (drvr->bus_if->chip != BRCM_CC_43430_CHIP_ID &&
+	    drvr->bus_if->chip != BRCM_CC_4345_CHIP_ID)
 		brcmf_feat_iovar_data_set(ifp, BRCMF_FEAT_GSCAN,
 					  "pfn_gscan_cfg",
 					  &gscan_cfg, sizeof(gscan_cfg));

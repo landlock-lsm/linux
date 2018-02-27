@@ -41,6 +41,10 @@
 #include "../bridge/br_private.h"
 #endif
 
+#if IS_ENABLED(CONFIG_NF_CONNTRACK)
+#include <net/netfilter/nf_conntrack.h>
+#endif
+
 #define NFQNL_QMAX_DEFAULT 1024
 
 /* We're using struct nlattr which has 16bit nla_len. Note that nla_len
@@ -397,7 +401,7 @@ nfqnl_build_packet_message(struct net *net, struct nfqnl_instance *queue,
 
 	outdev = entry->state.out;
 
-	switch ((enum nfqnl_config_mode)ACCESS_ONCE(queue->copy_mode)) {
+	switch ((enum nfqnl_config_mode)READ_ONCE(queue->copy_mode)) {
 	case NFQNL_COPY_META:
 	case NFQNL_COPY_NONE:
 		break;
@@ -408,7 +412,7 @@ nfqnl_build_packet_message(struct net *net, struct nfqnl_instance *queue,
 		    skb_checksum_help(entskb))
 			return NULL;
 
-		data_len = ACCESS_ONCE(queue->copy_range);
+		data_len = READ_ONCE(queue->copy_range);
 		if (data_len > entskb->len)
 			data_len = entskb->len;
 
@@ -612,6 +616,18 @@ nlmsg_failure:
 	return NULL;
 }
 
+static bool nf_ct_drop_unconfirmed(const struct nf_queue_entry *entry)
+{
+#if IS_ENABLED(CONFIG_NF_CONNTRACK)
+	static const unsigned long flags = IPS_CONFIRMED | IPS_DYING;
+	const struct nf_conn *ct = (void *)skb_nfct(entry->skb);
+
+	if (ct && ((ct->status & flags) == IPS_DYING))
+		return true;
+#endif
+	return false;
+}
+
 static int
 __nfqnl_enqueue_packet(struct net *net, struct nfqnl_instance *queue,
 			struct nf_queue_entry *entry)
@@ -627,6 +643,9 @@ __nfqnl_enqueue_packet(struct net *net, struct nfqnl_instance *queue,
 		goto err_out;
 	}
 	spin_lock_bh(&queue->lock);
+
+	if (nf_ct_drop_unconfirmed(entry))
+		goto err_out_free_nskb;
 
 	if (queue->queue_total >= queue->queue_maxlen) {
 		if (queue->flags & NFQA_CFG_F_FAIL_OPEN) {
@@ -922,25 +941,18 @@ static struct notifier_block nfqnl_dev_notifier = {
 	.notifier_call	= nfqnl_rcv_dev_event,
 };
 
-static unsigned int nfqnl_nf_hook_drop(struct net *net)
+static void nfqnl_nf_hook_drop(struct net *net)
 {
 	struct nfnl_queue_net *q = nfnl_queue_pernet(net);
-	unsigned int instances = 0;
 	int i;
 
-	rcu_read_lock();
 	for (i = 0; i < INSTANCE_BUCKETS; i++) {
 		struct nfqnl_instance *inst;
 		struct hlist_head *head = &q->instance_table[i];
 
-		hlist_for_each_entry_rcu(inst, head, hlist) {
+		hlist_for_each_entry_rcu(inst, head, hlist)
 			nfqnl_flush(inst, NULL, 0);
-			instances++;
-		}
 	}
-	rcu_read_unlock();
-
-	return instances;
 }
 
 static int
@@ -1465,7 +1477,6 @@ static int nfqnl_open(struct inode *inode, struct file *file)
 }
 
 static const struct file_operations nfqnl_file_ops = {
-	.owner	 = THIS_MODULE,
 	.open	 = nfqnl_open,
 	.read	 = seq_read,
 	.llseek	 = seq_lseek,
@@ -1495,10 +1506,15 @@ static int __net_init nfnl_queue_net_init(struct net *net)
 
 static void __net_exit nfnl_queue_net_exit(struct net *net)
 {
+	struct nfnl_queue_net *q = nfnl_queue_pernet(net);
+	unsigned int i;
+
 	nf_unregister_queue_handler(net);
 #ifdef CONFIG_PROC_FS
 	remove_proc_entry("nfnetlink_queue", net->nf.proc_netfilter);
 #endif
+	for (i = 0; i < INSTANCE_BUCKETS; i++)
+		WARN_ON_ONCE(!hlist_empty(&q->instance_table[i]));
 }
 
 static void nfnl_queue_net_exit_batch(struct list_head *net_exit_list)

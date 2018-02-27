@@ -107,6 +107,7 @@ static int vp_request_msix_vectors(struct virtio_device *vdev, int nvectors,
 {
 	struct virtio_pci_device *vp_dev = to_vp_device(vdev);
 	const char *name = dev_name(&vp_dev->vdev.dev);
+	unsigned flags = PCI_IRQ_MSIX;
 	unsigned i, v;
 	int err = -ENOMEM;
 
@@ -126,10 +127,13 @@ static int vp_request_msix_vectors(struct virtio_device *vdev, int nvectors,
 					GFP_KERNEL))
 			goto error;
 
+	if (desc) {
+		flags |= PCI_IRQ_AFFINITY;
+		desc->pre_vectors++; /* virtio config vector */
+	}
+
 	err = pci_alloc_irq_vectors_affinity(vp_dev->pci_dev, nvectors,
-					     nvectors, PCI_IRQ_MSIX |
-					     (desc ? PCI_IRQ_AFFINITY : 0),
-					     desc);
+					     nvectors, flags, desc);
 	if (err < 0)
 		goto error;
 	vp_dev->msix_enabled = 1;
@@ -509,7 +513,7 @@ static void virtio_pci_release_dev(struct device *_d)
 static int virtio_pci_probe(struct pci_dev *pci_dev,
 			    const struct pci_device_id *id)
 {
-	struct virtio_pci_device *vp_dev;
+	struct virtio_pci_device *vp_dev, *reg_dev = NULL;
 	int rc;
 
 	/* allocate our structure and fill it out */
@@ -547,6 +551,7 @@ static int virtio_pci_probe(struct pci_dev *pci_dev,
 	pci_set_master(pci_dev);
 
 	rc = register_virtio_device(&vp_dev->vdev);
+	reg_dev = vp_dev;
 	if (rc)
 		goto err_register;
 
@@ -560,7 +565,10 @@ err_register:
 err_probe:
 	pci_disable_device(pci_dev);
 err_enable_device:
-	kfree(vp_dev);
+	if (reg_dev)
+		put_device(&vp_dev->vdev.dev);
+	else
+		kfree(vp_dev);
 	return rc;
 }
 

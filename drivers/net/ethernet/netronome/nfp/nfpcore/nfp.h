@@ -49,6 +49,8 @@
 struct nfp_hwinfo;
 struct nfp_hwinfo *nfp_hwinfo_read(struct nfp_cpp *cpp);
 const char *nfp_hwinfo_lookup(struct nfp_hwinfo *hwinfo, const char *lookup);
+char *nfp_hwinfo_get_packed_strings(struct nfp_hwinfo *hwinfo);
+u32 nfp_hwinfo_get_packed_str_size(struct nfp_hwinfo *hwinfo);
 
 /* Implemented in nfp_nsp.c, low level functions */
 
@@ -96,6 +98,8 @@ struct nfp_resource *
 nfp_resource_acquire(struct nfp_cpp *cpp, const char *name);
 
 void nfp_resource_release(struct nfp_resource *res);
+
+int nfp_resource_wait(struct nfp_cpp *cpp, const char *name, unsigned int secs);
 
 u32 nfp_resource_cpp_id(struct nfp_resource *res);
 

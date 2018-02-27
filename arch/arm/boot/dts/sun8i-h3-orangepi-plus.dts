@@ -85,11 +85,10 @@
 	phy-handle = <&ext_rgmii_phy>;
 	phy-mode = "rgmii";
 
-	allwinner,leds-active-low;
 	status = "okay";
 };
 
-&mdio {
+&external_mdio {
 	ext_rgmii_phy: ethernet-phy@1 {
 		compatible = "ethernet-phy-ieee802.3-c22";
 		reg = <0>;
@@ -114,7 +113,7 @@
 };
 
 &pio {
-	usb3_vbus_pin_a: usb3_vbus_pin@0 {
+	usb3_vbus_pin_a: usb3_vbus_pin {
 		pins = "PG11";
 		function = "gpio_out";
 	};

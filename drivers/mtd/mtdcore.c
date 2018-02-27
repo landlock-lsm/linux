@@ -40,6 +40,7 @@
 #include <linux/slab.h>
 #include <linux/reboot.h>
 #include <linux/leds.h>
+#include <linux/debugfs.h>
 
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
@@ -339,7 +340,7 @@ static struct attribute *mtd_attrs[] = {
 };
 ATTRIBUTE_GROUPS(mtd);
 
-static struct device_type mtd_devtype = {
+static const struct device_type mtd_devtype = {
 	.name		= "mtd",
 	.groups		= mtd_groups,
 	.release	= mtd_release,
@@ -477,6 +478,8 @@ int mtd_pairing_groups(struct mtd_info *mtd)
 }
 EXPORT_SYMBOL_GPL(mtd_pairing_groups);
 
+static struct dentry *dfs_dir_mtd;
+
 /**
  *	add_mtd_device - register an MTD device
  *	@mtd: pointer to new MTD device info structure
@@ -500,6 +503,11 @@ int add_mtd_device(struct mtd_info *mtd)
 		return -EEXIST;
 
 	BUG_ON(mtd->writesize == 0);
+
+	if (WARN_ON((!mtd->erasesize || !mtd->_erase) &&
+		    !(mtd->flags & MTD_NO_ERASE)))
+		return -EINVAL;
+
 	mutex_lock(&mtd_table_mutex);
 
 	i = idr_alloc(&mtd_idr, mtd, 0, 0, GFP_KERNEL);
@@ -552,6 +560,14 @@ int add_mtd_device(struct mtd_info *mtd)
 	if (error)
 		goto fail_added;
 
+	if (!IS_ERR_OR_NULL(dfs_dir_mtd)) {
+		mtd->dbg.dfs_dir = debugfs_create_dir(dev_name(&mtd->dev), dfs_dir_mtd);
+		if (IS_ERR_OR_NULL(mtd->dbg.dfs_dir)) {
+			pr_debug("mtd device %s won't show data in debugfs\n",
+				 dev_name(&mtd->dev));
+		}
+	}
+
 	device_create(&mtd_class, mtd->dev.parent, MTD_DEVT(i) + 1, NULL,
 		      "mtd%dro", i);
 
@@ -593,6 +609,8 @@ int del_mtd_device(struct mtd_info *mtd)
 	struct mtd_notifier *not;
 
 	mutex_lock(&mtd_table_mutex);
+
+	debugfs_remove_recursive(mtd->dbg.dfs_dir);
 
 	if (idr_find(&mtd_idr, mtd->index) != mtd) {
 		ret = -ENODEV;
@@ -1009,11 +1027,18 @@ EXPORT_SYMBOL_GPL(mtd_unpoint);
 unsigned long mtd_get_unmapped_area(struct mtd_info *mtd, unsigned long len,
 				    unsigned long offset, unsigned long flags)
 {
-	if (!mtd->_get_unmapped_area)
-		return -EOPNOTSUPP;
-	if (offset >= mtd->size || len > mtd->size - offset)
-		return -EINVAL;
-	return mtd->_get_unmapped_area(mtd, len, offset, flags);
+	size_t retlen;
+	void *virt;
+	int ret;
+
+	ret = mtd_point(mtd, offset, len, &retlen, &virt, NULL);
+	if (ret)
+		return ret;
+	if (retlen != len) {
+		mtd_unpoint(mtd, offset, retlen);
+		return -ENOSYS;
+	}
+	return (unsigned long)virt;
 }
 EXPORT_SYMBOL_GPL(mtd_get_unmapped_area);
 
@@ -1033,7 +1058,20 @@ int mtd_read(struct mtd_info *mtd, loff_t from, size_t len, size_t *retlen,
 	 * representing the maximum number of bitflips that were corrected on
 	 * any one ecc region (if applicable; zero otherwise).
 	 */
-	ret_code = mtd->_read(mtd, from, len, retlen, buf);
+	if (mtd->_read) {
+		ret_code = mtd->_read(mtd, from, len, retlen, buf);
+	} else if (mtd->_read_oob) {
+		struct mtd_oob_ops ops = {
+			.len = len,
+			.datbuf = buf,
+		};
+
+		ret_code = mtd->_read_oob(mtd, from, &ops);
+		*retlen = ops.retlen;
+	} else {
+		return -ENOTSUPP;
+	}
+
 	if (unlikely(ret_code < 0))
 		return ret_code;
 	if (mtd->ecc_strength == 0)
@@ -1048,11 +1086,25 @@ int mtd_write(struct mtd_info *mtd, loff_t to, size_t len, size_t *retlen,
 	*retlen = 0;
 	if (to < 0 || to >= mtd->size || len > mtd->size - to)
 		return -EINVAL;
-	if (!mtd->_write || !(mtd->flags & MTD_WRITEABLE))
+	if ((!mtd->_write && !mtd->_write_oob) ||
+	    !(mtd->flags & MTD_WRITEABLE))
 		return -EROFS;
 	if (!len)
 		return 0;
 	ledtrig_mtd_activity();
+
+	if (!mtd->_write) {
+		struct mtd_oob_ops ops = {
+			.len = len,
+			.datbuf = (u8 *)buf,
+		};
+		int ret;
+
+		ret = mtd->_write_oob(mtd, to, &ops);
+		*retlen = ops.retlen;
+		return ret;
+	}
+
 	return mtd->_write(mtd, to, len, retlen, buf);
 }
 EXPORT_SYMBOL_GPL(mtd_write);
@@ -1080,12 +1132,49 @@ int mtd_panic_write(struct mtd_info *mtd, loff_t to, size_t len, size_t *retlen,
 }
 EXPORT_SYMBOL_GPL(mtd_panic_write);
 
+static int mtd_check_oob_ops(struct mtd_info *mtd, loff_t offs,
+			     struct mtd_oob_ops *ops)
+{
+	/*
+	 * Some users are setting ->datbuf or ->oobbuf to NULL, but are leaving
+	 * ->len or ->ooblen uninitialized. Force ->len and ->ooblen to 0 in
+	 *  this case.
+	 */
+	if (!ops->datbuf)
+		ops->len = 0;
+
+	if (!ops->oobbuf)
+		ops->ooblen = 0;
+
+	if (offs < 0 || offs + ops->len > mtd->size)
+		return -EINVAL;
+
+	if (ops->ooblen) {
+		u64 maxooblen;
+
+		if (ops->ooboffs >= mtd_oobavail(mtd, ops))
+			return -EINVAL;
+
+		maxooblen = ((mtd_div_by_ws(mtd->size, mtd) -
+			      mtd_div_by_ws(offs, mtd)) *
+			     mtd_oobavail(mtd, ops)) - ops->ooboffs;
+		if (ops->ooblen > maxooblen)
+			return -EINVAL;
+	}
+
+	return 0;
+}
+
 int mtd_read_oob(struct mtd_info *mtd, loff_t from, struct mtd_oob_ops *ops)
 {
 	int ret_code;
 	ops->retlen = ops->oobretlen = 0;
 	if (!mtd->_read_oob)
 		return -EOPNOTSUPP;
+
+	ret_code = mtd_check_oob_ops(mtd, from, ops);
+	if (ret_code)
+		return ret_code;
 
 	ledtrig_mtd_activity();
 	/*
@@ -1106,11 +1195,18 @@ EXPORT_SYMBOL_GPL(mtd_read_oob);
 int mtd_write_oob(struct mtd_info *mtd, loff_t to,
 				struct mtd_oob_ops *ops)
 {
+	int ret;
+
 	ops->retlen = ops->oobretlen = 0;
 	if (!mtd->_write_oob)
 		return -EOPNOTSUPP;
 	if (!(mtd->flags & MTD_WRITEABLE))
 		return -EROFS;
+
+	ret = mtd_check_oob_ops(mtd, to, ops);
+	if (ret)
+		return ret;
+
 	ledtrig_mtd_activity();
 	return mtd->_write_oob(mtd, to, ops);
 }
@@ -1811,6 +1907,8 @@ static int __init init_mtd(void)
 	if (ret)
 		goto out_procfs;
 
+	dfs_dir_mtd = debugfs_create_dir("mtd", NULL);
+
 	return 0;
 
 out_procfs:
@@ -1826,6 +1924,7 @@ err_reg:
 
 static void __exit cleanup_mtd(void)
 {
+	debugfs_remove_recursive(dfs_dir_mtd);
 	cleanup_mtdchar();
 	if (proc_mtd)
 		remove_proc_entry("mtd", NULL);

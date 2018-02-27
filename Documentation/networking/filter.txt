@@ -45,7 +45,7 @@ in many more places. There's xt_bpf for netfilter, cls_bpf in the kernel
 qdisc layer, SECCOMP-BPF (SECure COMPuting [1]), and lots of other places
 such as team driver, PTP code, etc where BPF is being used.
 
- [1] Documentation/prctl/seccomp_filter.txt
+ [1] Documentation/userspace-api/seccomp_filter.rst
 
 Original BPF paper:
 
@@ -337,7 +337,7 @@ Examples for low-level BPF:
   jeq #14, good           /* __NR_rt_sigprocmask */
   jeq #13, good           /* __NR_rt_sigaction */
   jeq #35, good           /* __NR_nanosleep */
-  bad: ret #0             /* SECCOMP_RET_KILL */
+  bad: ret #0             /* SECCOMP_RET_KILL_THREAD */
   good: ret #0x7fff0000   /* SECCOMP_RET_ALLOW */
 
 The above example code can be placed into a file (here called "foo"), and
@@ -596,8 +596,8 @@ skb pointer). All constraints and restrictions from bpf_check_classic() apply
 before a conversion to the new layout is being done behind the scenes!
 
 Currently, the classic BPF format is being used for JITing on most 32-bit
-architectures, whereas x86-64, aarch64, s390x, powerpc64, sparc64 perform JIT
-compilation from eBPF instruction set.
+architectures, whereas x86-64, aarch64, s390x, powerpc64, sparc64, arm32 perform
+JIT compilation from eBPF instruction set.
 
 Some core changes of the new internal format:
 
@@ -1134,7 +1134,7 @@ The verifier's knowledge about the variable offset consists of:
 mask and value; no bit should ever be 1 in both.  For example, if a byte is read
 into a register from memory, the register's top 56 bits are known zero, while
 the low 8 are unknown - which is represented as the tnum (0x0; 0xff).  If we
-then OR this with 0x40, we get (0x40; 0xcf), then if we add 1 we get (0x0;
+then OR this with 0x40, we get (0x40; 0xbf), then if we add 1 we get (0x0;
 0x1ff), because of potential carries.
 Besides arithmetic, the register state can also be updated by conditional
 branches.  For instance, if a SCALAR_VALUE is compared > 8, in the 'true' branch

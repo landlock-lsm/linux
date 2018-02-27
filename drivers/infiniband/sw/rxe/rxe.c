@@ -38,7 +38,6 @@
 MODULE_AUTHOR("Bob Pearson, Frank Zago, John Groves, Kamal Heib");
 MODULE_DESCRIPTION("Soft RDMA transport");
 MODULE_LICENSE("Dual BSD/GPL");
-MODULE_VERSION("0.2");
 
 /* free resources for all ports on a device */
 static void rxe_cleanup_ports(struct rxe_dev *rxe)
@@ -77,12 +76,6 @@ void rxe_release(struct kref *kref)
 	rxe_cleanup(rxe);
 	ib_dealloc_device(&rxe->ib_dev);
 }
-
-void rxe_dev_put(struct rxe_dev *rxe)
-{
-	kref_put(&rxe->ref_cnt, rxe_release);
-}
-EXPORT_SYMBOL_GPL(rxe_dev_put);
 
 /* initialize rxe device parameters */
 static int rxe_init_device_param(struct rxe_dev *rxe)

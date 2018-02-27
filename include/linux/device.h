@@ -1,11 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * device.h - generic, centralized driver model
  *
  * Copyright (c) 2001-2003 Patrick Mochel <mochel@osdl.org>
  * Copyright (c) 2004-2009 Greg Kroah-Hartman <gregkh@suse.de>
  * Copyright (c) 2008-2009 Novell Inc.
- *
- * This file is released under the GPLv2
  *
  * See Documentation/driver-model/ for more information.
  */
@@ -21,7 +20,6 @@
 #include <linux/compiler.h>
 #include <linux/types.h>
 #include <linux/mutex.h>
-#include <linux/pinctrl/devinfo.h>
 #include <linux/pm.h>
 #include <linux/atomic.h>
 #include <linux/ratelimit.h>
@@ -42,6 +40,7 @@ struct fwnode_handle;
 struct iommu_ops;
 struct iommu_group;
 struct iommu_fwspec;
+struct dev_pin_info;
 
 struct bus_attribute {
 	struct attribute	attr;
@@ -97,6 +96,8 @@ extern void bus_remove_file(struct bus_type *, struct bus_attribute *);
  * @p:		The private data of the driver core, only the driver core can
  *		touch this.
  * @lock_key:	Lock class key for use by the lock validator
+ * @force_dma:	Assume devices on this bus should be set up by dma_configure()
+ * 		even if DMA capability is not explicitly described by firmware.
  *
  * A bus is a channel between the processor and one or more devices. For the
  * purposes of the device model, all devices are connected via a bus, even if
@@ -135,6 +136,8 @@ struct bus_type {
 
 	struct subsys_private *p;
 	struct lock_class_key lock_key;
+
+	bool force_dma;
 };
 
 extern int __must_check bus_register(struct bus_type *bus);
@@ -284,6 +287,7 @@ struct device_driver {
 	const struct attribute_group **groups;
 
 	const struct dev_pm_ops *pm;
+	int (*coredump) (struct device *dev);
 
 	struct driver_private *p;
 };
@@ -297,7 +301,6 @@ extern struct device_driver *driver_find(const char *name,
 extern int driver_probe_done(void);
 extern void wait_for_device_probe(void);
 
-
 /* sysfs interface for exporting driver attributes */
 
 struct driver_attribute {
@@ -307,8 +310,6 @@ struct driver_attribute {
 			 size_t count);
 };
 
-#define DRIVER_ATTR(_name, _mode, _show, _store) \
-	struct driver_attribute driver_attr_##_name = __ATTR(_name, _mode, _show, _store)
 #define DRIVER_ATTR_RW(_name) \
 	struct driver_attribute driver_attr_##_name = __ATTR_RW(_name)
 #define DRIVER_ATTR_RO(_name) \
@@ -372,10 +373,7 @@ int subsys_virtual_register(struct bus_type *subsys,
  * @devnode:	Callback to provide the devtmpfs.
  * @class_release: Called to release this class.
  * @dev_release: Called to release the device.
- * @suspend:	Used to put the device to sleep mode, usually to a low power
- *		state.
- * @resume:	Used to bring the device from the sleep mode.
- * @shutdown:	Called at shut-down time to quiesce the device.
+ * @shutdown_pre: Called at shut-down time before driver shutdown.
  * @ns_type:	Callbacks so sysfs can detemine namespaces.
  * @namespace:	Namespace of the device belongs to this class.
  * @pm:		The default device power management operations of this class.
@@ -402,9 +400,7 @@ struct class {
 	void (*class_release)(struct class *class);
 	void (*dev_release)(struct device *dev);
 
-	int (*suspend)(struct device *dev, pm_message_t state);
-	int (*resume)(struct device *dev);
-	int (*shutdown)(struct device *dev);
+	int (*shutdown_pre)(struct device *dev);
 
 	const struct kobj_ns_type_operations *ns_type;
 	const void *(*namespace)(struct device *dev);
@@ -578,6 +574,9 @@ ssize_t device_store_bool(struct device *dev, struct device_attribute *attr,
 
 #define DEVICE_ATTR(_name, _mode, _show, _store) \
 	struct device_attribute dev_attr_##_name = __ATTR(_name, _mode, _show, _store)
+#define DEVICE_ATTR_PREALLOC(_name, _mode, _show, _store) \
+	struct device_attribute dev_attr_##_name = \
+		__ATTR_PREALLOC(_name, _mode, _show, _store)
 #define DEVICE_ATTR_RW(_name) \
 	struct device_attribute dev_attr_##_name = __ATTR_RW(_name)
 #define DEVICE_ATTR_RO(_name) \
@@ -838,7 +837,7 @@ struct dev_links_info {
  * @driver_data: Private pointer for driver specific info.
  * @links:	Links to suppliers and consumers of this device.
  * @power:	For device power management.
- * 		See Documentation/power/admin-guide/devices.rst for details.
+ *		See Documentation/driver-api/pm/devices.rst for details.
  * @pm_domain:	Provide callbacks that are executed during system suspend,
  * 		hibernation, system resume and during runtime PM transitions
  * 		along with subsystem-level and driver-level callbacks.
@@ -847,6 +846,7 @@ struct dev_links_info {
  * @msi_list:	Hosts MSI descriptors
  * @msi_domain: The generic MSI domain this device is using.
  * @numa_node:	NUMA node this device is close to.
+ * @dma_ops:    DMA mapping operations for this device.
  * @dma_mask:	Dma mask (if dma'ble device).
  * @coherent_dma_mask: Like dma_mask, but for alloc_coherent mapping as not all
  * 		hardware supports 64-bit addresses for consistent allocations
@@ -1076,6 +1076,16 @@ static inline void dev_pm_syscore_device(struct device *dev, bool val)
 #endif
 }
 
+static inline void dev_pm_set_driver_flags(struct device *dev, u32 flags)
+{
+	dev->power.driver_flags = flags;
+}
+
+static inline bool dev_pm_test_driver_flags(struct device *dev, u32 flags)
+{
+	return !!(dev->power.driver_flags & flags);
+}
+
 static inline void device_lock(struct device *dev)
 {
 	mutex_lock(&dev->mutex);
@@ -1199,6 +1209,36 @@ struct device *device_create_with_groups(struct class *cls,
 			     const struct attribute_group **groups,
 			     const char *fmt, ...);
 extern void device_destroy(struct class *cls, dev_t devt);
+
+extern int __must_check device_add_groups(struct device *dev,
+					const struct attribute_group **groups);
+extern void device_remove_groups(struct device *dev,
+				 const struct attribute_group **groups);
+
+static inline int __must_check device_add_group(struct device *dev,
+					const struct attribute_group *grp)
+{
+	const struct attribute_group *groups[] = { grp, NULL };
+
+	return device_add_groups(dev, groups);
+}
+
+static inline void device_remove_group(struct device *dev,
+				       const struct attribute_group *grp)
+{
+	const struct attribute_group *groups[] = { grp, NULL };
+
+	return device_remove_groups(dev, groups);
+}
+
+extern int __must_check devm_device_add_groups(struct device *dev,
+					const struct attribute_group **groups);
+extern void devm_device_remove_groups(struct device *dev,
+				      const struct attribute_group **groups);
+extern int __must_check devm_device_add_group(struct device *dev,
+					const struct attribute_group *grp);
+extern void devm_device_remove_group(struct device *dev,
+				     const struct attribute_group *grp);
 
 /*
  * Platform "fixup" functions - allow the platform to have their say

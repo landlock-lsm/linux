@@ -1,7 +1,8 @@
 /*
  * Landlock LSM - hook helpers
  *
- * Copyright © 2016-2017 Mickaël Salaün <mic@digikod.net>
+ * Copyright © 2016-2018 Mickaël Salaün <mic@digikod.net>
+ * Copyright © 2018 ANSSI
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2, as
@@ -9,121 +10,112 @@
  */
 
 #include <asm/current.h>
-#include <linux/bpf.h> /* enum bpf_access_type, struct landlock_context */
+#include <linux/bpf.h> /* enum bpf_prog_aux */
 #include <linux/errno.h>
 #include <linux/filter.h> /* BPF_PROG_RUN() */
 #include <linux/rculist.h> /* list_add_tail_rcu */
-#include <linux/stddef.h> /* offsetof */
+#include <uapi/linux/landlock.h> /* struct landlock_context */
 
 #include "common.h" /* struct landlock_rule, get_index() */
-#include "hooks.h" /* CTX_ARG_NB */
+#include "hooks.h" /* landlock_hook_ctx */
 
+#include "hooks_fs.h"
 
-bool landlock_is_valid_access(int off, int size, enum bpf_access_type type,
-		enum bpf_reg_type *reg_type,
-		enum bpf_reg_type ctx_types[CTX_ARG_NB],
-		const union bpf_prog_subtype *prog_subtype)
+/* return a Landlock program context (e.g. hook_ctx->fs_walk.prog_ctx) */
+static void *update_ctx(enum landlock_hook_type hook_type,
+		struct landlock_hook_ctx *hook_ctx,
+		const struct landlock_chain *chain)
 {
-	int max_size;
-
-	if (type != BPF_READ)
-		return false;
-	if (off < 0 || off >= sizeof(struct landlock_context))
-		return false;
-	if (size <= 0 || size > sizeof(__u64))
-		return false;
-
-	/* set max size */
-	switch (off) {
-	case offsetof(struct landlock_context, status):
-	case offsetof(struct landlock_context, event):
-	case offsetof(struct landlock_context, arg1):
-	case offsetof(struct landlock_context, arg2):
-		max_size = sizeof(__u64);
-		break;
-	default:
-		return false;
+	switch (hook_type) {
+	case LANDLOCK_HOOK_FS_WALK:
+		return landlock_update_ctx_fs_walk(hook_ctx->fs_walk, chain);
+	case LANDLOCK_HOOK_FS_PICK:
+		return landlock_update_ctx_fs_pick(hook_ctx->fs_pick, chain);
+	case LANDLOCK_HOOK_FS_GET:
+		return landlock_update_ctx_fs_get(hook_ctx->fs_get, chain);
 	}
+	WARN_ON(1);
+	return NULL;
+}
 
-	/* set register type */
-	switch (off) {
-	case offsetof(struct landlock_context, arg1):
-		*reg_type = ctx_types[0];
-		break;
-	case offsetof(struct landlock_context, arg2):
-		*reg_type = ctx_types[1];
-		break;
-	default:
-		*reg_type = SCALAR_VALUE;
+/* save the program context (e.g. hook_ctx->fs_get.prog_ctx.inode_tag) */
+static int save_ctx(enum landlock_hook_type hook_type,
+		struct landlock_hook_ctx *hook_ctx,
+		struct landlock_chain *chain)
+{
+	switch (hook_type) {
+	case LANDLOCK_HOOK_FS_WALK:
+		return landlock_save_ctx_fs_walk(hook_ctx->fs_walk, chain);
+	case LANDLOCK_HOOK_FS_PICK:
+		return landlock_save_ctx_fs_pick(hook_ctx->fs_pick, chain);
+	case LANDLOCK_HOOK_FS_GET:
+		/* no need to save the cookie */
+		return 0;
 	}
-
-	/* check memory range access */
-	switch (*reg_type) {
-	case NOT_INIT:
-		return false;
-	case SCALAR_VALUE:
-		/* allow partial raw value */
-		if (size > max_size)
-			return false;
-		break;
-	default:
-		/* deny partial pointer */
-		if (size != max_size)
-			return false;
-	}
-
-	return true;
+	WARN_ON(1);
+	return 1;
 }
 
 /**
- * landlock_event_deny - run Landlock rules tied to an event
+ * landlock_access_deny - run Landlock programs tied to a hook
  *
- * @event_idx: event index in the rules array
- * @ctx: non-NULL eBPF context
- * @events: Landlock events pointer
+ * @hook_idx: hook index in the programs array
+ * @ctx: non-NULL valid eBPF context
+ * @prog_set: Landlock program set pointer
+ * @triggers: a bitmask to check if a program should be run
  *
- * Return true if at least one rule deny the event.
+ * Return true if at least one program return deny.
  */
-static bool landlock_event_deny(u32 event_idx, const struct landlock_context *ctx,
-		struct landlock_events *events)
+static bool landlock_access_deny(enum landlock_hook_type hook_type,
+		struct landlock_hook_ctx *hook_ctx,
+		struct landlock_prog_set *prog_set, u64 triggers)
 {
-	struct landlock_rule *rule;
+	struct landlock_prog_list *prog_list, *prev_list = NULL;
+	u32 hook_idx = get_index(hook_type);
 
-	if (!events)
+	if (!prog_set)
 		return false;
 
-	for (rule = events->rules[event_idx]; rule; rule = rule->prev) {
+	for (prog_list = prog_set->programs[hook_idx];
+			prog_list; prog_list = prog_list->prev) {
 		u32 ret;
+		void *prog_ctx;
 
-		if (WARN_ON(!rule->prog))
+		/* check if @prog expect at least one of this triggers */
+		if (triggers && !(triggers & prog_list->prog->aux->extra->
+					subtype.landlock_hook.triggers))
 			continue;
+		prog_ctx = update_ctx(hook_type, hook_ctx, prog_list->chain);
+		if (!prog_ctx || WARN_ON(IS_ERR(prog_ctx)))
+			return true;
 		rcu_read_lock();
-		ret = BPF_PROG_RUN(rule->prog, (void *)ctx);
+		ret = BPF_PROG_RUN(prog_list->prog, prog_ctx);
 		rcu_read_unlock();
+		if (save_ctx(hook_type, hook_ctx, prog_list->chain))
+			return true;
 		/* deny access if a program returns a value different than 0 */
 		if (ret)
 			return true;
+		if (prev_list && prog_list->prev && prog_list->prev->prog->
+				aux->extra->subtype.landlock_hook.type ==
+				prev_list->prog->aux->extra->
+				subtype.landlock_hook.type)
+			WARN_ON(prog_list->prev != prev_list);
+		prev_list = prog_list;
 	}
 	return false;
 }
 
-int landlock_decide(enum landlock_subtype_event event,
-		__u64 ctx_values[CTX_ARG_NB], const char *hook)
+int landlock_decide(enum landlock_hook_type hook_type,
+		struct landlock_hook_ctx *hook_ctx, u64 triggers)
 {
 	bool deny = false;
-	u32 event_idx = get_index(event);
-
-	struct landlock_context ctx = {
-		.status = 0,
-		.event = event,
-		.arg1 = ctx_values[0],
-		.arg2 = ctx_values[1],
-	};
 
 #ifdef CONFIG_SECCOMP_FILTER
-	deny = landlock_event_deny(event_idx, &ctx,
-			current->seccomp.landlock_events);
+	deny = landlock_access_deny(hook_type, hook_ctx,
+			current->seccomp.landlock_prog_set, triggers);
 #endif /* CONFIG_SECCOMP_FILTER */
 
-	return deny ? -EPERM : 0;
+	/* should we use -EPERM or -EACCES? */
+	return deny ? -EACCES : 0;
 }

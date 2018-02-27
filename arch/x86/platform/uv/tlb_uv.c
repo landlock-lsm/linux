@@ -26,7 +26,7 @@
 static struct bau_operations ops __ro_after_init;
 
 /* timeouts in nanoseconds (indexed by UVH_AGING_PRESCALE_SEL urgency7 30:28) */
-static int timeout_base_ns[] = {
+static const int timeout_base_ns[] = {
 		20,
 		160,
 		1280,
@@ -299,7 +299,7 @@ static void bau_process_message(struct msg_desc *mdp, struct bau_control *bcp,
 		local_flush_tlb();
 		stat->d_alltlb++;
 	} else {
-		__flush_tlb_one(msg->address);
+		__flush_tlb_single(msg->address);
 		stat->d_onetlb++;
 	}
 	stat->d_requestee++;
@@ -1216,7 +1216,7 @@ static struct bau_pq_entry *find_another_by_swack(struct bau_pq_entry *msg,
  * set a bit in the UVH_LB_BAU_INTD_SOFTWARE_ACKNOWLEDGE register.
  * Such a message must be ignored.
  */
-void process_uv2_message(struct msg_desc *mdp, struct bau_control *bcp)
+static void process_uv2_message(struct msg_desc *mdp, struct bau_control *bcp)
 {
 	unsigned long mmr_image;
 	unsigned char swack_vec;
@@ -1751,7 +1751,8 @@ static void activation_descriptor_init(int node, int pnode, int base_pnode)
 		uv1 = 1;
 
 	/* the 14-bit pnode */
-	write_mmr_descriptor_base(pnode, (n << UV_DESC_PSHIFT | m));
+	write_mmr_descriptor_base(pnode,
+		(n << UVH_LB_BAU_SB_DESCRIPTOR_BASE_NODE_ID_SHFT | m));
 	/*
 	 * Initializing all 8 (ITEMS_PER_DESC) descriptors for each
 	 * cpu even though we only use the first one; one descriptor can

@@ -170,8 +170,7 @@ static int gfs2_dir_write_data(struct gfs2_inode *ip, const char *buf,
 	if (!size)
 		return 0;
 
-	if (gfs2_is_stuffed(ip) &&
-	    offset + size <= sdp->sd_sb.sb_bsize - sizeof(struct gfs2_dinode))
+	if (gfs2_is_stuffed(ip) && offset + size <= gfs2_max_stuffed_size(ip))
 		return gfs2_dir_write_stuffed(ip, buf, (unsigned int)offset,
 					      size);
 
@@ -1513,7 +1512,9 @@ static void gfs2_dir_readahead(struct inode *inode, unsigned hsize, u32 index,
 				continue;
 			}
 			bh->b_end_io = end_buffer_read_sync;
-			submit_bh(REQ_OP_READ, REQ_RAHEAD | REQ_META, bh);
+			submit_bh(REQ_OP_READ,
+				  REQ_RAHEAD | REQ_META | REQ_PRIO,
+				  bh);
 			continue;
 		}
 		brelse(bh);

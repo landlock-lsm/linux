@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2017, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -128,6 +128,7 @@
 /* Host-dependent types and defines for in-kernel ACPICA */
 
 #define ACPI_MACHINE_WIDTH          BITS_PER_LONG
+#define ACPI_USE_NATIVE_MATH64
 #define ACPI_EXPORT_SYMBOL(symbol)  EXPORT_SYMBOL(symbol);
 #define strtoul                     simple_strtoul
 
@@ -178,6 +179,9 @@
 #define ACPI_MSG_BIOS_ERROR     KERN_ERR "ACPI BIOS Error (bug): "
 #define ACPI_MSG_BIOS_WARNING   KERN_WARNING "ACPI BIOS Warning (bug): "
 
+/*
+ * Linux wants to use designated initializers for function pointer structs.
+ */
 #define ACPI_STRUCT_INIT(field, value)	.field = value
 
 #else				/* !__KERNEL__ */
@@ -202,7 +206,7 @@
 #define ACPI_FLUSH_CPU_CACHE()
 #define ACPI_CAST_PTHREAD_T(pthread) ((acpi_thread_id) (pthread))
 
-#if defined(__ia64__)    || defined(__x86_64__) ||\
+#if defined(__ia64__)    || (defined(__x86_64__) && !defined(__ILP32__)) ||\
 	defined(__aarch64__) || defined(__PPC64__) ||\
 	defined(__s390x__)
 #define ACPI_MACHINE_WIDTH          64
@@ -213,6 +217,7 @@
 #define COMPILER_DEPENDENT_INT64    long long
 #define COMPILER_DEPENDENT_UINT64   unsigned long long
 #define ACPI_USE_NATIVE_DIVIDE
+#define ACPI_USE_NATIVE_MATH64
 #endif
 
 #ifndef __cdecl

@@ -33,13 +33,13 @@
 
 static int frame_sizes[] = {
 	0,	// USBIF_CMDONLY
-	0, 	// USBIF_BULK
-	128, 	// USBIF_ISO_1
-	384, 	// USBIF_ISO_2
-	640, 	// USBIF_ISO_3
-	768, 	// USBIF_ISO_4
-	896, 	// USBIF_ISO_5
-	1023, 	// USBIF_ISO_6
+	0,	// USBIF_BULK
+	128,	// USBIF_ISO_1
+	384,	// USBIF_ISO_2
+	640,	// USBIF_ISO_3
+	768,	// USBIF_ISO_4
+	896,	// USBIF_ISO_5
+	1023,	// USBIF_ISO_6
 };
 
 #define FRAMES_PER_DESC    10
@@ -60,7 +60,7 @@ static int submit_urbs(struct camera_data *cam);
 static int set_alternate(struct camera_data *cam, unsigned int alt);
 static int configure_transfer_mode(struct camera_data *cam, unsigned int alt);
 
-static struct usb_device_id cpia2_id_table[] = {
+static const struct usb_device_id cpia2_id_table[] = {
 	{USB_DEVICE(0x0553, 0x0100)},
 	{USB_DEVICE(0x0553, 0x0140)},
 	{USB_DEVICE(0x0553, 0x0151)},  /* STV0676 */

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _USB_VIDEO_H_
 #define _USB_VIDEO_H_
 
@@ -153,6 +154,11 @@
 	{ 'I',  'N',  'V',  'I', 0xdb, 0x57, 0x49, 0x5e, \
 	 0x8e, 0x3f, 0xf4, 0x79, 0x53, 0x2b, 0x94, 0x6f}
 
+#define UVC_GUID_FORMAT_D3DFMT_L8 \
+	{0x32, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, \
+	 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}
+
+
 /* ------------------------------------------------------------------------
  * Driver specific constants.
  */
@@ -166,7 +172,7 @@
 /* Maximum status buffer size in bytes of interrupt URB. */
 #define UVC_MAX_STATUS_SIZE	16
 
-#define UVC_CTRL_CONTROL_TIMEOUT	300
+#define UVC_CTRL_CONTROL_TIMEOUT	500
 #define UVC_CTRL_STREAMING_TIMEOUT	5000
 
 /* Maximum allowed number of control mappings per device */
@@ -451,8 +457,8 @@ struct uvc_stats_frame {
 };
 
 struct uvc_stats_stream {
-	struct timespec start_ts;	/* Stream start timestamp */
-	struct timespec stop_ts;	/* Stream stop timestamp */
+	ktime_t start_ts;		/* Stream start timestamp */
+	ktime_t stop_ts;		/* Stream stop timestamp */
 
 	unsigned int nb_frames;		/* Number of frames */
 
@@ -472,6 +478,8 @@ struct uvc_stats_stream {
 	unsigned int min_sof;		/* Minimum STC.SOF value */
 	unsigned int max_sof;		/* Maximum STC.SOF value */
 };
+
+#define UVC_METATADA_BUF_SIZE 1024
 
 struct uvc_streaming {
 	struct list_head list;
@@ -504,7 +512,13 @@ struct uvc_streaming {
 	unsigned int frozen : 1;
 	struct uvc_video_queue queue;
 	void (*decode) (struct urb *urb, struct uvc_streaming *video,
-			struct uvc_buffer *buf);
+			struct uvc_buffer *buf, struct uvc_buffer *meta_buf);
+
+	struct {
+		struct video_device vdev;
+		struct uvc_video_queue queue;
+		__u32 format;
+	} meta;
 
 	/* Context data used by the bulk completion handler. */
 	struct {
@@ -535,8 +549,8 @@ struct uvc_streaming {
 		struct uvc_clock_sample {
 			u32 dev_stc;
 			u16 dev_sof;
-			struct timespec host_ts;
 			u16 host_sof;
+			ktime_t host_time;
 		} *samples;
 
 		unsigned int head;
@@ -545,6 +559,8 @@ struct uvc_streaming {
 
 		u16 last_sof;
 		u16 sof_offset;
+
+		u8 last_scr[6];
 
 		spinlock_t lock;
 	} clock;
@@ -555,6 +571,7 @@ struct uvc_device {
 	struct usb_interface *intf;
 	unsigned long warnings;
 	__u32 quirks;
+	__u32 meta_format;
 	int intfnum;
 	char name[32];
 
@@ -575,7 +592,7 @@ struct uvc_device {
 
 	/* Video Streaming interfaces */
 	struct list_head streams;
-	atomic_t nstreams;
+	struct kref ref;
 
 	/* Status Interrupt Endpoint */
 	struct usb_host_endpoint *int_ep;
@@ -677,7 +694,7 @@ extern struct uvc_buffer *uvc_queue_next_buffer(struct uvc_video_queue *queue,
 		struct uvc_buffer *buf);
 extern int uvc_queue_mmap(struct uvc_video_queue *queue,
 		struct vm_area_struct *vma);
-extern unsigned int uvc_queue_poll(struct uvc_video_queue *queue,
+extern __poll_t uvc_queue_poll(struct uvc_video_queue *queue,
 		struct file *file, poll_table *wait);
 #ifndef CONFIG_MMU
 extern unsigned long uvc_queue_get_unmapped_area(struct uvc_video_queue *queue,
@@ -709,6 +726,15 @@ extern int uvc_query_ctrl(struct uvc_device *dev, __u8 query, __u8 unit,
 void uvc_video_clock_update(struct uvc_streaming *stream,
 			    struct vb2_v4l2_buffer *vbuf,
 			    struct uvc_buffer *buf);
+int uvc_meta_register(struct uvc_streaming *stream);
+
+int uvc_register_video_device(struct uvc_device *dev,
+			      struct uvc_streaming *stream,
+			      struct video_device *vdev,
+			      struct uvc_video_queue *queue,
+			      enum v4l2_buf_type type,
+			      const struct v4l2_file_operations *fops,
+			      const struct v4l2_ioctl_ops *ioctl_ops);
 
 /* Status */
 extern int uvc_status_init(struct uvc_device *dev);
@@ -763,7 +789,7 @@ extern struct usb_host_endpoint *uvc_find_endpoint(
 
 /* Quirks support */
 void uvc_video_decode_isight(struct urb *urb, struct uvc_streaming *stream,
-		struct uvc_buffer *buf);
+		struct uvc_buffer *buf, struct uvc_buffer *meta_buf);
 
 /* debugfs and statistics */
 void uvc_debugfs_init(void);

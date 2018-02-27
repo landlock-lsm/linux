@@ -1,10 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 #ifndef _LINUX_NF_TABLES_H
 #define _LINUX_NF_TABLES_H
 
-#define NFT_TABLE_MAXNAMELEN	32
-#define NFT_CHAIN_MAXNAMELEN	32
-#define NFT_SET_MAXNAMELEN	32
-#define NFT_OBJ_MAXNAMELEN	32
+#define NFT_NAME_MAXLEN		256
+#define NFT_TABLE_MAXNAMELEN	NFT_NAME_MAXLEN
+#define NFT_CHAIN_MAXNAMELEN	NFT_NAME_MAXLEN
+#define NFT_SET_MAXNAMELEN	NFT_NAME_MAXLEN
+#define NFT_OBJ_MAXNAMELEN	NFT_NAME_MAXLEN
 #define NFT_USERDATA_MAXLEN	256
 
 /**
@@ -90,6 +92,9 @@ enum nft_verdicts {
  * @NFT_MSG_GETOBJ: get a stateful object (enum nft_obj_attributes)
  * @NFT_MSG_DELOBJ: delete a stateful object (enum nft_obj_attributes)
  * @NFT_MSG_GETOBJ_RESET: get and reset a stateful object (enum nft_obj_attributes)
+ * @NFT_MSG_NEWFLOWTABLE: add new flow table (enum nft_flowtable_attributes)
+ * @NFT_MSG_GETFLOWTABLE: get flow table (enum nft_flowtable_attributes)
+ * @NFT_MSG_DELFLOWTABLE: delete flow table (enum nft_flowtable_attributes)
  */
 enum nf_tables_msg_types {
 	NFT_MSG_NEWTABLE,
@@ -114,6 +119,9 @@ enum nf_tables_msg_types {
 	NFT_MSG_GETOBJ,
 	NFT_MSG_DELOBJ,
 	NFT_MSG_GETOBJ_RESET,
+	NFT_MSG_NEWFLOWTABLE,
+	NFT_MSG_GETFLOWTABLE,
+	NFT_MSG_DELFLOWTABLE,
 	NFT_MSG_MAX,
 };
 
@@ -166,6 +174,8 @@ enum nft_table_attributes {
 	NFTA_TABLE_NAME,
 	NFTA_TABLE_FLAGS,
 	NFTA_TABLE_USE,
+	NFTA_TABLE_HANDLE,
+	NFTA_TABLE_PAD,
 	__NFTA_TABLE_MAX
 };
 #define NFTA_TABLE_MAX		(__NFTA_TABLE_MAX - 1)
@@ -309,6 +319,7 @@ enum nft_set_desc_attributes {
  * @NFTA_SET_GC_INTERVAL: garbage collection interval (NLA_U32)
  * @NFTA_SET_USERDATA: user data (NLA_BINARY)
  * @NFTA_SET_OBJ_TYPE: stateful object type (NLA_U32: NFT_OBJECT_*)
+ * @NFTA_SET_HANDLE: set handle (NLA_U64)
  */
 enum nft_set_attributes {
 	NFTA_SET_UNSPEC,
@@ -327,6 +338,7 @@ enum nft_set_attributes {
 	NFTA_SET_USERDATA,
 	NFTA_SET_PAD,
 	NFTA_SET_OBJ_TYPE,
+	NFTA_SET_HANDLE,
 	__NFTA_SET_MAX
 };
 #define NFTA_SET_MAX		(__NFTA_SET_MAX - 1)
@@ -731,7 +743,8 @@ enum nft_exthdr_op {
  * @NFTA_EXTHDR_OFFSET: extension header offset (NLA_U32)
  * @NFTA_EXTHDR_LEN: extension header length (NLA_U32)
  * @NFTA_EXTHDR_FLAGS: extension header flags (NLA_U32)
- * @NFTA_EXTHDR_OP: option match type (NLA_U8)
+ * @NFTA_EXTHDR_OP: option match type (NLA_U32)
+ * @NFTA_EXTHDR_SREG: option match type (NLA_U32)
  */
 enum nft_exthdr_attributes {
 	NFTA_EXTHDR_UNSPEC,
@@ -741,6 +754,7 @@ enum nft_exthdr_attributes {
 	NFTA_EXTHDR_LEN,
 	NFTA_EXTHDR_FLAGS,
 	NFTA_EXTHDR_OP,
+	NFTA_EXTHDR_SREG,
 	__NFTA_EXTHDR_MAX
 };
 #define NFTA_EXTHDR_MAX		(__NFTA_EXTHDR_MAX - 1)
@@ -773,6 +787,7 @@ enum nft_exthdr_attributes {
  * @NFT_META_OIFGROUP: packet output interface group
  * @NFT_META_CGROUP: socket control group (skb->sk->sk_classid)
  * @NFT_META_PRANDOM: a 32bit pseudo-random number
+ * @NFT_META_SECPATH: boolean, secpath_exists (!!skb->sp)
  */
 enum nft_meta_keys {
 	NFT_META_LEN,
@@ -800,6 +815,7 @@ enum nft_meta_keys {
 	NFT_META_OIFGROUP,
 	NFT_META_CGROUP,
 	NFT_META_PRANDOM,
+	NFT_META_SECPATH,
 };
 
 /**
@@ -808,11 +824,13 @@ enum nft_meta_keys {
  * @NFT_RT_CLASSID: realm value of packet's route (skb->dst->tclassid)
  * @NFT_RT_NEXTHOP4: routing nexthop for IPv4
  * @NFT_RT_NEXTHOP6: routing nexthop for IPv6
+ * @NFT_RT_TCPMSS: fetch current path tcp mss
  */
 enum nft_rt_keys {
 	NFT_RT_CLASSID,
 	NFT_RT_NEXTHOP4,
 	NFT_RT_NEXTHOP6,
+	NFT_RT_TCPMSS,
 };
 
 /**
@@ -942,6 +960,17 @@ enum nft_ct_attributes {
 	__NFTA_CT_MAX
 };
 #define NFTA_CT_MAX		(__NFTA_CT_MAX - 1)
+
+/**
+ * enum nft_flow_attributes - ct offload expression attributes
+ * @NFTA_FLOW_TABLE_NAME: flow table name (NLA_STRING)
+ */
+enum nft_offload_attributes {
+	NFTA_FLOW_UNSPEC,
+	NFTA_FLOW_TABLE_NAME,
+	__NFTA_FLOW_MAX,
+};
+#define NFTA_FLOW_MAX		(__NFTA_FLOW_MAX - 1)
 
 enum nft_limit_type {
 	NFT_LIMIT_PKTS,
@@ -1221,6 +1250,8 @@ enum nft_objref_attributes {
 enum nft_gen_attributes {
 	NFTA_GEN_UNSPEC,
 	NFTA_GEN_ID,
+	NFTA_GEN_PROC_PID,
+	NFTA_GEN_PROC_NAME,
 	__NFTA_GEN_MAX
 };
 #define NFTA_GEN_MAX		(__NFTA_GEN_MAX - 1)
@@ -1275,7 +1306,8 @@ enum nft_ct_helper_attributes {
 #define NFT_OBJECT_COUNTER	1
 #define NFT_OBJECT_QUOTA	2
 #define NFT_OBJECT_CT_HELPER	3
-#define __NFT_OBJECT_MAX	4
+#define NFT_OBJECT_LIMIT	4
+#define __NFT_OBJECT_MAX	5
 #define NFT_OBJECT_MAX		(__NFT_OBJECT_MAX - 1)
 
 /**
@@ -1286,6 +1318,7 @@ enum nft_ct_helper_attributes {
  * @NFTA_OBJ_TYPE: stateful object type (NLA_U32)
  * @NFTA_OBJ_DATA: stateful object data (NLA_NESTED)
  * @NFTA_OBJ_USE: number of references to this expression (NLA_U32)
+ * @NFTA_OBJ_HANDLE: object handle (NLA_U64)
  */
 enum nft_object_attributes {
 	NFTA_OBJ_UNSPEC,
@@ -1294,9 +1327,61 @@ enum nft_object_attributes {
 	NFTA_OBJ_TYPE,
 	NFTA_OBJ_DATA,
 	NFTA_OBJ_USE,
+	NFTA_OBJ_HANDLE,
+	NFTA_OBJ_PAD,
 	__NFTA_OBJ_MAX
 };
 #define NFTA_OBJ_MAX		(__NFTA_OBJ_MAX - 1)
+
+/**
+ * enum nft_flowtable_attributes - nf_tables flow table netlink attributes
+ *
+ * @NFTA_FLOWTABLE_TABLE: name of the table containing the expression (NLA_STRING)
+ * @NFTA_FLOWTABLE_NAME: name of this flow table (NLA_STRING)
+ * @NFTA_FLOWTABLE_HOOK: netfilter hook configuration(NLA_U32)
+ * @NFTA_FLOWTABLE_USE: number of references to this flow table (NLA_U32)
+ * @NFTA_FLOWTABLE_HANDLE: object handle (NLA_U64)
+ */
+enum nft_flowtable_attributes {
+	NFTA_FLOWTABLE_UNSPEC,
+	NFTA_FLOWTABLE_TABLE,
+	NFTA_FLOWTABLE_NAME,
+	NFTA_FLOWTABLE_HOOK,
+	NFTA_FLOWTABLE_USE,
+	NFTA_FLOWTABLE_HANDLE,
+	NFTA_FLOWTABLE_PAD,
+	__NFTA_FLOWTABLE_MAX
+};
+#define NFTA_FLOWTABLE_MAX	(__NFTA_FLOWTABLE_MAX - 1)
+
+/**
+ * enum nft_flowtable_hook_attributes - nf_tables flow table hook netlink attributes
+ *
+ * @NFTA_FLOWTABLE_HOOK_NUM: netfilter hook number (NLA_U32)
+ * @NFTA_FLOWTABLE_HOOK_PRIORITY: netfilter hook priority (NLA_U32)
+ * @NFTA_FLOWTABLE_HOOK_DEVS: input devices this flow table is bound to (NLA_NESTED)
+ */
+enum nft_flowtable_hook_attributes {
+	NFTA_FLOWTABLE_HOOK_UNSPEC,
+	NFTA_FLOWTABLE_HOOK_NUM,
+	NFTA_FLOWTABLE_HOOK_PRIORITY,
+	NFTA_FLOWTABLE_HOOK_DEVS,
+	__NFTA_FLOWTABLE_HOOK_MAX
+};
+#define NFTA_FLOWTABLE_HOOK_MAX	(__NFTA_FLOWTABLE_HOOK_MAX - 1)
+
+/**
+ * enum nft_device_attributes - nf_tables device netlink attributes
+ *
+ * @NFTA_DEVICE_NAME: name of this device (NLA_STRING)
+ */
+enum nft_devices_attributes {
+	NFTA_DEVICE_UNSPEC,
+	NFTA_DEVICE_NAME,
+	__NFTA_DEVICE_MAX
+};
+#define NFTA_DEVICE_MAX		(__NFTA_DEVICE_MAX - 1)
+
 
 /**
  * enum nft_trace_attributes - nf_tables trace netlink attributes

@@ -1,14 +1,9 @@
-/* linux/arch/arm/mach-s3c2410/mach-jive.c
- *
- * Copyright 2007 Simtec Electronics
- *	Ben Dooks <ben@simtec.co.uk>
- *
- * http://armlinux.simtec.co.uk/
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
-*/
+// SPDX-License-Identifier: GPL-2.0
+//
+// Copyright 2007 Simtec Electronics
+//	Ben Dooks <ben@simtec.co.uk>
+//
+// http://armlinux.simtec.co.uk/
 
 #include <linux/kernel.h>
 #include <linux/types.h>
@@ -43,7 +38,7 @@
 #include <asm/mach-types.h>
 
 #include <linux/mtd/mtd.h>
-#include <linux/mtd/nand.h>
+#include <linux/mtd/rawnand.h>
 #include <linux/mtd/nand_ecc.h>
 #include <linux/mtd/partitions.h>
 

@@ -29,8 +29,6 @@
 #include <net/udp.h>
 
 
-#define NAT_TAB_MASK	15
-
 static unsigned int nat_net_id;
 static struct tc_action_ops act_nat_ops;
 
@@ -58,16 +56,16 @@ static int tcf_nat_init(struct net *net, struct nlattr *nla, struct nlattr *est,
 		return -EINVAL;
 	parm = nla_data(tb[TCA_NAT_PARMS]);
 
-	if (!tcf_hash_check(tn, parm->index, a, bind)) {
-		ret = tcf_hash_create(tn, parm->index, est, a,
-				      &act_nat_ops, bind, false);
+	if (!tcf_idr_check(tn, parm->index, a, bind)) {
+		ret = tcf_idr_create(tn, parm->index, est, a,
+				     &act_nat_ops, bind, false);
 		if (ret)
 			return ret;
 		ret = ACT_P_CREATED;
 	} else {
 		if (bind)
 			return 0;
-		tcf_hash_release(*a, bind);
+		tcf_idr_release(*a, bind);
 		if (!ovr)
 			return -EEXIST;
 	}
@@ -83,7 +81,7 @@ static int tcf_nat_init(struct net *net, struct nlattr *nla, struct nlattr *est,
 	spin_unlock_bh(&p->tcf_lock);
 
 	if (ret == ACT_P_CREATED)
-		tcf_hash_insert(tn, *a);
+		tcf_idr_insert(tn, *a);
 
 	return ret;
 }
@@ -290,7 +288,7 @@ static int tcf_nat_search(struct net *net, struct tc_action **a, u32 index)
 {
 	struct tc_action_net *tn = net_generic(net, nat_net_id);
 
-	return tcf_hash_search(tn, a, index);
+	return tcf_idr_search(tn, a, index);
 }
 
 static struct tc_action_ops act_nat_ops = {
@@ -309,19 +307,17 @@ static __net_init int nat_init_net(struct net *net)
 {
 	struct tc_action_net *tn = net_generic(net, nat_net_id);
 
-	return tc_action_net_init(tn, &act_nat_ops, NAT_TAB_MASK);
+	return tc_action_net_init(tn, &act_nat_ops);
 }
 
-static void __net_exit nat_exit_net(struct net *net)
+static void __net_exit nat_exit_net(struct list_head *net_list)
 {
-	struct tc_action_net *tn = net_generic(net, nat_net_id);
-
-	tc_action_net_exit(tn);
+	tc_action_net_exit(net_list, nat_net_id);
 }
 
 static struct pernet_operations nat_net_ops = {
 	.init = nat_init_net,
-	.exit = nat_exit_net,
+	.exit_batch = nat_exit_net,
 	.id   = &nat_net_id,
 	.size = sizeof(struct tc_action_net),
 };

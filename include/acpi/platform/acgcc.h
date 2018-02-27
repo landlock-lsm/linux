@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2017, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -83,5 +83,9 @@ typedef __builtin_va_list va_list;
 /* GCC supports __VA_ARGS__ in macros */
 
 #define COMPILER_VA_MACRO               1
+
+/* GCC supports native multiply/shift on 32-bit platforms */
+
+#define ACPI_USE_NATIVE_MATH64
 
 #endif				/* __ACGCC_H__ */

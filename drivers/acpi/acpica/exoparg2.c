@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2017, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -414,6 +414,9 @@ acpi_status acpi_ex_opcode_2A_1T_1R(struct acpi_walk_state *walk_state)
 
 		default:
 
+			ACPI_ERROR((AE_INFO,
+				    "Invalid object type: %X",
+				    (operand[0])->common.type));
 			status = AE_AML_INTERNAL;
 			goto cleanup;
 		}

@@ -7,6 +7,7 @@
  *
  * Copyright(c) 2012 - 2014 Intel Corporation. All rights reserved.
  * Copyright(c) 2013 - 2015 Intel Mobile Communications GmbH
+ * Copyright(c) 2017 Intel Deutschland GmbH
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of version 2 of the GNU General Public License as
@@ -33,6 +34,7 @@
  *
  * Copyright(c) 2012 - 2014 Intel Corporation. All rights reserved.
  * Copyright(c) 2013 - 2015 Intel Mobile Communications GmbH
+ * Copyright(c) 2017 Intel Deutschland GmbH
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -99,7 +101,6 @@ void iwl_mvm_te_clear_data(struct iwl_mvm *mvm,
 void iwl_mvm_roc_done_wk(struct work_struct *wk)
 {
 	struct iwl_mvm *mvm = container_of(wk, struct iwl_mvm, roc_done_wk);
-	u32 queues = 0;
 
 	/*
 	 * Clear the ROC_RUNNING /ROC_AUX_RUNNING status bit.
@@ -108,14 +109,10 @@ void iwl_mvm_roc_done_wk(struct work_struct *wk)
 	 * in the case that the time event actually completed in the firmware
 	 * (which is handled in iwl_mvm_te_handle_notif).
 	 */
-	if (test_and_clear_bit(IWL_MVM_STATUS_ROC_RUNNING, &mvm->status)) {
-		queues |= BIT(IWL_MVM_OFFCHANNEL_QUEUE);
+	if (test_and_clear_bit(IWL_MVM_STATUS_ROC_RUNNING, &mvm->status))
 		iwl_mvm_unref(mvm, IWL_MVM_REF_ROC);
-	}
-	if (test_and_clear_bit(IWL_MVM_STATUS_ROC_AUX_RUNNING, &mvm->status)) {
-		queues |= BIT(mvm->aux_queue);
+	if (test_and_clear_bit(IWL_MVM_STATUS_ROC_AUX_RUNNING, &mvm->status))
 		iwl_mvm_unref(mvm, IWL_MVM_REF_ROC_AUX);
-	}
 
 	synchronize_net();
 
@@ -130,6 +127,24 @@ void iwl_mvm_roc_done_wk(struct work_struct *wk)
 	 * executed, and a new time event means a new command.
 	 */
 	iwl_mvm_flush_sta(mvm, &mvm->aux_sta, true, CMD_ASYNC);
+
+	/* Do the same for the P2P device queue (STA) */
+	if (test_and_clear_bit(IWL_MVM_STATUS_NEED_FLUSH_P2P, &mvm->status)) {
+		struct iwl_mvm_vif *mvmvif;
+
+		/*
+		 * NB: access to this pointer would be racy, but the flush bit
+		 * can only be set when we had a P2P-Device VIF, and we have a
+		 * flush of this work in iwl_mvm_prepare_mac_removal() so it's
+		 * not really racy.
+		 */
+
+		if (!WARN_ON(!mvm->p2p_device_vif)) {
+			mvmvif = iwl_mvm_vif_from_mac80211(mvm->p2p_device_vif);
+			iwl_mvm_flush_sta(mvm, &mvmvif->bcast_sta, true,
+					  CMD_ASYNC);
+		}
+	}
 }
 
 static void iwl_mvm_roc_finished(struct iwl_mvm *mvm)
@@ -726,8 +741,21 @@ void iwl_mvm_stop_session_protection(struct iwl_mvm *mvm,
 {
 	struct iwl_mvm_vif *mvmvif = iwl_mvm_vif_from_mac80211(vif);
 	struct iwl_mvm_time_event_data *te_data = &mvmvif->time_event_data;
+	u32 id;
 
 	lockdep_assert_held(&mvm->mutex);
+
+	spin_lock_bh(&mvm->time_event_lock);
+	id = te_data->id;
+	spin_unlock_bh(&mvm->time_event_lock);
+
+	if (id != TE_BSS_STA_AGGRESSIVE_ASSOC) {
+		IWL_DEBUG_TE(mvm,
+			     "don't remove TE with id=%u (not session protection)\n",
+			     id);
+		return;
+	}
+
 	iwl_mvm_remove_time_event(mvm, mvmvif, te_data);
 }
 
@@ -743,12 +771,6 @@ int iwl_mvm_start_p2p_roc(struct iwl_mvm *mvm, struct ieee80211_vif *vif,
 		IWL_WARN(mvm, "P2P_DEVICE remain on channel already running\n");
 		return -EBUSY;
 	}
-
-	/*
-	 * Flush the done work, just in case it's still pending, so that
-	 * the work it does can complete and we can accept new frames.
-	 */
-	flush_work(&mvm->roc_done_wk);
 
 	time_cmd.action = cpu_to_le32(FW_CTXT_ACTION_ADD);
 	time_cmd.id_and_color =
@@ -840,10 +862,12 @@ void iwl_mvm_stop_roc(struct iwl_mvm *mvm)
 
 	mvmvif = iwl_mvm_vif_from_mac80211(te_data->vif);
 
-	if (te_data->vif->type == NL80211_IFTYPE_P2P_DEVICE)
+	if (te_data->vif->type == NL80211_IFTYPE_P2P_DEVICE) {
 		iwl_mvm_remove_time_event(mvm, mvmvif, te_data);
-	else
+		set_bit(IWL_MVM_STATUS_NEED_FLUSH_P2P, &mvm->status);
+	} else {
 		iwl_mvm_remove_aux_roc_te(mvm, mvmvif, te_data);
+	}
 
 	iwl_mvm_roc_finished(mvm);
 }
@@ -859,8 +883,23 @@ int iwl_mvm_schedule_csa_period(struct iwl_mvm *mvm,
 	lockdep_assert_held(&mvm->mutex);
 
 	if (te_data->running) {
-		IWL_DEBUG_TE(mvm, "CS period is already scheduled\n");
-		return -EBUSY;
+		u32 id;
+
+		spin_lock_bh(&mvm->time_event_lock);
+		id = te_data->id;
+		spin_unlock_bh(&mvm->time_event_lock);
+
+		if (id == TE_CHANNEL_SWITCH_PERIOD) {
+			IWL_DEBUG_TE(mvm, "CS period is already scheduled\n");
+			return -EBUSY;
+		}
+
+		/*
+		 * Remove the session protection time event to allow the
+		 * channel switch. If we got here, we just heard a beacon so
+		 * the session protection is not needed anymore anyway.
+		 */
+		iwl_mvm_remove_time_event(mvm, mvmvif, te_data);
 	}
 
 	time_cmd.action = cpu_to_le32(FW_CTXT_ACTION_ADD);

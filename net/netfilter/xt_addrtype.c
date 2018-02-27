@@ -36,7 +36,7 @@ MODULE_ALIAS("ip6t_addrtype");
 static u32 match_lookup_rt6(struct net *net, const struct net_device *dev,
 			    const struct in6_addr *addr, u16 mask)
 {
-	const struct nf_afinfo *afinfo;
+	const struct nf_ipv6_ops *v6ops;
 	struct flowi6 flow;
 	struct rt6_info *rt;
 	u32 ret = 0;
@@ -47,23 +47,17 @@ static u32 match_lookup_rt6(struct net *net, const struct net_device *dev,
 	if (dev)
 		flow.flowi6_oif = dev->ifindex;
 
-	rcu_read_lock();
-
-	afinfo = nf_get_afinfo(NFPROTO_IPV6);
-	if (afinfo != NULL) {
-		const struct nf_ipv6_ops *v6ops;
-
+	v6ops = nf_get_ipv6_ops();
+	if (v6ops) {
 		if (dev && (mask & XT_ADDRTYPE_LOCAL)) {
-			v6ops = nf_get_ipv6_ops();
-			if (v6ops && v6ops->chk_addr(net, addr, dev, true))
+			if (v6ops->chk_addr(net, addr, dev, true))
 				ret = XT_ADDRTYPE_LOCAL;
 		}
-		route_err = afinfo->route(net, (struct dst_entry **)&rt,
-					  flowi6_to_flowi(&flow), false);
+		route_err = v6ops->route(net, (struct dst_entry **)&rt,
+					 flowi6_to_flowi(&flow), false);
 	} else {
 		route_err = 1;
 	}
-	rcu_read_unlock();
 
 	if (route_err)
 		return XT_ADDRTYPE_UNREACHABLE;

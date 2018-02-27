@@ -2311,7 +2311,7 @@ netxen_md_rdqueue(struct netxen_adapter *adapter,
 				 loop_cnt++) {
 		NX_WR_DUMP_REG(select_addr, adapter->ahw.pci_base0, queue_id);
 		read_addr = queueEntry->read_addr;
-		for (k = 0; k < read_cnt; k--) {
+		for (k = 0; k < read_cnt; k++) {
 			NX_RD_DUMP_REG(read_addr, adapter->ahw.pci_base0,
 							&read_value);
 			*data_buff++ = read_value;
@@ -2502,12 +2502,10 @@ netxen_collect_minidump(struct netxen_adapter *adapter)
 {
 	int ret = 0;
 	struct netxen_minidump_template_hdr *hdr;
-	struct timespec val;
 	hdr = (struct netxen_minidump_template_hdr *)
 				adapter->mdump.md_template;
 	hdr->driver_capture_mask = adapter->mdump.md_capture_mask;
-	jiffies_to_timespec(jiffies, &val);
-	hdr->driver_timestamp = (u32) val.tv_sec;
+	hdr->driver_timestamp = ktime_get_seconds();
 	hdr->driver_info_word2 = adapter->fw_version;
 	hdr->driver_info_word3 = NXRD32(adapter, CRB_DRIVER_VERSION);
 	ret = netxen_parse_md_template(adapter);

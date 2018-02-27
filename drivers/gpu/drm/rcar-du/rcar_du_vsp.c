@@ -19,6 +19,7 @@
 #include <drm/drm_gem_cma_helper.h>
 #include <drm/drm_plane_helper.h>
 
+#include <linux/bitops.h>
 #include <linux/dma-mapping.h>
 #include <linux/of_platform.h>
 #include <linux/scatterlist.h>
@@ -30,11 +31,15 @@
 #include "rcar_du_kms.h"
 #include "rcar_du_vsp.h"
 
-static void rcar_du_vsp_complete(void *private)
+static void rcar_du_vsp_complete(void *private, bool completed)
 {
 	struct rcar_du_crtc *crtc = private;
 
-	rcar_du_crtc_finish_page_flip(crtc);
+	if (crtc->vblank_enable)
+		drm_crtc_handle_vblank(&crtc->crtc);
+
+	if (completed)
+		rcar_du_crtc_finish_page_flip(crtc);
 }
 
 void rcar_du_vsp_enable(struct rcar_du_crtc *crtc)
@@ -50,14 +55,14 @@ void rcar_du_vsp_enable(struct rcar_du_crtc *crtc)
 	struct rcar_du_plane_state state = {
 		.state = {
 			.crtc = &crtc->crtc,
-			.crtc_x = 0,
-			.crtc_y = 0,
-			.crtc_w = mode->hdisplay,
-			.crtc_h = mode->vdisplay,
-			.src_x = 0,
-			.src_y = 0,
-			.src_w = mode->hdisplay << 16,
-			.src_h = mode->vdisplay << 16,
+			.dst.x1 = 0,
+			.dst.y1 = 0,
+			.dst.x2 = mode->hdisplay,
+			.dst.y2 = mode->vdisplay,
+			.src.x1 = 0,
+			.src.y1 = 0,
+			.src.x2 = mode->hdisplay << 16,
+			.src.y2 = mode->vdisplay << 16,
 			.zpos = 0,
 		},
 		.format = rcar_du_format_info(DRM_FORMAT_ARGB8888),
@@ -73,7 +78,8 @@ void rcar_du_vsp_enable(struct rcar_du_crtc *crtc)
 
 	__rcar_du_plane_setup(crtc->group, &state);
 
-	/* Ensure that the plane source configuration takes effect by requesting
+	/*
+	 * Ensure that the plane source configuration takes effect by requesting
 	 * a restart of the group. See rcar_du_plane_atomic_update() for a more
 	 * detailed explanation.
 	 *
@@ -81,22 +87,22 @@ void rcar_du_vsp_enable(struct rcar_du_crtc *crtc)
 	 */
 	crtc->group->need_restart = true;
 
-	vsp1_du_setup_lif(crtc->vsp->vsp, &cfg);
+	vsp1_du_setup_lif(crtc->vsp->vsp, crtc->vsp_pipe, &cfg);
 }
 
 void rcar_du_vsp_disable(struct rcar_du_crtc *crtc)
 {
-	vsp1_du_setup_lif(crtc->vsp->vsp, NULL);
+	vsp1_du_setup_lif(crtc->vsp->vsp, crtc->vsp_pipe, NULL);
 }
 
 void rcar_du_vsp_atomic_begin(struct rcar_du_crtc *crtc)
 {
-	vsp1_du_atomic_begin(crtc->vsp->vsp);
+	vsp1_du_atomic_begin(crtc->vsp->vsp, crtc->vsp_pipe);
 }
 
 void rcar_du_vsp_atomic_flush(struct rcar_du_crtc *crtc)
 {
-	vsp1_du_atomic_flush(crtc->vsp->vsp);
+	vsp1_du_atomic_flush(crtc->vsp->vsp, crtc->vsp_pipe);
 }
 
 /* Keep the two tables in sync. */
@@ -162,6 +168,7 @@ static void rcar_du_vsp_plane_setup(struct rcar_du_vsp_plane *plane)
 {
 	struct rcar_du_vsp_plane_state *state =
 		to_rcar_vsp_plane_state(plane->plane.state);
+	struct rcar_du_crtc *crtc = to_rcar_crtc(state->state.crtc);
 	struct drm_framebuffer *fb = plane->plane.state->fb;
 	struct vsp1_du_atomic_config cfg = {
 		.pixelformat = 0,
@@ -171,15 +178,15 @@ static void rcar_du_vsp_plane_setup(struct rcar_du_vsp_plane *plane)
 	};
 	unsigned int i;
 
-	cfg.src.left = state->state.src_x >> 16;
-	cfg.src.top = state->state.src_y >> 16;
-	cfg.src.width = state->state.src_w >> 16;
-	cfg.src.height = state->state.src_h >> 16;
+	cfg.src.left = state->state.src.x1 >> 16;
+	cfg.src.top = state->state.src.y1 >> 16;
+	cfg.src.width = drm_rect_width(&state->state.src) >> 16;
+	cfg.src.height = drm_rect_height(&state->state.src) >> 16;
 
-	cfg.dst.left = state->state.crtc_x;
-	cfg.dst.top = state->state.crtc_y;
-	cfg.dst.width = state->state.crtc_w;
-	cfg.dst.height = state->state.crtc_h;
+	cfg.dst.left = state->state.dst.x1;
+	cfg.dst.top = state->state.dst.y1;
+	cfg.dst.width = drm_rect_width(&state->state.dst);
+	cfg.dst.height = drm_rect_height(&state->state.dst);
 
 	for (i = 0; i < state->format->planes; ++i)
 		cfg.mem[i] = sg_dma_address(state->sg_tables[i].sgl)
@@ -192,7 +199,8 @@ static void rcar_du_vsp_plane_setup(struct rcar_du_vsp_plane *plane)
 		}
 	}
 
-	vsp1_du_atomic_update(plane->vsp->vsp, plane->index, &cfg);
+	vsp1_du_atomic_update(plane->vsp->vsp, crtc->vsp_pipe,
+			      plane->index, &cfg);
 }
 
 static int rcar_du_vsp_plane_prepare_fb(struct drm_plane *plane,
@@ -204,7 +212,11 @@ static int rcar_du_vsp_plane_prepare_fb(struct drm_plane *plane,
 	unsigned int i;
 	int ret;
 
-	if (!state->fb)
+	/*
+	 * There's no need to prepare (and unprepare) the framebuffer when the
+	 * plane is not visible, as it will not be displayed.
+	 */
+	if (!state->visible)
 		return 0;
 
 	for (i = 0; i < rstate->format->planes; ++i) {
@@ -245,7 +257,7 @@ static void rcar_du_vsp_plane_cleanup_fb(struct drm_plane *plane,
 	struct rcar_du_vsp *vsp = to_rcar_vsp_plane(plane)->vsp;
 	unsigned int i;
 
-	if (!state->fb)
+	if (!state->visible)
 		return;
 
 	for (i = 0; i < rstate->format->planes; ++i) {
@@ -260,39 +272,21 @@ static int rcar_du_vsp_plane_atomic_check(struct drm_plane *plane,
 					  struct drm_plane_state *state)
 {
 	struct rcar_du_vsp_plane_state *rstate = to_rcar_vsp_plane_state(state);
-	struct rcar_du_vsp_plane *rplane = to_rcar_vsp_plane(plane);
-	struct rcar_du_device *rcdu = rplane->vsp->dev;
 
-	if (!state->fb || !state->crtc) {
-		rstate->format = NULL;
-		return 0;
-	}
-
-	if (state->src_w >> 16 != state->crtc_w ||
-	    state->src_h >> 16 != state->crtc_h) {
-		dev_dbg(rcdu->dev, "%s: scaling not supported\n", __func__);
-		return -EINVAL;
-	}
-
-	rstate->format = rcar_du_format_info(state->fb->format->format);
-	if (rstate->format == NULL) {
-		dev_dbg(rcdu->dev, "%s: unsupported format %08x\n", __func__,
-			state->fb->format->format);
-		return -EINVAL;
-	}
-
-	return 0;
+	return __rcar_du_plane_atomic_check(plane, state, &rstate->format);
 }
 
 static void rcar_du_vsp_plane_atomic_update(struct drm_plane *plane,
 					struct drm_plane_state *old_state)
 {
 	struct rcar_du_vsp_plane *rplane = to_rcar_vsp_plane(plane);
+	struct rcar_du_crtc *crtc = to_rcar_crtc(old_state->crtc);
 
-	if (plane->state->crtc)
+	if (plane->state->visible)
 		rcar_du_vsp_plane_setup(rplane);
 	else
-		vsp1_du_atomic_update(rplane->vsp->vsp, rplane->index, NULL);
+		vsp1_du_atomic_update(rplane->vsp->vsp, crtc->vsp_pipe,
+				      rplane->index, NULL);
 }
 
 static const struct drm_plane_helper_funcs rcar_du_vsp_plane_helper_funcs = {
@@ -383,7 +377,6 @@ static const struct drm_plane_funcs rcar_du_vsp_plane_funcs = {
 	.update_plane = drm_atomic_helper_update_plane,
 	.disable_plane = drm_atomic_helper_disable_plane,
 	.reset = rcar_du_vsp_plane_reset,
-	.set_property = drm_atomic_helper_plane_set_property,
 	.destroy = drm_plane_cleanup,
 	.atomic_duplicate_state = rcar_du_vsp_plane_atomic_duplicate_state,
 	.atomic_destroy_state = rcar_du_vsp_plane_atomic_destroy_state,
@@ -391,23 +384,17 @@ static const struct drm_plane_funcs rcar_du_vsp_plane_funcs = {
 	.atomic_get_property = rcar_du_vsp_plane_atomic_get_property,
 };
 
-int rcar_du_vsp_init(struct rcar_du_vsp *vsp)
+int rcar_du_vsp_init(struct rcar_du_vsp *vsp, struct device_node *np,
+		     unsigned int crtcs)
 {
 	struct rcar_du_device *rcdu = vsp->dev;
 	struct platform_device *pdev;
-	struct device_node *np;
+	unsigned int num_crtcs = hweight32(crtcs);
 	unsigned int i;
 	int ret;
 
 	/* Find the VSP device and initialize it. */
-	np = of_parse_phandle(rcdu->dev->of_node, "vsps", vsp->index);
-	if (!np) {
-		dev_err(rcdu->dev, "vsps node not found\n");
-		return -ENXIO;
-	}
-
 	pdev = of_find_device_by_node(np);
-	of_node_put(np);
 	if (!pdev)
 		return -ENXIO;
 
@@ -417,7 +404,8 @@ int rcar_du_vsp_init(struct rcar_du_vsp *vsp)
 	if (ret < 0)
 		return ret;
 
-	 /* The VSP2D (Gen3) has 5 RPFs, but the VSP1D (Gen2) is limited to
+	 /*
+	  * The VSP2D (Gen3) has 5 RPFs, but the VSP1D (Gen2) is limited to
 	  * 4 RPFs.
 	  */
 	vsp->num_planes = rcdu->info->gen >= 3 ? 5 : 4;
@@ -428,19 +416,19 @@ int rcar_du_vsp_init(struct rcar_du_vsp *vsp)
 		return -ENOMEM;
 
 	for (i = 0; i < vsp->num_planes; ++i) {
-		enum drm_plane_type type = i ? DRM_PLANE_TYPE_OVERLAY
-					 : DRM_PLANE_TYPE_PRIMARY;
+		enum drm_plane_type type = i < num_crtcs
+					 ? DRM_PLANE_TYPE_PRIMARY
+					 : DRM_PLANE_TYPE_OVERLAY;
 		struct rcar_du_vsp_plane *plane = &vsp->planes[i];
 
 		plane->vsp = vsp;
 		plane->index = i;
 
-		ret = drm_universal_plane_init(rcdu->ddev, &plane->plane,
-					       1 << vsp->index,
+		ret = drm_universal_plane_init(rcdu->ddev, &plane->plane, crtcs,
 					       &rcar_du_vsp_plane_funcs,
 					       formats_kms,
-					       ARRAY_SIZE(formats_kms), type,
-					       NULL);
+					       ARRAY_SIZE(formats_kms),
+					       NULL, type, NULL);
 		if (ret < 0)
 			return ret;
 

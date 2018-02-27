@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 
 #include <drm/drmP.h>
 #include <drm/drm_dp_mst_helper.h>
@@ -196,7 +197,6 @@ static int radeon_dp_mst_get_ddc_modes(struct drm_connector *connector)
 	if (radeon_connector->edid) {
 		drm_mode_connector_update_edid_property(&radeon_connector->base, radeon_connector->edid);
 		ret = drm_add_edid_modes(&radeon_connector->base, radeon_connector->edid);
-		drm_edid_to_eld(&radeon_connector->base, radeon_connector->edid);
 		return ret;
 	}
 	drm_mode_connector_update_edid_property(&radeon_connector->base, NULL);
@@ -300,9 +300,7 @@ static void radeon_dp_register_mst_connector(struct drm_connector *connector)
 	struct drm_device *dev = connector->dev;
 	struct radeon_device *rdev = dev->dev_private;
 
-	drm_modeset_lock_all(dev);
 	radeon_fb_add_connector(rdev, connector);
-	drm_modeset_unlock_all(dev);
 
 	drm_connector_register(connector);
 }
@@ -315,13 +313,8 @@ static void radeon_dp_destroy_mst_connector(struct drm_dp_mst_topology_mgr *mgr,
 	struct radeon_device *rdev = dev->dev_private;
 
 	drm_connector_unregister(connector);
-	/* need to nuke the connector */
-	drm_modeset_lock_all(dev);
-	/* dpms off */
 	radeon_fb_remove_connector(rdev, connector);
-
 	drm_connector_cleanup(connector);
-	drm_modeset_unlock_all(dev);
 
 	kfree(connector);
 	DRM_DEBUG_KMS("\n");
@@ -335,7 +328,7 @@ static void radeon_dp_mst_hotplug(struct drm_dp_mst_topology_mgr *mgr)
 	drm_kms_helper_hotplug_event(dev);
 }
 
-const struct drm_dp_mst_topology_cbs mst_cbs = {
+static const struct drm_dp_mst_topology_cbs mst_cbs = {
 	.add_connector = radeon_dp_add_mst_connector,
 	.register_connector = radeon_dp_register_mst_connector,
 	.destroy_connector = radeon_dp_destroy_mst_connector,

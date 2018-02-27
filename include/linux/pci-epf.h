@@ -1,12 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /**
  * PCI Endpoint *Function* (EPF) header file
  *
  * Copyright (C) 2017 Texas Instruments
  * Author: Kishon Vijay Abraham I <kishon@ti.com>
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 of
- * the License as published by the Free Software Foundation.
  */
 
 #ifndef __LINUX_PCI_EPF_H
@@ -14,16 +11,9 @@
 
 #include <linux/device.h>
 #include <linux/mod_devicetable.h>
+#include <linux/pci.h>
 
 struct pci_epf;
-
-enum pci_interrupt_pin {
-	PCI_INTERRUPT_UNKNOWN,
-	PCI_INTERRUPT_INTA,
-	PCI_INTERRUPT_INTB,
-	PCI_INTERRUPT_INTC,
-	PCI_INTERRUPT_INTD,
-};
 
 enum pci_barno {
 	BAR_0,
@@ -149,6 +139,8 @@ static inline void *epf_get_drvdata(struct pci_epf *epf)
 	return dev_get_drvdata(&epf->dev);
 }
 
+const struct pci_epf_device_id *
+pci_epf_match_device(const struct pci_epf_device_id *id, struct pci_epf *epf);
 struct pci_epf *pci_epf_create(const char *name);
 void pci_epf_destroy(struct pci_epf *epf);
 int __pci_epf_register_driver(struct pci_epf_driver *driver,

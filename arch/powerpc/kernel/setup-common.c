@@ -242,14 +242,6 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 	unsigned short maj;
 	unsigned short min;
 
-	/* We only show online cpus: disable preempt (overzealous, I
-	 * knew) to prevent cpu going down. */
-	preempt_disable();
-	if (!cpu_online(cpu_id)) {
-		preempt_enable();
-		return 0;
-	}
-
 #ifdef CONFIG_SMP
 	pvr = per_cpu(cpu_pvr, cpu_id);
 #else
@@ -354,12 +346,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		   loops_per_jiffy / (500000/HZ),
 		   (loops_per_jiffy / (5000/HZ)) % 100);
 #endif
-
-#ifdef CONFIG_SMP
 	seq_printf(m, "\n");
-#endif
-
-	preempt_enable();
 
 	/* If this is the last cpu, print the summary */
 	if (cpumask_next(cpu_id, cpu_online_mask) >= nr_cpu_ids)
@@ -390,10 +377,10 @@ static void c_stop(struct seq_file *m, void *v)
 }
 
 const struct seq_operations cpuinfo_op = {
-	.start =c_start,
-	.next =	c_next,
-	.stop =	c_stop,
-	.show =	show_cpuinfo,
+	.start	= c_start,
+	.next	= c_next,
+	.stop	= c_stop,
+	.show	= show_cpuinfo,
 };
 
 void __init check_for_initrd(void)
@@ -470,18 +457,18 @@ static void __init cpu_init_thread_core_maps(int tpc)
  */
 void __init smp_setup_cpu_maps(void)
 {
-	struct device_node *dn = NULL;
+	struct device_node *dn;
 	int cpu = 0;
 	int nthreads = 1;
 
 	DBG("smp_setup_cpu_maps()\n");
 
-	while ((dn = of_find_node_by_type(dn, "cpu")) && cpu < nr_cpu_ids) {
+	for_each_node_by_type(dn, "cpu") {
 		const __be32 *intserv;
 		__be32 cpu_be;
 		int j, len;
 
-		DBG("  * %s...\n", dn->full_name);
+		DBG("  * %pOF...\n", dn);
 
 		intserv = of_get_property(dn, "ibm,ppc-interrupt-server#s",
 				&len);
@@ -515,6 +502,11 @@ void __init smp_setup_cpu_maps(void)
 			set_hard_smp_processor_id(cpu, be32_to_cpu(intserv[j]));
 			set_cpu_possible(cpu, true);
 			cpu++;
+		}
+
+		if (cpu >= nr_cpu_ids) {
+			of_node_put(dn);
+			break;
 		}
 	}
 
@@ -551,7 +543,7 @@ void __init smp_setup_cpu_maps(void)
 		if (maxcpus > nr_cpu_ids) {
 			printk(KERN_WARNING
 			       "Partition configured for %d cpus, "
-			       "operating system maximum is %d.\n",
+			       "operating system maximum is %u.\n",
 			       maxcpus, nr_cpu_ids);
 			maxcpus = nr_cpu_ids;
 		} else
@@ -791,13 +783,13 @@ void arch_setup_pdev_archdata(struct platform_device *pdev)
 {
 	pdev->archdata.dma_mask = DMA_BIT_MASK(32);
 	pdev->dev.dma_mask = &pdev->archdata.dma_mask;
- 	set_dma_ops(&pdev->dev, &dma_direct_ops);
+ 	set_dma_ops(&pdev->dev, &dma_nommu_ops);
 }
 
 static __init void print_system_info(void)
 {
 	pr_info("-----------------------------------------------------\n");
-#ifdef CONFIG_PPC_STD_MMU_64
+#ifdef CONFIG_PPC_BOOK3S_64
 	pr_info("ppc64_pft_size    = 0x%llx\n", ppc64_pft_size);
 #endif
 #ifdef CONFIG_PPC_STD_MMU_32
@@ -824,7 +816,7 @@ static __init void print_system_info(void)
 	pr_info("firmware_features = 0x%016lx\n", powerpc_firmware_features);
 #endif
 
-#ifdef CONFIG_PPC_STD_MMU_64
+#ifdef CONFIG_PPC_BOOK3S_64
 	if (htab_address)
 		pr_info("htab_address      = 0x%p\n", htab_address);
 	if (htab_hash_mask)
@@ -916,13 +908,6 @@ void __init setup_arch(char **cmdline_p)
 	/* Reserve large chunks of memory for use by CMA for KVM. */
 	kvm_cma_reserve();
 
-	/*
-	 * Reserve any gigantic pages requested on the command line.
-	 * memblock needs to have been initialized by the time this is
-	 * called since this will reserve memory.
-	 */
-	reserve_hugetlb_gpages();
-
 	klp_init_thread_info(&init_thread_info);
 
 	init_mm.start_code = (unsigned long)_stext;
@@ -932,15 +917,13 @@ void __init setup_arch(char **cmdline_p)
 
 #ifdef CONFIG_PPC_MM_SLICES
 #ifdef CONFIG_PPC64
-	init_mm.context.addr_limit = DEFAULT_MAP_WINDOW_USER64;
+	if (!radix_enabled())
+		init_mm.context.slb_addr_limit = DEFAULT_MAP_WINDOW_USER64;
 #else
 #error	"context.addr_limit not initialized."
 #endif
 #endif
 
-#ifdef CONFIG_PPC_64K_PAGES
-	init_mm.context.pte_frag = NULL;
-#endif
 #ifdef CONFIG_SPAPR_TCE_IOMMU
 	mm_iommu_init(&init_mm);
 #endif

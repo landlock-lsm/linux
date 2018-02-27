@@ -24,7 +24,7 @@ static void tegra_bo_put(struct host1x_bo *bo)
 {
 	struct tegra_bo *obj = host1x_to_tegra_bo(bo);
 
-	drm_gem_object_unreference_unlocked(&obj->gem);
+	drm_gem_object_put_unlocked(&obj->gem);
 }
 
 static dma_addr_t tegra_bo_pin(struct host1x_bo *bo, struct sg_table **sgt)
@@ -95,7 +95,7 @@ static struct host1x_bo *tegra_bo_get(struct host1x_bo *bo)
 {
 	struct tegra_bo *obj = host1x_to_tegra_bo(bo);
 
-	drm_gem_object_reference(&obj->gem);
+	drm_gem_object_get(&obj->gem);
 
 	return bo;
 }
@@ -114,7 +114,7 @@ static const struct host1x_bo_ops tegra_bo_ops = {
 static int tegra_bo_iommu_map(struct tegra_drm *tegra, struct tegra_bo *bo)
 {
 	int prot = IOMMU_READ | IOMMU_WRITE;
-	ssize_t err;
+	int err;
 
 	if (bo->mm)
 		return -EBUSY;
@@ -128,21 +128,20 @@ static int tegra_bo_iommu_map(struct tegra_drm *tegra, struct tegra_bo *bo)
 	err = drm_mm_insert_node_generic(&tegra->mm,
 					 bo->mm, bo->gem.size, PAGE_SIZE, 0, 0);
 	if (err < 0) {
-		dev_err(tegra->drm->dev, "out of I/O virtual memory: %zd\n",
+		dev_err(tegra->drm->dev, "out of I/O virtual memory: %d\n",
 			err);
 		goto unlock;
 	}
 
 	bo->paddr = bo->mm->start;
 
-	err = iommu_map_sg(tegra->domain, bo->paddr, bo->sgt->sgl,
-			   bo->sgt->nents, prot);
-	if (err < 0) {
-		dev_err(tegra->drm->dev, "failed to map buffer: %zd\n", err);
+	bo->size = iommu_map_sg(tegra->domain, bo->paddr, bo->sgt->sgl,
+				bo->sgt->nents, prot);
+	if (!bo->size) {
+		dev_err(tegra->drm->dev, "failed to map buffer\n");
+		err = -ENOMEM;
 		goto remove;
 	}
-
-	bo->size = err;
 
 	mutex_unlock(&tegra->mm_lock);
 
@@ -325,7 +324,7 @@ struct tegra_bo *tegra_bo_create_with_handle(struct drm_file *file,
 		return ERR_PTR(err);
 	}
 
-	drm_gem_object_unreference_unlocked(&bo->gem);
+	drm_gem_object_put_unlocked(&bo->gem);
 
 	return bo;
 }
@@ -423,27 +422,6 @@ int tegra_bo_dumb_create(struct drm_file *file, struct drm_device *drm,
 	return 0;
 }
 
-int tegra_bo_dumb_map_offset(struct drm_file *file, struct drm_device *drm,
-			     u32 handle, u64 *offset)
-{
-	struct drm_gem_object *gem;
-	struct tegra_bo *bo;
-
-	gem = drm_gem_object_lookup(file, handle);
-	if (!gem) {
-		dev_err(drm->dev, "failed to lookup GEM object\n");
-		return -EINVAL;
-	}
-
-	bo = to_tegra_bo(gem);
-
-	*offset = drm_vma_node_offset_addr(&bo->gem.vma_node);
-
-	drm_gem_object_unreference_unlocked(gem);
-
-	return 0;
-}
-
 static int tegra_bo_fault(struct vm_fault *vmf)
 {
 	struct vm_area_struct *vma = vmf->vma;
@@ -481,30 +459,28 @@ const struct vm_operations_struct tegra_bo_vm_ops = {
 	.close = drm_gem_vm_close,
 };
 
-int tegra_drm_mmap(struct file *file, struct vm_area_struct *vma)
+static int tegra_gem_mmap(struct drm_gem_object *gem,
+			  struct vm_area_struct *vma)
 {
-	struct drm_gem_object *gem;
-	struct tegra_bo *bo;
-	int ret;
-
-	ret = drm_gem_mmap(file, vma);
-	if (ret)
-		return ret;
-
-	gem = vma->vm_private_data;
-	bo = to_tegra_bo(gem);
+	struct tegra_bo *bo = to_tegra_bo(gem);
 
 	if (!bo->pages) {
 		unsigned long vm_pgoff = vma->vm_pgoff;
+		int err;
 
+		/*
+		 * Clear the VM_PFNMAP flag that was set by drm_gem_mmap(),
+		 * and set the vm_pgoff (used as a fake buffer offset by DRM)
+		 * to 0 as we want to map the whole buffer.
+		 */
 		vma->vm_flags &= ~VM_PFNMAP;
 		vma->vm_pgoff = 0;
 
-		ret = dma_mmap_wc(gem->dev->dev, vma, bo->vaddr, bo->paddr,
+		err = dma_mmap_wc(gem->dev->dev, vma, bo->vaddr, bo->paddr,
 				  gem->size);
-		if (ret) {
+		if (err < 0) {
 			drm_gem_vm_close(vma);
-			return ret;
+			return err;
 		}
 
 		vma->vm_pgoff = vm_pgoff;
@@ -518,6 +494,20 @@ int tegra_drm_mmap(struct file *file, struct vm_area_struct *vma)
 	}
 
 	return 0;
+}
+
+int tegra_drm_mmap(struct file *file, struct vm_area_struct *vma)
+{
+	struct drm_gem_object *gem;
+	int err;
+
+	err = drm_gem_mmap(file, vma);
+	if (err < 0)
+		return err;
+
+	gem = vma->vm_private_data;
+
+	return tegra_gem_mmap(gem, vma);
 }
 
 static struct sg_table *
@@ -603,7 +593,14 @@ static void tegra_gem_prime_kunmap(struct dma_buf *buf, unsigned long page,
 
 static int tegra_gem_prime_mmap(struct dma_buf *buf, struct vm_area_struct *vma)
 {
-	return -EINVAL;
+	struct drm_gem_object *gem = buf->priv;
+	int err;
+
+	err = drm_gem_mmap_obj(gem, gem->size, vma);
+	if (err < 0)
+		return err;
+
+	return tegra_gem_mmap(gem, vma);
 }
 
 static void *tegra_gem_prime_vmap(struct dma_buf *buf)
@@ -654,7 +651,7 @@ struct drm_gem_object *tegra_gem_prime_import(struct drm_device *drm,
 		struct drm_gem_object *gem = buf->priv;
 
 		if (gem->dev == drm) {
-			drm_gem_object_reference(gem);
+			drm_gem_object_get(gem);
 			return gem;
 		}
 	}

@@ -764,7 +764,7 @@ out_unlock:
 }
 
 
-static unsigned int viacam_poll(struct file *filp, struct poll_table_struct *pt)
+static __poll_t viacam_poll(struct file *filp, struct poll_table_struct *pt)
 {
 	struct via_camera *cam = video_drvdata(filp);
 
@@ -1259,7 +1259,7 @@ static struct viafb_pm_hooks viacam_pm_hooks = {
  * Setup stuff.
  */
 
-static struct video_device viacam_v4l_template = {
+static const struct video_device viacam_v4l_template = {
 	.name		= "via-camera",
 	.minor		= -1,
 	.tvnorms	= V4L2_STD_NTSC_M,

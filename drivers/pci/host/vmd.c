@@ -1,15 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Volume Management Device driver
  * Copyright (c) 2015, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #include <linux/device.h>
@@ -183,7 +175,7 @@ static struct vmd_irq_list *vmd_next_irq(struct vmd_dev *vmd, struct msi_desc *d
 	int i, best = 1;
 	unsigned long flags;
 
-	if (!desc->msi_attrib.is_msix || vmd->msix_count == 1)
+	if (pci_is_bridge(msi_desc_to_pci_dev(desc)) || vmd->msix_count == 1)
 		return &vmd->irqs[0];
 
 	raw_spin_lock_irqsave(&list_lock, flags);
@@ -697,7 +689,7 @@ static int vmd_probe(struct pci_dev *dev, const struct pci_device_id *id)
 		return -ENODEV;
 
 	vmd->msix_count = pci_alloc_irq_vectors(dev, 1, vmd->msix_count,
-					PCI_IRQ_MSIX | PCI_IRQ_AFFINITY);
+					PCI_IRQ_MSIX);
 	if (vmd->msix_count < 0)
 		return vmd->msix_count;
 
@@ -755,6 +747,11 @@ static void vmd_remove(struct pci_dev *dev)
 static int vmd_suspend(struct device *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
+	struct vmd_dev *vmd = pci_get_drvdata(pdev);
+	int i;
+
+	for (i = 0; i < vmd->msix_count; i++)
+                devm_free_irq(dev, pci_irq_vector(pdev, i), &vmd->irqs[i]);
 
 	pci_save_state(pdev);
 	return 0;
@@ -763,6 +760,16 @@ static int vmd_suspend(struct device *dev)
 static int vmd_resume(struct device *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
+	struct vmd_dev *vmd = pci_get_drvdata(pdev);
+	int err, i;
+
+	for (i = 0; i < vmd->msix_count; i++) {
+		err = devm_request_irq(dev, pci_irq_vector(pdev, i),
+				       vmd_irq, IRQF_NO_THREAD,
+				       "vmd", &vmd->irqs[i]);
+		if (err)
+			return err;
+	}
 
 	pci_restore_state(pdev);
 	return 0;

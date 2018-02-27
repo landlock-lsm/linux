@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Keystone PCI Controller's common includes
  *
@@ -5,16 +6,9 @@
  *		http://www.ti.com
  *
  * Author: Murali Karicheri <m-karicheri2@ti.com>
- *
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
-#define MAX_LEGACY_IRQS			4
 #define MAX_MSI_HOST_IRQS		8
-#define MAX_LEGACY_HOST_IRQS		4
 
 struct keystone_pcie {
 	struct dw_pcie		*pci;
@@ -22,7 +16,7 @@ struct keystone_pcie {
 	/* PCI Device ID */
 	u32			device_id;
 	int			num_legacy_host_irqs;
-	int			legacy_host_irqs[MAX_LEGACY_HOST_IRQS];
+	int			legacy_host_irqs[PCI_NUM_INTX];
 	struct			device_node *legacy_intc_np;
 
 	int			num_msi_host_irqs;

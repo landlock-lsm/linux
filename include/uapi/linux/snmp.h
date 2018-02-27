@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * Definitions for MIBs
  *
@@ -184,11 +185,12 @@ enum
 	LINUX_MIB_DELAYEDACKLOST,		/* DelayedACKLost */
 	LINUX_MIB_LISTENOVERFLOWS,		/* ListenOverflows */
 	LINUX_MIB_LISTENDROPS,			/* ListenDrops */
+	LINUX_MIB_TCPHPHITS,			/* TCPHPHits */
 	LINUX_MIB_TCPPUREACKS,			/* TCPPureAcks */
+	LINUX_MIB_TCPHPACKS,			/* TCPHPAcks */
 	LINUX_MIB_TCPRENORECOVERY,		/* TCPRenoRecovery */
 	LINUX_MIB_TCPSACKRECOVERY,		/* TCPSackRecovery */
 	LINUX_MIB_TCPSACKRENEGING,		/* TCPSACKReneging */
-	LINUX_MIB_TCPFACKREORDER,		/* TCPFACKReorder */
 	LINUX_MIB_TCPSACKREORDER,		/* TCPSACKReorder */
 	LINUX_MIB_TCPRENOREORDER,		/* TCPRenoReorder */
 	LINUX_MIB_TCPTSREORDER,			/* TCPTSReorder */

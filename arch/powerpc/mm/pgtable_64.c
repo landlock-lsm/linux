@@ -57,7 +57,7 @@
 
 #include "mmu_decl.h"
 
-#ifdef CONFIG_PPC_STD_MMU_64
+#ifdef CONFIG_PPC_BOOK3S_64
 #if TASK_SIZE_USER64 > (1UL << (ESID_BITS + SID_SHIFT))
 #error TASK_SIZE_USER64 exceeds user VSID range
 #endif
@@ -104,6 +104,8 @@ unsigned long __vmalloc_start;
 EXPORT_SYMBOL(__vmalloc_start);
 unsigned long __vmalloc_end;
 EXPORT_SYMBOL(__vmalloc_end);
+unsigned long __kernel_io_start;
+EXPORT_SYMBOL(__kernel_io_start);
 struct page *vmemmap;
 EXPORT_SYMBOL(vmemmap);
 unsigned long __pte_frag_nr;
@@ -242,20 +244,8 @@ void __iomem * ioremap_prot(phys_addr_t addr, unsigned long size,
 	/*
 	 * Force kernel mapping.
 	 */
-#if defined(CONFIG_PPC_BOOK3S_64)
-	flags |= _PAGE_PRIVILEGED;
-#else
 	flags &= ~_PAGE_USER;
-#endif
-
-
-#ifdef _PAGE_BAP_SR
-	/* _PAGE_USER contains _PAGE_BAP_SR on BookE using the new PTE format
-	 * which means that we just cleared supervisor access... oops ;-) This
-	 * restores it
-	 */
-	flags |= _PAGE_BAP_SR;
-#endif
+	flags |= _PAGE_PRIVILEGED;
 
 	if (ppc_md.ioremap)
 		return ppc_md.ioremap(addr, size, flags, caller);
@@ -402,7 +392,7 @@ void pte_fragment_free(unsigned long *table, int kernel)
 	if (put_page_testzero(page)) {
 		if (!kernel)
 			pgtable_page_dtor(page);
-		free_hot_cold_page(page, 0);
+		free_unref_page(page);
 	}
 }
 

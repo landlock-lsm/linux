@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <errno.h>
 #include <inttypes.h>
 #include <regex.h>
@@ -225,6 +226,9 @@ static int64_t _sort__sym_cmp(struct symbol *sym_l, struct symbol *sym_r)
 	if (sym_l == sym_r)
 		return 0;
 
+	if (sym_l->inlined || sym_r->inlined)
+		return strcmp(sym_l->name, sym_r->name);
+
 	if (sym_l->start != sym_r->start)
 		return (int64_t)(sym_r->start - sym_l->start);
 
@@ -283,6 +287,9 @@ static int _hist_entry__sym_snprintf(struct map *map, struct symbol *sym,
 			ret += repsep_snprintf(bf + ret, size - ret, "%.*s",
 					       width - ret,
 					       sym->name);
+			if (sym->inlined)
+				ret += repsep_snprintf(bf + ret, size - ret,
+						       " (inlined)");
 		}
 	} else {
 		size_t len = BITS_PER_LONG / 4;
@@ -329,7 +336,7 @@ char *hist_entry__get_srcline(struct hist_entry *he)
 		return SRCLINE_UNKNOWN;
 
 	return get_srcline(map->dso, map__rip_2objdump(map, he->ip),
-			   he->ms.sym, true, true);
+			   he->ms.sym, true, true, he->ip);
 }
 
 static int64_t
@@ -373,7 +380,8 @@ sort__srcline_from_cmp(struct hist_entry *left, struct hist_entry *right)
 					   map__rip_2objdump(map,
 							     left->branch_info->from.al_addr),
 							 left->branch_info->from.sym,
-							 true, true);
+							 true, true,
+							 left->branch_info->from.al_addr);
 	}
 	if (!right->branch_info->srcline_from) {
 		struct map *map = right->branch_info->from.map;
@@ -384,7 +392,8 @@ sort__srcline_from_cmp(struct hist_entry *left, struct hist_entry *right)
 					     map__rip_2objdump(map,
 							       right->branch_info->from.al_addr),
 						     right->branch_info->from.sym,
-						     true, true);
+						     true, true,
+						     right->branch_info->from.al_addr);
 	}
 	return strcmp(right->branch_info->srcline_from, left->branch_info->srcline_from);
 }
@@ -416,7 +425,8 @@ sort__srcline_to_cmp(struct hist_entry *left, struct hist_entry *right)
 					   map__rip_2objdump(map,
 							     left->branch_info->to.al_addr),
 							 left->branch_info->from.sym,
-							 true, true);
+							 true, true,
+							 left->branch_info->to.al_addr);
 	}
 	if (!right->branch_info->srcline_to) {
 		struct map *map = right->branch_info->to.map;
@@ -427,7 +437,8 @@ sort__srcline_to_cmp(struct hist_entry *left, struct hist_entry *right)
 					     map__rip_2objdump(map,
 							       right->branch_info->to.al_addr),
 						     right->branch_info->to.sym,
-						     true, true);
+						     true, true,
+						     right->branch_info->to.al_addr);
 	}
 	return strcmp(right->branch_info->srcline_to, left->branch_info->srcline_to);
 }
@@ -458,7 +469,7 @@ static char *hist_entry__get_srcfile(struct hist_entry *e)
 		return no_srcfile;
 
 	sf = __get_srcline(map->dso, map__rip_2objdump(map, e->ip),
-			 e->ms.sym, false, true, true);
+			 e->ms.sym, false, true, true, e->ip);
 	if (!strcmp(sf, SRCLINE_UNKNOWN))
 		return no_srcfile;
 	p = strchr(sf, ':');
@@ -1316,6 +1327,47 @@ struct sort_entry sort_mem_dcacheline = {
 };
 
 static int64_t
+sort__phys_daddr_cmp(struct hist_entry *left, struct hist_entry *right)
+{
+	uint64_t l = 0, r = 0;
+
+	if (left->mem_info)
+		l = left->mem_info->daddr.phys_addr;
+	if (right->mem_info)
+		r = right->mem_info->daddr.phys_addr;
+
+	return (int64_t)(r - l);
+}
+
+static int hist_entry__phys_daddr_snprintf(struct hist_entry *he, char *bf,
+					   size_t size, unsigned int width)
+{
+	uint64_t addr = 0;
+	size_t ret = 0;
+	size_t len = BITS_PER_LONG / 4;
+
+	addr = he->mem_info->daddr.phys_addr;
+
+	ret += repsep_snprintf(bf + ret, size - ret, "[%c] ", he->level);
+
+	ret += repsep_snprintf(bf + ret, size - ret, "%-#.*llx", len, addr);
+
+	ret += repsep_snprintf(bf + ret, size - ret, "%-*s", width - ret, "");
+
+	if (ret > width)
+		bf[width] = '\0';
+
+	return width;
+}
+
+struct sort_entry sort_mem_phys_daddr = {
+	.se_header	= "Data Physical Address",
+	.se_cmp		= sort__phys_daddr_cmp,
+	.se_snprintf	= hist_entry__phys_daddr_snprintf,
+	.se_width_idx	= HISTC_MEM_PHYS_DADDR,
+};
+
+static int64_t
 sort__abort_cmp(struct hist_entry *left, struct hist_entry *right)
 {
 	if (!left->branch_info || !right->branch_info)
@@ -1547,6 +1599,7 @@ static struct sort_dimension memory_sort_dimensions[] = {
 	DIM(SORT_MEM_LVL, "mem", sort_mem_lvl),
 	DIM(SORT_MEM_SNOOP, "snoop", sort_mem_snoop),
 	DIM(SORT_MEM_DCACHELINE, "dcacheline", sort_mem_dcacheline),
+	DIM(SORT_MEM_PHYS_DADDR, "phys_daddr", sort_mem_phys_daddr),
 };
 
 #undef DIM
@@ -2563,7 +2616,7 @@ static const char *get_default_sort_order(struct perf_evlist *evlist)
 
 	BUG_ON(sort__mode >= ARRAY_SIZE(default_sort_orders));
 
-	if (evlist == NULL)
+	if (evlist == NULL || perf_evlist__empty(evlist))
 		goto out_no_evlist;
 
 	evlist__for_each_entry(evlist, evsel) {
@@ -2834,10 +2887,10 @@ static int setup_output_list(struct perf_hpp_list *list, char *str)
 			tok; tok = strtok_r(NULL, ", ", &tmp)) {
 		ret = output_field_add(list, tok);
 		if (ret == -EINVAL) {
-			pr_err("Invalid --fields key: `%s'", tok);
+			ui__error("Invalid --fields key: `%s'", tok);
 			break;
 		} else if (ret == -ESRCH) {
-			pr_err("Unknown --fields key: `%s'", tok);
+			ui__error("Unknown --fields key: `%s'", tok);
 			break;
 		}
 	}

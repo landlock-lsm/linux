@@ -574,6 +574,82 @@ int octeon_init_consoles(struct octeon_device *oct)
 	return ret;
 }
 
+static void octeon_get_uboot_version(struct octeon_device *oct)
+{
+	s32 bytes_read, tries, total_read;
+	struct octeon_console *console;
+	u32 console_num = 0;
+	char *uboot_ver;
+	char *buf;
+	char *p;
+
+#define OCTEON_UBOOT_VER_BUF_SIZE 512
+	buf = kmalloc(OCTEON_UBOOT_VER_BUF_SIZE, GFP_KERNEL);
+	if (!buf)
+		return;
+
+	if (octeon_console_send_cmd(oct, "setenv stdout pci\n", 50)) {
+		kfree(buf);
+		return;
+	}
+
+	if (octeon_console_send_cmd(oct, "version\n", 1)) {
+		kfree(buf);
+		return;
+	}
+
+	console = &oct->console[console_num];
+	tries = 0;
+	total_read = 0;
+
+	do {
+		/* Take console output regardless of whether it will
+		 * be logged
+		 */
+		bytes_read =
+			octeon_console_read(oct,
+					    console_num, buf + total_read,
+					    OCTEON_UBOOT_VER_BUF_SIZE - 1 -
+					    total_read);
+		if (bytes_read > 0) {
+			buf[bytes_read] = '\0';
+
+			total_read += bytes_read;
+			if (console->waiting)
+				octeon_console_handle_result(oct, console_num);
+		} else if (bytes_read < 0) {
+			dev_err(&oct->pci_dev->dev, "Error reading console %u, ret=%d\n",
+				console_num, bytes_read);
+		}
+
+		tries++;
+	} while ((bytes_read > 0) && (tries < 16));
+
+	/* If nothing is read after polling the console,
+	 * output any leftovers if any
+	 */
+	if ((total_read == 0) && (console->leftover[0])) {
+		dev_dbg(&oct->pci_dev->dev, "%u: %s\n",
+			console_num, console->leftover);
+		console->leftover[0] = '\0';
+	}
+
+	buf[OCTEON_UBOOT_VER_BUF_SIZE - 1] = '\0';
+
+	uboot_ver = strstr(buf, "U-Boot");
+	if (uboot_ver) {
+		p = strstr(uboot_ver, "mips");
+		if (p) {
+			p--;
+			*p = '\0';
+			dev_info(&oct->pci_dev->dev, "%s\n", uboot_ver);
+		}
+	}
+
+	kfree(buf);
+	octeon_console_send_cmd(oct, "setenv stdout serial\n", 50);
+}
+
 int octeon_add_console(struct octeon_device *oct, u32 console_num,
 		       char *dbg_enb)
 {
@@ -610,6 +686,8 @@ int octeon_add_console(struct octeon_device *oct, u32 console_num,
 		console->leftover[0] = '\0';
 
 		work = &oct->console_poll_work[console_num].work;
+
+		octeon_get_uboot_version(oct);
 
 		INIT_DELAYED_WORK(work, check_console);
 		oct->console_poll_work[console_num].ctxptr = (void *)oct;
@@ -725,15 +803,18 @@ static int octeon_console_read(struct octeon_device *oct, u32 console_num,
 }
 
 #define FBUF_SIZE	(4 * 1024 * 1024)
+#define MAX_BOOTTIME_SIZE    80
 
 int octeon_download_firmware(struct octeon_device *oct, const u8 *data,
 			     size_t size)
 {
-	int ret = 0;
+	struct octeon_firmware_file_header *h;
+	char boottime[MAX_BOOTTIME_SIZE];
+	struct timespec64 ts;
 	u32 crc32_result;
 	u64 load_addr;
 	u32 image_len;
-	struct octeon_firmware_file_header *h;
+	int ret = 0;
 	u32 i, rem;
 
 	if (size < sizeof(struct octeon_firmware_file_header)) {
@@ -812,11 +893,34 @@ int octeon_download_firmware(struct octeon_device *oct, const u8 *data,
 			load_addr += size;
 		}
 	}
+
+	/* Pass date and time information to NIC at the time of loading
+	 * firmware and periodically update the host time to NIC firmware.
+	 * This is to make NIC firmware use the same time reference as Host,
+	 * so that it is easy to correlate logs from firmware and host for
+	 * debugging.
+	 *
+	 * Octeon always uses UTC time. so timezone information is not sent.
+	 */
+	getnstimeofday64(&ts);
+	ret = snprintf(boottime, MAX_BOOTTIME_SIZE,
+		       " time_sec=%lld time_nsec=%ld",
+		       (s64)ts.tv_sec, ts.tv_nsec);
+	if ((sizeof(h->bootcmd) - strnlen(h->bootcmd, sizeof(h->bootcmd))) <
+		ret) {
+		dev_err(&oct->pci_dev->dev, "Boot command buffer too small\n");
+		return -EINVAL;
+	}
+	strncat(h->bootcmd, boottime,
+		sizeof(h->bootcmd) - strnlen(h->bootcmd, sizeof(h->bootcmd)));
+
 	dev_info(&oct->pci_dev->dev, "Writing boot command: %s\n",
 		 h->bootcmd);
 
 	/* Invoke the bootcmd */
 	ret = octeon_console_send_cmd(oct, h->bootcmd, 50);
+	if (ret)
+		dev_info(&oct->pci_dev->dev, "Boot command send failed\n");
 
-	return 0;
+	return ret;
 }

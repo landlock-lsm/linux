@@ -18,7 +18,7 @@
 #include <linux/delay.h>
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
-#include <linux/mtd/nand.h>
+#include <linux/mtd/rawnand.h>
 #include <linux/spi/spi.h>
 
 #include "mt29f_spinand.h"
@@ -496,8 +496,12 @@ static int spinand_program_page(struct spi_device *spi_nand,
 	if (!wbuf)
 		return -ENOMEM;
 
-	enable_read_hw_ecc = 0;
-	spinand_read_page(spi_nand, page_id, 0, CACHE_BUF, wbuf);
+	enable_read_hw_ecc = 1;
+	retval = spinand_read_page(spi_nand, page_id, 0, CACHE_BUF, wbuf);
+	if (retval < 0) {
+		dev_err(&spi_nand->dev, "ecc error on read page!!!\n");
+		return retval;
+	}
 
 	for (i = offset, j = 0; i < len; i++, j++)
 		wbuf[i] &= buf[j];
@@ -633,8 +637,7 @@ static int spinand_write_page_hwecc(struct mtd_info *mtd,
 	int eccsteps = chip->ecc.steps;
 
 	enable_hw_ecc = 1;
-	chip->write_buf(mtd, p, eccsize * eccsteps);
-	return 0;
+	return nand_prog_page_op(chip, page, 0, p, eccsize * eccsteps);
 }
 
 static int spinand_read_page_hwecc(struct mtd_info *mtd, struct nand_chip *chip,
@@ -649,7 +652,7 @@ static int spinand_read_page_hwecc(struct mtd_info *mtd, struct nand_chip *chip,
 
 	enable_read_hw_ecc = 1;
 
-	chip->read_buf(mtd, p, eccsize * eccsteps);
+	nand_read_page_op(chip, page, 0, p, eccsize * eccsteps);
 	if (oob_required)
 		chip->read_buf(mtd, chip->oob_poi, mtd->oobsize);
 

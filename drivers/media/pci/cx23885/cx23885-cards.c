@@ -1278,6 +1278,12 @@ static void hauppauge_eeprom(struct cx23885_dev *dev, u8 *eeprom_data)
 	case 85721:
 		/* WinTV-HVR1290 (PCIe, OEM, RCA in, IR,
 			Dual channel ATSC and Basic analog */
+	case 121019:
+		/* WinTV-HVR4400 (PCIe, DVB-S2, DVB-C/T) */
+		break;
+	case 121029:
+		/* WinTV-HVR5500 (PCIe, DVB-S2, DVB-C/T) */
+		break;
 	case 150329:
 		/* WinTV-HVR5525 (PCIe, DVB-S/S2, DVB-T/T2/C) */
 		break;
@@ -1317,7 +1323,7 @@ static void hauppauge_eeprom(struct cx23885_dev *dev, u8 *eeprom_data)
 static void tbs_card_init(struct cx23885_dev *dev)
 {
 	int i;
-	const u8 buf[] = {
+	static const u8 buf[] = {
 		0xe0, 0x06, 0x66, 0x33, 0x65,
 		0x01, 0x17, 0x06, 0xde};
 
@@ -1810,13 +1816,13 @@ int cx23885_ir_init(struct cx23885_dev *dev)
 {
 	static struct v4l2_subdev_io_pin_config ir_rxtx_pin_cfg[] = {
 		{
-			.flags	  = V4L2_SUBDEV_IO_PIN_INPUT,
+			.flags	  = BIT(V4L2_SUBDEV_IO_PIN_INPUT),
 			.pin	  = CX23885_PIN_IR_RX_GPIO19,
 			.function = CX23885_PAD_IR_RX,
 			.value	  = 0,
 			.strength = CX25840_PIN_DRIVE_MEDIUM,
 		}, {
-			.flags	  = V4L2_SUBDEV_IO_PIN_OUTPUT,
+			.flags	  = BIT(V4L2_SUBDEV_IO_PIN_OUTPUT),
 			.pin	  = CX23885_PIN_IR_TX_GPIO20,
 			.function = CX23885_PAD_IR_TX,
 			.value	  = 0,
@@ -1827,7 +1833,7 @@ int cx23885_ir_init(struct cx23885_dev *dev)
 
 	static struct v4l2_subdev_io_pin_config ir_rx_pin_cfg[] = {
 		{
-			.flags	  = V4L2_SUBDEV_IO_PIN_INPUT,
+			.flags	  = BIT(V4L2_SUBDEV_IO_PIN_INPUT),
 			.pin	  = CX23885_PIN_IR_RX_GPIO19,
 			.function = CX23885_PAD_IR_RX,
 			.value	  = 0,

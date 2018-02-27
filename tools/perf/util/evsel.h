@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __PERF_EVSEL_H
 #define __PERF_EVSEL_H 1
 
@@ -37,7 +38,7 @@ struct cgroup_sel;
  * It is allocated within event parsing and attached to
  * perf_evsel::config_terms list head.
 */
-enum {
+enum term_type {
 	PERF_EVSEL__CONFIG_TERM_PERIOD,
 	PERF_EVSEL__CONFIG_TERM_FREQ,
 	PERF_EVSEL__CONFIG_TERM_TIME,
@@ -48,12 +49,11 @@ enum {
 	PERF_EVSEL__CONFIG_TERM_OVERWRITE,
 	PERF_EVSEL__CONFIG_TERM_DRV_CFG,
 	PERF_EVSEL__CONFIG_TERM_BRANCH,
-	PERF_EVSEL__CONFIG_TERM_MAX,
 };
 
 struct perf_evsel_config_term {
 	struct list_head	list;
-	int	type;
+	enum term_type	type;
 	union {
 		u64	period;
 		u64	freq;
@@ -66,7 +66,10 @@ struct perf_evsel_config_term {
 		bool	overwrite;
 		char	*branch;
 	} val;
+	bool weak;
 };
+
+struct perf_stat_evsel;
 
 /** struct perf_evsel - event selector
  *
@@ -101,6 +104,7 @@ struct perf_evsel {
 	const char		*unit;
 	struct event_format	*tp_format;
 	off_t			id_offset;
+	struct perf_stat_evsel  *stats;
 	void			*priv;
 	u64			db_id;
 	struct cgroup_sel	*cgrp;
@@ -131,11 +135,13 @@ struct perf_evsel {
 	bool			cmdline_group_boundary;
 	struct list_head	config_terms;
 	int			bpf_fd;
+	bool			auto_merge_stats;
 	bool			merged_stat;
 	const char *		metric_expr;
 	const char *		metric_name;
 	struct perf_evsel	**metric_events;
 	bool			collect_stat;
+	bool			weak_group;
 };
 
 union u64_swap {
@@ -185,7 +191,7 @@ static inline struct perf_evsel *perf_evsel__newtp(const char *sys, const char *
 	return perf_evsel__newtp_idx(sys, name, 0);
 }
 
-struct perf_evsel *perf_evsel__new_cycles(void);
+struct perf_evsel *perf_evsel__new_cycles(bool precise);
 
 struct event_format *event_format__new(const char *sys, const char *name);
 
@@ -226,7 +232,7 @@ const char *perf_evsel__group_name(struct perf_evsel *evsel);
 int perf_evsel__group_desc(struct perf_evsel *evsel, char *buf, size_t size);
 
 int perf_evsel__alloc_id(struct perf_evsel *evsel, int ncpus, int nthreads);
-void perf_evsel__close_fd(struct perf_evsel *evsel, int ncpus, int nthreads);
+void perf_evsel__close_fd(struct perf_evsel *evsel);
 
 void __perf_evsel__set_sample_bit(struct perf_evsel *evsel,
 				  enum perf_event_sample_format bit);
@@ -246,8 +252,7 @@ int perf_evsel__set_filter(struct perf_evsel *evsel, const char *filter);
 int perf_evsel__append_tp_filter(struct perf_evsel *evsel, const char *filter);
 int perf_evsel__append_addr_filter(struct perf_evsel *evsel,
 				   const char *filter);
-int perf_evsel__apply_filter(struct perf_evsel *evsel, int ncpus, int nthreads,
-			     const char *filter);
+int perf_evsel__apply_filter(struct perf_evsel *evsel, const char *filter);
 int perf_evsel__enable(struct perf_evsel *evsel);
 int perf_evsel__disable(struct perf_evsel *evsel);
 
@@ -257,7 +262,7 @@ int perf_evsel__open_per_thread(struct perf_evsel *evsel,
 				struct thread_map *threads);
 int perf_evsel__open(struct perf_evsel *evsel, struct cpu_map *cpus,
 		     struct thread_map *threads);
-void perf_evsel__close(struct perf_evsel *evsel, int ncpus, int nthreads);
+void perf_evsel__close(struct perf_evsel *evsel);
 
 struct perf_sample;
 
@@ -299,6 +304,8 @@ static inline bool perf_evsel__match2(struct perf_evsel *e1,
 int perf_evsel__read(struct perf_evsel *evsel, int cpu, int thread,
 		     struct perf_counts_values *count);
 
+int perf_evsel__read_counter(struct perf_evsel *evsel, int cpu, int thread);
+
 int __perf_evsel__read_on_cpu(struct perf_evsel *evsel,
 			      int cpu, int thread, bool scale);
 
@@ -330,6 +337,10 @@ static inline int perf_evsel__read_on_cpu_scaled(struct perf_evsel *evsel,
 
 int perf_evsel__parse_sample(struct perf_evsel *evsel, union perf_event *event,
 			     struct perf_sample *sample);
+
+int perf_evsel__parse_sample_timestamp(struct perf_evsel *evsel,
+				       union perf_event *event,
+				       u64 *timestamp);
 
 static inline struct perf_evsel *perf_evsel__next(struct perf_evsel *evsel)
 {
@@ -435,6 +446,6 @@ typedef int (*attr__fprintf_f)(FILE *, const char *, const char *, void *);
 int perf_event_attr__fprintf(FILE *fp, struct perf_event_attr *attr,
 			     attr__fprintf_f attr__fprintf, void *priv);
 
-char *perf_evsel__env_arch(struct perf_evsel *evsel);
+struct perf_env *perf_evsel__env(struct perf_evsel *evsel);
 
 #endif /* __PERF_EVSEL_H */

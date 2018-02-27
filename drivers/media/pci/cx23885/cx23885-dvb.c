@@ -27,7 +27,7 @@
 
 #include <media/v4l2-common.h>
 
-#include "dvb_ca_en50221.h"
+#include <media/dvb_ca_en50221.h>
 #include "s5h1409.h"
 #include "s5h1411.h"
 #include "mt2131.h"
@@ -1852,8 +1852,8 @@ static int dvb_register(struct cx23885_tsport *port)
 			/* attach frontend */
 			memset(&si2165_pdata, 0, sizeof(si2165_pdata));
 			si2165_pdata.fe = &fe0->dvb.frontend;
-			si2165_pdata.chip_mode = SI2165_MODE_PLL_XTAL,
-			si2165_pdata.ref_freq_Hz = 16000000,
+			si2165_pdata.chip_mode = SI2165_MODE_PLL_XTAL;
+			si2165_pdata.ref_freq_hz = 16000000;
 			memset(&info, 0, sizeof(struct i2c_board_info));
 			strlcpy(info.type, "si2165", I2C_NAME_SIZE);
 			info.addr = 0x64;
@@ -2637,6 +2637,11 @@ int cx23885_dvb_unregister(struct cx23885_tsport *port)
 	struct vb2_dvb_frontend *fe0;
 	struct i2c_client *client;
 
+	fe0 = vb2_dvb_get_frontend(&port->frontends, 1);
+
+	if (fe0 && fe0->dvb.frontend)
+		vb2_dvb_unregister_bus(&port->frontends);
+
 	/* remove I2C client for CI */
 	client = port->i2c_client_ci;
 	if (client) {
@@ -2664,11 +2669,6 @@ int cx23885_dvb_unregister(struct cx23885_tsport *port)
 		module_put(client->dev.driver->owner);
 		i2c_unregister_device(client);
 	}
-
-	fe0 = vb2_dvb_get_frontend(&port->frontends, 1);
-
-	if (fe0 && fe0->dvb.frontend)
-		vb2_dvb_unregister_bus(&port->frontends);
 
 	switch (port->dev->board) {
 	case CX23885_BOARD_NETUP_DUAL_DVBS2_CI:

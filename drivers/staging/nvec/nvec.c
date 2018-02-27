@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * NVEC: NVIDIA compliant embedded controller interface
  *
@@ -7,11 +8,6 @@
  *           Ilya Petrov <ilya.muromec@gmail.com>
  *           Marc Dietrich <marvin24@gmx.de>
  *           Julian Andres Klode <jak@jak-linux.org>
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
- *
  */
 
 #include <linux/kernel.h>
@@ -831,7 +827,7 @@ static int tegra_nvec_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	nvec->rst = devm_reset_control_get(&pdev->dev, "i2c");
+	nvec->rst = devm_reset_control_get_exclusive(&pdev->dev, "i2c");
 	if (IS_ERR(nvec->rst)) {
 		dev_err(nvec->dev, "failed to get controller reset\n");
 		return PTR_ERR(nvec->rst);

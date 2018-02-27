@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2017, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -598,6 +598,15 @@ acpi_ds_eval_data_object_operands(struct acpi_walk_state *walk_state,
 	 * invoked inside acpi_ds_create_operand.
 	 */
 	walk_state->operand_index = walk_state->num_operands;
+
+	/* Ignore if child is not valid */
+
+	if (!op->common.value.arg) {
+		ACPI_ERROR((AE_INFO,
+			    "Dispatch: Missing child while executing TermArg for %X",
+			    op->common.aml_opcode));
+		return_ACPI_STATUS(AE_OK);
+	}
 
 	status = acpi_ds_create_operand(walk_state, op->common.value.arg, 1);
 	if (ACPI_FAILURE(status)) {

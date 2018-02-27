@@ -40,8 +40,6 @@ static const struct snd_soc_dapm_route mt8173_rt5650_rt5676_routes[] = {
 	{"Headphone", NULL, "HPOL"},
 	{"Headphone", NULL, "HPOR"},
 	{"Headphone", NULL, "Sub AIF2TX"}, /* IF2 ADC to 5650  */
-	{"Headset Mic", NULL, "micbias1"},
-	{"Headset Mic", NULL, "micbias2"},
 	{"IN1P", NULL, "Headset Mic"},
 	{"IN1N", NULL, "Headset Mic"},
 	{"Sub AIF2RX", NULL, "Headset Mic"}, /* IF2 DAC from 5650  */
@@ -279,7 +277,6 @@ static int mt8173_rt5650_rt5676_dev_probe(struct platform_device *pdev)
 	}
 
 	card->dev = &pdev->dev;
-	platform_set_drvdata(pdev, card);
 
 	ret = devm_snd_soc_register_card(&pdev->dev, card);
 	if (ret)

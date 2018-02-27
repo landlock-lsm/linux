@@ -916,7 +916,7 @@ static void sh_mmcif_start_cmd(struct sh_mmcif_host *host,
 			       struct mmc_request *mrq)
 {
 	struct mmc_command *cmd = mrq->cmd;
-	u32 opc = cmd->opcode;
+	u32 opc;
 	u32 mask = 0;
 	unsigned long flags;
 
@@ -1079,7 +1079,7 @@ static void sh_mmcif_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	host->state = STATE_IDLE;
 }
 
-static struct mmc_host_ops sh_mmcif_ops = {
+static const struct mmc_host_ops sh_mmcif_ops = {
 	.request	= sh_mmcif_request,
 	.set_ios	= sh_mmcif_set_ios,
 	.get_cd		= mmc_gpio_get_cd,

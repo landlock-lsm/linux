@@ -115,9 +115,9 @@ static unsigned char kbd_keycodes[256] = {
 	KEY_RESERVED
 };
 
-static void mce_kbd_rx_timeout(unsigned long data)
+static void mce_kbd_rx_timeout(struct timer_list *t)
 {
-	struct mce_kbd_dec *mce_kbd = (struct mce_kbd_dec *)data;
+	struct mce_kbd_dec *mce_kbd = from_timer(mce_kbd, t, rx_timeout);
 	int i;
 	unsigned char maskcode;
 
@@ -215,6 +215,7 @@ static int ir_mce_kbd_decode(struct rc_dev *dev, struct ir_raw_event ev)
 	struct mce_kbd_dec *data = &dev->raw->mce_kbd;
 	u32 scancode;
 	unsigned long delay;
+	struct lirc_scancode lsc = {};
 
 	if (!is_timing_event(ev)) {
 		if (ev.reset)
@@ -326,18 +327,22 @@ again:
 			mod_timer(&data->rx_timeout, jiffies + delay);
 			/* Pass data to keyboard buffer parser */
 			ir_mce_kbd_process_keyboard_data(data->idev, scancode);
+			lsc.rc_proto = RC_PROTO_MCIR2_KBD;
 			break;
 		case MCIR2_MOUSE_NBITS:
 			scancode = data->body & 0x1fffff;
 			IR_dprintk(1, "mouse data 0x%06x\n", scancode);
 			/* Pass data to mouse buffer parser */
 			ir_mce_kbd_process_mouse_data(data->idev, scancode);
+			lsc.rc_proto = RC_PROTO_MCIR2_MSE;
 			break;
 		default:
 			IR_dprintk(1, "not keyboard or mouse data\n");
 			goto out;
 		}
 
+		lsc.scancode = scancode;
+		ir_lirc_scancode_event(dev, &lsc);
 		data->state = STATE_INACTIVE;
 		input_event(data->idev, EV_MSC, MSC_SCAN, scancode);
 		input_sync(data->idev);
@@ -386,8 +391,7 @@ static int ir_mce_kbd_register(struct rc_dev *dev)
 	set_bit(EV_MSC, idev->evbit);
 	set_bit(MSC_SCAN, idev->mscbit);
 
-	setup_timer(&mce_kbd->rx_timeout, mce_kbd_rx_timeout,
-		    (unsigned long)mce_kbd);
+	timer_setup(&mce_kbd->rx_timeout, mce_kbd_rx_timeout, 0);
 
 	input_set_drvdata(idev, mce_kbd);
 
@@ -420,7 +424,7 @@ static int ir_mce_kbd_unregister(struct rc_dev *dev)
 }
 
 static const struct ir_raw_timings_manchester ir_mce_kbd_timings = {
-	.leader		= MCIR2_PREFIX_PULSE,
+	.leader_pulse	= MCIR2_PREFIX_PULSE,
 	.invert		= 1,
 	.clock		= MCIR2_UNIT,
 	.trailer_space	= MCIR2_UNIT * 10,
@@ -438,21 +442,21 @@ static const struct ir_raw_timings_manchester ir_mce_kbd_timings = {
  *              -ENOBUFS if there isn't enough space in the array to fit the
  *              encoding. In this case all @max events will have been written.
  */
-static int ir_mce_kbd_encode(enum rc_type protocol, u32 scancode,
+static int ir_mce_kbd_encode(enum rc_proto protocol, u32 scancode,
 			     struct ir_raw_event *events, unsigned int max)
 {
 	struct ir_raw_event *e = events;
 	int len, ret;
 	u64 raw;
 
-	if (protocol == RC_TYPE_MCIR2_KBD) {
+	if (protocol == RC_PROTO_MCIR2_KBD) {
 		raw = scancode |
 		      ((u64)MCIR2_KEYBOARD_HEADER << MCIR2_KEYBOARD_NBITS);
-		len = MCIR2_KEYBOARD_NBITS + MCIR2_HEADER_NBITS + 1;
+		len = MCIR2_KEYBOARD_NBITS + MCIR2_HEADER_NBITS;
 	} else {
 		raw = scancode |
 		      ((u64)MCIR2_MOUSE_HEADER << MCIR2_MOUSE_NBITS);
-		len = MCIR2_MOUSE_NBITS + MCIR2_HEADER_NBITS + 1;
+		len = MCIR2_MOUSE_NBITS + MCIR2_HEADER_NBITS;
 	}
 
 	ret = ir_raw_gen_manchester(&e, max, &ir_mce_kbd_timings, len, raw);
@@ -463,11 +467,12 @@ static int ir_mce_kbd_encode(enum rc_type protocol, u32 scancode,
 }
 
 static struct ir_raw_handler mce_kbd_handler = {
-	.protocols	= RC_BIT_MCIR2_KBD | RC_BIT_MCIR2_MSE,
+	.protocols	= RC_PROTO_BIT_MCIR2_KBD | RC_PROTO_BIT_MCIR2_MSE,
 	.decode		= ir_mce_kbd_decode,
 	.encode		= ir_mce_kbd_encode,
 	.raw_register	= ir_mce_kbd_register,
 	.raw_unregister	= ir_mce_kbd_unregister,
+	.carrier	= 36000,
 };
 
 static int __init ir_mce_kbd_decode_init(void)

@@ -33,92 +33,91 @@ struct tegra_drm_file {
 	struct mutex lock;
 };
 
-static void tegra_atomic_schedule(struct tegra_drm *tegra,
-				  struct drm_atomic_state *state)
+static int tegra_atomic_check(struct drm_device *drm,
+			      struct drm_atomic_state *state)
 {
-	tegra->commit.state = state;
-	schedule_work(&tegra->commit.work);
-}
-
-static void tegra_atomic_complete(struct tegra_drm *tegra,
-				  struct drm_atomic_state *state)
-{
-	struct drm_device *drm = tegra->drm;
-
-	/*
-	 * Everything below can be run asynchronously without the need to grab
-	 * any modeset locks at all under one condition: It must be guaranteed
-	 * that the asynchronous work has either been cancelled (if the driver
-	 * supports it, which at least requires that the framebuffers get
-	 * cleaned up with drm_atomic_helper_cleanup_planes()) or completed
-	 * before the new state gets committed on the software side with
-	 * drm_atomic_helper_swap_state().
-	 *
-	 * This scheme allows new atomic state updates to be prepared and
-	 * checked in parallel to the asynchronous completion of the previous
-	 * update. Which is important since compositors need to figure out the
-	 * composition of the next frame right after having submitted the
-	 * current layout.
-	 */
-
-	drm_atomic_helper_commit_modeset_disables(drm, state);
-	drm_atomic_helper_commit_modeset_enables(drm, state);
-	drm_atomic_helper_commit_planes(drm, state,
-					DRM_PLANE_COMMIT_ACTIVE_ONLY);
-
-	drm_atomic_helper_wait_for_vblanks(drm, state);
-
-	drm_atomic_helper_cleanup_planes(drm, state);
-	drm_atomic_state_put(state);
-}
-
-static void tegra_atomic_work(struct work_struct *work)
-{
-	struct tegra_drm *tegra = container_of(work, struct tegra_drm,
-					       commit.work);
-
-	tegra_atomic_complete(tegra, tegra->commit.state);
-}
-
-static int tegra_atomic_commit(struct drm_device *drm,
-			       struct drm_atomic_state *state, bool nonblock)
-{
-	struct tegra_drm *tegra = drm->dev_private;
 	int err;
 
-	err = drm_atomic_helper_prepare_planes(drm, state);
-	if (err)
+	err = drm_atomic_helper_check_modeset(drm, state);
+	if (err < 0)
 		return err;
 
-	/* serialize outstanding nonblocking commits */
-	mutex_lock(&tegra->commit.lock);
-	flush_work(&tegra->commit.work);
+	err = drm_atomic_normalize_zpos(drm, state);
+	if (err < 0)
+		return err;
 
-	/*
-	 * This is the point of no return - everything below never fails except
-	 * when the hw goes bonghits. Which means we can commit the new state on
-	 * the software side now.
-	 */
+	err = drm_atomic_helper_check_planes(drm, state);
+	if (err < 0)
+		return err;
 
-	drm_atomic_helper_swap_state(state, true);
+	if (state->legacy_cursor_update)
+		state->async_update = !drm_atomic_helper_async_check(drm, state);
 
-	drm_atomic_state_get(state);
-	if (nonblock)
-		tegra_atomic_schedule(tegra, state);
-	else
-		tegra_atomic_complete(tegra, state);
-
-	mutex_unlock(&tegra->commit.lock);
 	return 0;
 }
 
-static const struct drm_mode_config_funcs tegra_drm_mode_funcs = {
+static struct drm_atomic_state *
+tegra_atomic_state_alloc(struct drm_device *drm)
+{
+	struct tegra_atomic_state *state = kzalloc(sizeof(*state), GFP_KERNEL);
+
+	if (!state || drm_atomic_state_init(drm, &state->base) < 0) {
+		kfree(state);
+		return NULL;
+	}
+
+	return &state->base;
+}
+
+static void tegra_atomic_state_clear(struct drm_atomic_state *state)
+{
+	struct tegra_atomic_state *tegra = to_tegra_atomic_state(state);
+
+	drm_atomic_state_default_clear(state);
+	tegra->clk_disp = NULL;
+	tegra->dc = NULL;
+	tegra->rate = 0;
+}
+
+static void tegra_atomic_state_free(struct drm_atomic_state *state)
+{
+	drm_atomic_state_default_release(state);
+	kfree(state);
+}
+
+static const struct drm_mode_config_funcs tegra_drm_mode_config_funcs = {
 	.fb_create = tegra_fb_create,
 #ifdef CONFIG_DRM_FBDEV_EMULATION
-	.output_poll_changed = tegra_fb_output_poll_changed,
+	.output_poll_changed = drm_fb_helper_output_poll_changed,
 #endif
-	.atomic_check = drm_atomic_helper_check,
-	.atomic_commit = tegra_atomic_commit,
+	.atomic_check = tegra_atomic_check,
+	.atomic_commit = drm_atomic_helper_commit,
+	.atomic_state_alloc = tegra_atomic_state_alloc,
+	.atomic_state_clear = tegra_atomic_state_clear,
+	.atomic_state_free = tegra_atomic_state_free,
+};
+
+static void tegra_atomic_commit_tail(struct drm_atomic_state *old_state)
+{
+	struct drm_device *drm = old_state->dev;
+	struct tegra_drm *tegra = drm->dev_private;
+
+	if (tegra->hub) {
+		drm_atomic_helper_commit_modeset_disables(drm, old_state);
+		tegra_display_hub_atomic_commit(drm, old_state);
+		drm_atomic_helper_commit_planes(drm, old_state, 0);
+		drm_atomic_helper_commit_modeset_enables(drm, old_state);
+		drm_atomic_helper_commit_hw_done(old_state);
+		drm_atomic_helper_wait_for_vblanks(drm, old_state);
+		drm_atomic_helper_cleanup_planes(drm, old_state);
+	} else {
+		drm_atomic_helper_commit_tail_rpm(old_state);
+	}
+}
+
+static const struct drm_mode_config_helper_funcs
+tegra_drm_mode_config_helpers = {
+	.atomic_commit_tail = tegra_atomic_commit_tail,
 };
 
 static int tegra_drm_load(struct drm_device *drm, unsigned long flags)
@@ -150,8 +149,7 @@ static int tegra_drm_load(struct drm_device *drm, unsigned long flags)
 
 		order = __ffs(tegra->domain->pgsize_bitmap);
 		init_iova_domain(&tegra->carveout.domain, 1UL << order,
-				 carveout_start >> order,
-				 carveout_end >> order);
+				 carveout_start >> order);
 
 		tegra->carveout.shift = iova_shift(&tegra->carveout.domain);
 		tegra->carveout.limit = carveout_end >> tegra->carveout.shift;
@@ -168,9 +166,6 @@ static int tegra_drm_load(struct drm_device *drm, unsigned long flags)
 	mutex_init(&tegra->clients_lock);
 	INIT_LIST_HEAD(&tegra->clients);
 
-	mutex_init(&tegra->commit.lock);
-	INIT_WORK(&tegra->commit.work, tegra_atomic_work);
-
 	drm->dev_private = tegra;
 	tegra->drm = drm;
 
@@ -184,7 +179,8 @@ static int tegra_drm_load(struct drm_device *drm, unsigned long flags)
 
 	drm->mode_config.allow_fb_modifiers = true;
 
-	drm->mode_config.funcs = &tegra_drm_mode_funcs;
+	drm->mode_config.funcs = &tegra_drm_mode_config_funcs;
+	drm->mode_config.helper_private = &tegra_drm_mode_config_helpers;
 
 	err = tegra_drm_fb_prepare(drm);
 	if (err < 0)
@@ -195,6 +191,12 @@ static int tegra_drm_load(struct drm_device *drm, unsigned long flags)
 	err = host1x_device_init(device);
 	if (err < 0)
 		goto fbdev;
+
+	if (tegra->hub) {
+		err = tegra_display_hub_prepare(tegra->hub);
+		if (err < 0)
+			goto device;
+	}
 
 	/*
 	 * We don't use the drm_irq_install() helpers provided by the DRM
@@ -208,18 +210,19 @@ static int tegra_drm_load(struct drm_device *drm, unsigned long flags)
 
 	err = drm_vblank_init(drm, drm->mode_config.num_crtc);
 	if (err < 0)
-		goto device;
+		goto hub;
 
 	drm_mode_config_reset(drm);
 
 	err = tegra_drm_fb_init(drm);
 	if (err < 0)
-		goto vblank;
+		goto hub;
 
 	return 0;
 
-vblank:
-	drm_vblank_cleanup(drm);
+hub:
+	if (tegra->hub)
+		tegra_display_hub_cleanup(tegra->hub);
 device:
 	host1x_device_exit(device);
 fbdev:
@@ -248,7 +251,6 @@ static void tegra_drm_unload(struct drm_device *drm)
 	drm_kms_helper_poll_fini(drm);
 	tegra_drm_fb_exit(drm);
 	drm_mode_config_cleanup(drm);
-	drm_vblank_cleanup(drm);
 
 	err = host1x_device_exit(device);
 	if (err < 0)
@@ -285,15 +287,6 @@ static void tegra_drm_context_free(struct tegra_drm_context *context)
 	kfree(context);
 }
 
-static void tegra_drm_lastclose(struct drm_device *drm)
-{
-#ifdef CONFIG_DRM_FBDEV_EMULATION
-	struct tegra_drm *tegra = drm->dev_private;
-
-	tegra_fbdev_restore_mode(tegra->fbdev);
-#endif
-}
-
 static struct host1x_bo *
 host1x_bo_lookup(struct drm_file *file, u32 handle)
 {
@@ -303,8 +296,6 @@ host1x_bo_lookup(struct drm_file *file, u32 handle)
 	gem = drm_gem_object_lookup(file, handle);
 	if (!gem)
 		return NULL;
-
-	drm_gem_object_unreference_unlocked(gem);
 
 	bo = to_tegra_bo(gem);
 	return &bo->base;
@@ -386,17 +377,22 @@ int tegra_drm_submit(struct tegra_drm_context *context,
 	unsigned int num_cmdbufs = args->num_cmdbufs;
 	unsigned int num_relocs = args->num_relocs;
 	unsigned int num_waitchks = args->num_waitchks;
-	struct drm_tegra_cmdbuf __user *cmdbufs =
-		(void __user *)(uintptr_t)args->cmdbufs;
-	struct drm_tegra_reloc __user *relocs =
-		(void __user *)(uintptr_t)args->relocs;
-	struct drm_tegra_waitchk __user *waitchks =
-		(void __user *)(uintptr_t)args->waitchks;
+	struct drm_tegra_cmdbuf __user *user_cmdbufs;
+	struct drm_tegra_reloc __user *user_relocs;
+	struct drm_tegra_waitchk __user *user_waitchks;
+	struct drm_tegra_syncpt __user *user_syncpt;
 	struct drm_tegra_syncpt syncpt;
 	struct host1x *host1x = dev_get_drvdata(drm->dev->parent);
+	struct drm_gem_object **refs;
 	struct host1x_syncpt *sp;
 	struct host1x_job *job;
+	unsigned int num_refs;
 	int err;
+
+	user_cmdbufs = u64_to_user_ptr(args->cmdbufs);
+	user_relocs = u64_to_user_ptr(args->relocs);
+	user_waitchks = u64_to_user_ptr(args->waitchks);
+	user_syncpt = u64_to_user_ptr(args->syncpts);
 
 	/* We don't yet support other than one syncpt_incr struct per submit */
 	if (args->num_syncpts != 1)
@@ -417,13 +413,28 @@ int tegra_drm_submit(struct tegra_drm_context *context,
 	job->class = context->client->base.class;
 	job->serialize = true;
 
+	/*
+	 * Track referenced BOs so that they can be unreferenced after the
+	 * submission is complete.
+	 */
+	num_refs = num_cmdbufs + num_relocs * 2 + num_waitchks;
+
+	refs = kmalloc_array(num_refs, sizeof(*refs), GFP_KERNEL);
+	if (!refs) {
+		err = -ENOMEM;
+		goto put;
+	}
+
+	/* reuse as an iterator later */
+	num_refs = 0;
+
 	while (num_cmdbufs) {
 		struct drm_tegra_cmdbuf cmdbuf;
 		struct host1x_bo *bo;
 		struct tegra_bo *obj;
 		u64 offset;
 
-		if (copy_from_user(&cmdbuf, cmdbufs, sizeof(cmdbuf))) {
+		if (copy_from_user(&cmdbuf, user_cmdbufs, sizeof(cmdbuf))) {
 			err = -EFAULT;
 			goto fail;
 		}
@@ -445,6 +456,7 @@ int tegra_drm_submit(struct tegra_drm_context *context,
 
 		offset = (u64)cmdbuf.offset + (u64)cmdbuf.words * sizeof(u32);
 		obj = host1x_to_tegra_bo(bo);
+		refs[num_refs++] = &obj->gem;
 
 		/*
 		 * Gather buffer base address must be 4-bytes aligned,
@@ -458,7 +470,7 @@ int tegra_drm_submit(struct tegra_drm_context *context,
 
 		host1x_job_add_gather(job, bo, cmdbuf.words, cmdbuf.offset);
 		num_cmdbufs--;
-		cmdbufs++;
+		user_cmdbufs++;
 	}
 
 	/* copy and resolve relocations from submit */
@@ -467,13 +479,14 @@ int tegra_drm_submit(struct tegra_drm_context *context,
 		struct tegra_bo *obj;
 
 		err = host1x_reloc_copy_from_user(&job->relocarray[num_relocs],
-						  &relocs[num_relocs], drm,
+						  &user_relocs[num_relocs], drm,
 						  file);
 		if (err < 0)
 			goto fail;
 
 		reloc = &job->relocarray[num_relocs];
 		obj = host1x_to_tegra_bo(reloc->cmdbuf.bo);
+		refs[num_refs++] = &obj->gem;
 
 		/*
 		 * The unaligned cmdbuf offset will cause an unaligned write
@@ -487,6 +500,7 @@ int tegra_drm_submit(struct tegra_drm_context *context,
 		}
 
 		obj = host1x_to_tegra_bo(reloc->target.bo);
+		refs[num_refs++] = &obj->gem;
 
 		if (reloc->target.offset >= obj->gem.size) {
 			err = -EINVAL;
@@ -499,13 +513,13 @@ int tegra_drm_submit(struct tegra_drm_context *context,
 		struct host1x_waitchk *wait = &job->waitchk[num_waitchks];
 		struct tegra_bo *obj;
 
-		err = host1x_waitchk_copy_from_user(wait,
-						    &waitchks[num_waitchks],
-						    file);
+		err = host1x_waitchk_copy_from_user(
+			wait, &user_waitchks[num_waitchks], file);
 		if (err < 0)
 			goto fail;
 
 		obj = host1x_to_tegra_bo(wait->bo);
+		refs[num_refs++] = &obj->gem;
 
 		/*
 		 * The unaligned offset will cause an unaligned write during
@@ -518,8 +532,7 @@ int tegra_drm_submit(struct tegra_drm_context *context,
 		}
 	}
 
-	if (copy_from_user(&syncpt, (void __user *)(uintptr_t)args->syncpts,
-			   sizeof(syncpt))) {
+	if (copy_from_user(&syncpt, user_syncpt, sizeof(syncpt))) {
 		err = -EFAULT;
 		goto fail;
 	}
@@ -545,17 +558,20 @@ int tegra_drm_submit(struct tegra_drm_context *context,
 		goto fail;
 
 	err = host1x_job_submit(job);
-	if (err)
-		goto fail_submit;
+	if (err) {
+		host1x_job_unpin(job);
+		goto fail;
+	}
 
 	args->fence = job->syncpt_end;
 
-	host1x_job_put(job);
-	return 0;
-
-fail_submit:
-	host1x_job_unpin(job);
 fail:
+	while (num_refs--)
+		drm_gem_object_put_unlocked(refs[num_refs]);
+
+	kfree(refs);
+
+put:
 	host1x_job_put(job);
 	return err;
 }
@@ -591,7 +607,7 @@ static int tegra_gem_mmap(struct drm_device *drm, void *data,
 
 	args->offset = drm_vma_node_offset_addr(&bo->gem.vma_node);
 
-	drm_gem_object_unreference_unlocked(gem);
+	drm_gem_object_put_unlocked(gem);
 
 	return 0;
 }
@@ -636,7 +652,8 @@ static int tegra_syncpt_wait(struct drm_device *drm, void *data,
 	if (!sp)
 		return -EINVAL;
 
-	return host1x_syncpt_wait(sp, args->thresh, args->timeout,
+	return host1x_syncpt_wait(sp, args->thresh,
+				  msecs_to_jiffies(args->timeout),
 				  &args->value);
 }
 
@@ -858,7 +875,7 @@ static int tegra_gem_set_tiling(struct drm_device *drm, void *data,
 	bo->tiling.mode = mode;
 	bo->tiling.value = value;
 
-	drm_gem_object_unreference_unlocked(gem);
+	drm_gem_object_put_unlocked(gem);
 
 	return 0;
 }
@@ -898,7 +915,7 @@ static int tegra_gem_get_tiling(struct drm_device *drm, void *data,
 		break;
 	}
 
-	drm_gem_object_unreference_unlocked(gem);
+	drm_gem_object_put_unlocked(gem);
 
 	return err;
 }
@@ -923,7 +940,7 @@ static int tegra_gem_set_flags(struct drm_device *drm, void *data,
 	if (args->flags & DRM_TEGRA_GEM_BOTTOM_UP)
 		bo->flags |= TEGRA_BO_BOTTOM_UP;
 
-	drm_gem_object_unreference_unlocked(gem);
+	drm_gem_object_put_unlocked(gem);
 
 	return 0;
 }
@@ -945,7 +962,7 @@ static int tegra_gem_get_flags(struct drm_device *drm, void *data,
 	if (bo->flags & TEGRA_BO_BOTTOM_UP)
 		args->flags |= DRM_TEGRA_GEM_BOTTOM_UP;
 
-	drm_gem_object_unreference_unlocked(gem);
+	drm_gem_object_put_unlocked(gem);
 
 	return 0;
 }
@@ -953,20 +970,34 @@ static int tegra_gem_get_flags(struct drm_device *drm, void *data,
 
 static const struct drm_ioctl_desc tegra_drm_ioctls[] = {
 #ifdef CONFIG_DRM_TEGRA_STAGING
-	DRM_IOCTL_DEF_DRV(TEGRA_GEM_CREATE, tegra_gem_create, 0),
-	DRM_IOCTL_DEF_DRV(TEGRA_GEM_MMAP, tegra_gem_mmap, 0),
-	DRM_IOCTL_DEF_DRV(TEGRA_SYNCPT_READ, tegra_syncpt_read, 0),
-	DRM_IOCTL_DEF_DRV(TEGRA_SYNCPT_INCR, tegra_syncpt_incr, 0),
-	DRM_IOCTL_DEF_DRV(TEGRA_SYNCPT_WAIT, tegra_syncpt_wait, 0),
-	DRM_IOCTL_DEF_DRV(TEGRA_OPEN_CHANNEL, tegra_open_channel, 0),
-	DRM_IOCTL_DEF_DRV(TEGRA_CLOSE_CHANNEL, tegra_close_channel, 0),
-	DRM_IOCTL_DEF_DRV(TEGRA_GET_SYNCPT, tegra_get_syncpt, 0),
-	DRM_IOCTL_DEF_DRV(TEGRA_SUBMIT, tegra_submit, 0),
-	DRM_IOCTL_DEF_DRV(TEGRA_GET_SYNCPT_BASE, tegra_get_syncpt_base, 0),
-	DRM_IOCTL_DEF_DRV(TEGRA_GEM_SET_TILING, tegra_gem_set_tiling, 0),
-	DRM_IOCTL_DEF_DRV(TEGRA_GEM_GET_TILING, tegra_gem_get_tiling, 0),
-	DRM_IOCTL_DEF_DRV(TEGRA_GEM_SET_FLAGS, tegra_gem_set_flags, 0),
-	DRM_IOCTL_DEF_DRV(TEGRA_GEM_GET_FLAGS, tegra_gem_get_flags, 0),
+	DRM_IOCTL_DEF_DRV(TEGRA_GEM_CREATE, tegra_gem_create,
+			  DRM_UNLOCKED | DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(TEGRA_GEM_MMAP, tegra_gem_mmap,
+			  DRM_UNLOCKED | DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(TEGRA_SYNCPT_READ, tegra_syncpt_read,
+			  DRM_UNLOCKED | DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(TEGRA_SYNCPT_INCR, tegra_syncpt_incr,
+			  DRM_UNLOCKED | DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(TEGRA_SYNCPT_WAIT, tegra_syncpt_wait,
+			  DRM_UNLOCKED | DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(TEGRA_OPEN_CHANNEL, tegra_open_channel,
+			  DRM_UNLOCKED | DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(TEGRA_CLOSE_CHANNEL, tegra_close_channel,
+			  DRM_UNLOCKED | DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(TEGRA_GET_SYNCPT, tegra_get_syncpt,
+			  DRM_UNLOCKED | DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(TEGRA_SUBMIT, tegra_submit,
+			  DRM_UNLOCKED | DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(TEGRA_GET_SYNCPT_BASE, tegra_get_syncpt_base,
+			  DRM_UNLOCKED | DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(TEGRA_GEM_SET_TILING, tegra_gem_set_tiling,
+			  DRM_UNLOCKED | DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(TEGRA_GEM_GET_TILING, tegra_gem_get_tiling,
+			  DRM_UNLOCKED | DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(TEGRA_GEM_SET_FLAGS, tegra_gem_set_flags,
+			  DRM_UNLOCKED | DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(TEGRA_GEM_GET_FLAGS, tegra_gem_get_flags,
+			  DRM_UNLOCKED | DRM_RENDER_ALLOW),
 #endif
 };
 
@@ -1033,9 +1064,11 @@ static int tegra_debugfs_iova(struct seq_file *s, void *data)
 	struct tegra_drm *tegra = drm->dev_private;
 	struct drm_printer p = drm_seq_file_printer(s);
 
-	mutex_lock(&tegra->mm_lock);
-	drm_mm_print(&tegra->mm, &p);
-	mutex_unlock(&tegra->mm_lock);
+	if (tegra->domain) {
+		mutex_lock(&tegra->mm_lock);
+		drm_mm_print(&tegra->mm, &p);
+		mutex_unlock(&tegra->mm_lock);
+	}
 
 	return 0;
 }
@@ -1055,12 +1088,12 @@ static int tegra_debugfs_init(struct drm_minor *minor)
 
 static struct drm_driver tegra_drm_driver = {
 	.driver_features = DRIVER_MODESET | DRIVER_GEM | DRIVER_PRIME |
-			   DRIVER_ATOMIC,
+			   DRIVER_ATOMIC | DRIVER_RENDER,
 	.load = tegra_drm_load,
 	.unload = tegra_drm_unload,
 	.open = tegra_drm_open,
 	.postclose = tegra_drm_postclose,
-	.lastclose = tegra_drm_lastclose,
+	.lastclose = drm_fb_helper_lastclose,
 
 #if defined(CONFIG_DEBUG_FS)
 	.debugfs_init = tegra_debugfs_init,
@@ -1075,8 +1108,6 @@ static struct drm_driver tegra_drm_driver = {
 	.gem_prime_import = tegra_gem_prime_import,
 
 	.dumb_create = tegra_bo_dumb_create,
-	.dumb_map_offset = tegra_bo_dumb_map_offset,
-	.dumb_destroy = drm_gem_dumb_destroy,
 
 	.ioctls = tegra_drm_ioctls,
 	.num_ioctls = ARRAY_SIZE(tegra_drm_ioctls),
@@ -1110,8 +1141,7 @@ int tegra_drm_unregister_client(struct tegra_drm *tegra,
 	return 0;
 }
 
-void *tegra_drm_alloc(struct tegra_drm *tegra, size_t size,
-			      dma_addr_t *dma)
+void *tegra_drm_alloc(struct tegra_drm *tegra, size_t size, dma_addr_t *dma)
 {
 	struct iova *alloc;
 	void *virt;
@@ -1279,6 +1309,11 @@ static const struct of_device_id host1x_drm_subdevs[] = {
 	{ .compatible = "nvidia,tegra210-sor", },
 	{ .compatible = "nvidia,tegra210-sor1", },
 	{ .compatible = "nvidia,tegra210-vic", },
+	{ .compatible = "nvidia,tegra186-display", },
+	{ .compatible = "nvidia,tegra186-dc", },
+	{ .compatible = "nvidia,tegra186-sor", },
+	{ .compatible = "nvidia,tegra186-sor1", },
+	{ .compatible = "nvidia,tegra186-vic", },
 	{ /* sentinel */ }
 };
 
@@ -1293,6 +1328,7 @@ static struct host1x_driver host1x_drm_driver = {
 };
 
 static struct platform_driver * const drivers[] = {
+	&tegra_display_hub_driver,
 	&tegra_dc_driver,
 	&tegra_hdmi_driver,
 	&tegra_dsi_driver,

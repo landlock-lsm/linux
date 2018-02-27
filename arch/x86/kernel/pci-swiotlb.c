@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /* Glue code to lib/swiotlb.c */
 
 #include <linux/pci.h>
@@ -5,13 +6,15 @@
 #include <linux/init.h>
 #include <linux/swiotlb.h>
 #include <linux/bootmem.h>
-#include <linux/dma-mapping.h>
+#include <linux/dma-direct.h>
+#include <linux/mem_encrypt.h>
 
 #include <asm/iommu.h>
 #include <asm/swiotlb.h>
 #include <asm/dma.h>
 #include <asm/xen/swiotlb-xen.h>
 #include <asm/iommu_table.h>
+
 int swiotlb __read_mostly;
 
 void *x86_swiotlb_alloc_coherent(struct device *hwdev, size_t size,
@@ -45,7 +48,7 @@ void x86_swiotlb_free_coherent(struct device *dev, size_t size,
 		dma_generic_free_coherent(dev, size, vaddr, dma_addr, attrs);
 }
 
-static const struct dma_map_ops swiotlb_dma_ops = {
+static const struct dma_map_ops x86_swiotlb_dma_ops = {
 	.mapping_error = swiotlb_dma_mapping_error,
 	.alloc = x86_swiotlb_alloc_coherent,
 	.free = x86_swiotlb_free_coherent,
@@ -79,8 +82,8 @@ IOMMU_INIT_FINISH(pci_swiotlb_detect_override,
 		  pci_swiotlb_late_init);
 
 /*
- * if 4GB or more detected (and iommu=off not set) return 1
- * and set swiotlb to 1.
+ * If 4GB or more detected (and iommu=off not set) or if SME is active
+ * then set swiotlb to 1 and return 1.
  */
 int __init pci_swiotlb_detect_4gb(void)
 {
@@ -89,6 +92,15 @@ int __init pci_swiotlb_detect_4gb(void)
 	if (!no_iommu && max_possible_pfn > MAX_DMA32_PFN)
 		swiotlb = 1;
 #endif
+
+	/*
+	 * If SME is active then swiotlb will be set to 1 so that bounce
+	 * buffers are allocated and used for devices that do not support
+	 * the addressing range required for the encryption mask.
+	 */
+	if (sme_active())
+		swiotlb = 1;
+
 	return swiotlb;
 }
 IOMMU_INIT(pci_swiotlb_detect_4gb,
@@ -100,7 +112,7 @@ void __init pci_swiotlb_init(void)
 {
 	if (swiotlb) {
 		swiotlb_init(0);
-		dma_ops = &swiotlb_dma_ops;
+		dma_ops = &x86_swiotlb_dma_ops;
 	}
 }
 
@@ -108,7 +120,7 @@ void __init pci_swiotlb_late_init(void)
 {
 	/* An IOMMU turned us off. */
 	if (!swiotlb)
-		swiotlb_free();
+		swiotlb_exit();
 	else {
 		printk(KERN_INFO "PCI-DMA: "
 		       "Using software bounce buffering for IO (SWIOTLB)\n");

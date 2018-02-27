@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 #ifndef _ASM_X86_HYPERV_H
 #define _ASM_X86_HYPERV_H
 
@@ -38,6 +39,9 @@
  * to MSRs with local APIC and TSC frequencies.
  */
 #define HV_X64_ACCESS_FREQUENCY_MSRS		(1 << 11)
+
+/* AccessReenlightenmentControls privilege */
+#define HV_X64_ACCESS_REENLIGHTENMENT		BIT(13)
 
 /*
  * Basic SynIC MSRs (HV_X64_MSR_SCONTROL through HV_X64_MSR_EOM
@@ -149,11 +153,8 @@
  */
 #define HV_X64_DEPRECATING_AEOI_RECOMMENDED	(1 << 9)
 
-/*
- * HV_VP_SET available
- */
+/* Recommend using the newer ExProcessorMasks interface */
 #define HV_X64_EX_PROCESSOR_MASKS_RECOMMENDED	(1 << 11)
-
 
 /*
  * Crash notification flag.
@@ -236,13 +237,41 @@
 #define HV_X64_MSR_CRASH_PARAMS		\
 		(1 + (HV_X64_MSR_CRASH_P4 - HV_X64_MSR_CRASH_P0))
 
+/* TSC emulation after migration */
+#define HV_X64_MSR_REENLIGHTENMENT_CONTROL	0x40000106
+
+struct hv_reenlightenment_control {
+	u64 vector:8;
+	u64 reserved1:8;
+	u64 enabled:1;
+	u64 reserved2:15;
+	u64 target_vp:32;
+};
+
+#define HV_X64_MSR_TSC_EMULATION_CONTROL	0x40000107
+#define HV_X64_MSR_TSC_EMULATION_STATUS		0x40000108
+
+struct hv_tsc_emulation_control {
+	u64 enabled:1;
+	u64 reserved:63;
+};
+
+struct hv_tsc_emulation_status {
+	u64 inprogress:1;
+	u64 reserved:63;
+};
+
 #define HV_X64_MSR_HYPERCALL_ENABLE		0x00000001
 #define HV_X64_MSR_HYPERCALL_PAGE_ADDRESS_SHIFT	12
 #define HV_X64_MSR_HYPERCALL_PAGE_ADDRESS_MASK	\
 		(~((1ull << HV_X64_MSR_HYPERCALL_PAGE_ADDRESS_SHIFT) - 1))
 
 /* Declare the various hypercall operations. */
+#define HVCALL_FLUSH_VIRTUAL_ADDRESS_SPACE	0x0002
+#define HVCALL_FLUSH_VIRTUAL_ADDRESS_LIST	0x0003
 #define HVCALL_NOTIFY_LONG_SPIN_WAIT		0x0008
+#define HVCALL_FLUSH_VIRTUAL_ADDRESS_SPACE_EX  0x0013
+#define HVCALL_FLUSH_VIRTUAL_ADDRESS_LIST_EX   0x0014
 #define HVCALL_POST_MESSAGE			0x005c
 #define HVCALL_SIGNAL_EVENT			0x005d
 
@@ -258,6 +287,16 @@
 #define HV_PROCESSOR_POWER_STATE_C1		1
 #define HV_PROCESSOR_POWER_STATE_C2		2
 #define HV_PROCESSOR_POWER_STATE_C3		3
+
+#define HV_FLUSH_ALL_PROCESSORS			BIT(0)
+#define HV_FLUSH_ALL_VIRTUAL_ADDRESS_SPACES	BIT(1)
+#define HV_FLUSH_NON_GLOBAL_MAPPINGS_ONLY	BIT(2)
+#define HV_FLUSH_USE_EXTENDED_RANGE_FORMAT	BIT(3)
+
+enum HV_GENERIC_SET_FORMAT {
+	HV_GENERIC_SET_SPARCE_4K,
+	HV_GENERIC_SET_ALL,
+};
 
 /* hypercall status code */
 #define HV_STATUS_SUCCESS			0

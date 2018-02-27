@@ -16,6 +16,7 @@
 #include <linux/nfs_fs.h>
 #include <linux/nfs_fs_sb.h>
 #include <linux/in6.h>
+#include <linux/iversion.h>
 
 #include "internal.h"
 #include "fscache.h"
@@ -211,7 +212,7 @@ static uint16_t nfs_fscache_inode_get_aux(const void *cookie_netfs_data,
 	auxdata.ctime = nfsi->vfs_inode.i_ctime;
 
 	if (NFS_SERVER(&nfsi->vfs_inode)->nfs_client->rpc_ops->version == 4)
-		auxdata.change_attr = nfsi->vfs_inode.i_version;
+		auxdata.change_attr = inode_peek_iversion_raw(&nfsi->vfs_inode);
 
 	if (bufmax > sizeof(auxdata))
 		bufmax = sizeof(auxdata);
@@ -243,51 +244,12 @@ enum fscache_checkaux nfs_fscache_inode_check_aux(void *cookie_netfs_data,
 	auxdata.ctime = nfsi->vfs_inode.i_ctime;
 
 	if (NFS_SERVER(&nfsi->vfs_inode)->nfs_client->rpc_ops->version == 4)
-		auxdata.change_attr = nfsi->vfs_inode.i_version;
+		auxdata.change_attr = inode_peek_iversion_raw(&nfsi->vfs_inode);
 
 	if (memcmp(data, &auxdata, datalen) != 0)
 		return FSCACHE_CHECKAUX_OBSOLETE;
 
 	return FSCACHE_CHECKAUX_OKAY;
-}
-
-/*
- * Indication from FS-Cache that the cookie is no longer cached
- * - This function is called when the backing store currently caching a cookie
- *   is removed
- * - The netfs should use this to clean up any markers indicating cached pages
- * - This is mandatory for any object that may have data
- */
-static void nfs_fscache_inode_now_uncached(void *cookie_netfs_data)
-{
-	struct nfs_inode *nfsi = cookie_netfs_data;
-	struct pagevec pvec;
-	pgoff_t first;
-	int loop, nr_pages;
-
-	pagevec_init(&pvec, 0);
-	first = 0;
-
-	dprintk("NFS: nfs_inode_now_uncached: nfs_inode 0x%p\n", nfsi);
-
-	for (;;) {
-		/* grab a bunch of pages to unmark */
-		nr_pages = pagevec_lookup(&pvec,
-					  nfsi->vfs_inode.i_mapping,
-					  first,
-					  PAGEVEC_SIZE - pagevec_count(&pvec));
-		if (!nr_pages)
-			break;
-
-		for (loop = 0; loop < nr_pages; loop++)
-			ClearPageFsCache(pvec.pages[loop]);
-
-		first = pvec.pages[nr_pages - 1]->index + 1;
-
-		pvec.nr = nr_pages;
-		pagevec_release(&pvec);
-		cond_resched();
-	}
 }
 
 /*
@@ -330,7 +292,6 @@ const struct fscache_cookie_def nfs_fscache_inode_object_def = {
 	.get_attr	= nfs_fscache_inode_get_attr,
 	.get_aux	= nfs_fscache_inode_get_aux,
 	.check_aux	= nfs_fscache_inode_check_aux,
-	.now_uncached	= nfs_fscache_inode_now_uncached,
 	.get_context	= nfs_fh_get_context,
 	.put_context	= nfs_fh_put_context,
 };

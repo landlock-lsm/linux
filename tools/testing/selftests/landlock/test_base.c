@@ -17,7 +17,7 @@ TEST(seccomp_landlock)
 {
 	int ret;
 
-	ret = seccomp(SECCOMP_PREPEND_LANDLOCK_RULE, 0, NULL);
+	ret = seccomp(SECCOMP_PREPEND_LANDLOCK_PROG, 0, NULL);
 	EXPECT_EQ(-1, ret);
 	EXPECT_EQ(EFAULT, errno) {
 		TH_LOG("Kernel does not support CONFIG_SECURITY_LANDLOCK");

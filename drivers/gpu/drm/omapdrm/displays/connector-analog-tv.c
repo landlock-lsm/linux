@@ -1,7 +1,7 @@
 /*
  * Analog TV Connector driver
  *
- * Copyright (C) 2013 Texas Instruments
+ * Copyright (C) 2013 Texas Instruments Incorporated - http://www.ti.com/
  * Author: Tomi Valkeinen <tomi.valkeinen@ti.com>
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -197,6 +197,9 @@ static int tvc_probe(struct platform_device *pdev)
 	struct panel_drv_data *ddata;
 	struct omap_dss_device *dssdev;
 	int r;
+
+	if (!pdev->dev.of_node)
+		return -ENODEV;
 
 	ddata = devm_kzalloc(&pdev->dev, sizeof(*ddata), GFP_KERNEL);
 	if (!ddata)

@@ -573,27 +573,24 @@ static int ib_cache_gid_find_by_filter(struct ib_device *ib_dev,
 		struct ib_gid_attr attr;
 
 		if (table->data_vec[i].props & GID_TABLE_ENTRY_INVALID)
-			goto next;
+			continue;
 
 		if (memcmp(gid, &table->data_vec[i].gid, sizeof(*gid)))
-			goto next;
+			continue;
 
 		memcpy(&attr, &table->data_vec[i].attr, sizeof(attr));
 
-		if (filter(gid, &attr, context))
+		if (filter(gid, &attr, context)) {
 			found = true;
-
-next:
-		if (found)
+			if (index)
+				*index = i;
 			break;
+		}
 	}
 	read_unlock_irqrestore(&table->rwlock, flags);
 
 	if (!found)
 		return -ENOENT;
-
-	if (index)
-		*index = i;
 	return 0;
 }
 
@@ -824,12 +821,7 @@ static int gid_table_setup_one(struct ib_device *ib_dev)
 	if (err)
 		return err;
 
-	err = roce_rescan_device(ib_dev);
-
-	if (err) {
-		gid_table_cleanup_one(ib_dev);
-		gid_table_release_one(ib_dev);
-	}
+	rdma_roce_rescan_device(ib_dev);
 
 	return err;
 }
@@ -883,7 +875,6 @@ int ib_find_gid_by_filter(struct ib_device *device,
 					   port_num, filter,
 					   context, index);
 }
-EXPORT_SYMBOL(ib_find_gid_by_filter);
 
 int ib_get_cached_pkey(struct ib_device *device,
 		       u8                port_num,
@@ -1199,30 +1190,23 @@ int ib_cache_setup_one(struct ib_device *device)
 	device->cache.ports =
 		kzalloc(sizeof(*device->cache.ports) *
 			(rdma_end_port(device) - rdma_start_port(device) + 1), GFP_KERNEL);
-	if (!device->cache.ports) {
-		err = -ENOMEM;
-		goto out;
-	}
+	if (!device->cache.ports)
+		return -ENOMEM;
 
 	err = gid_table_setup_one(device);
-	if (err)
-		goto out;
+	if (err) {
+		kfree(device->cache.ports);
+		device->cache.ports = NULL;
+		return err;
+	}
 
 	for (p = 0; p <= rdma_end_port(device) - rdma_start_port(device); ++p)
 		ib_cache_update(device, p + rdma_start_port(device), true);
 
 	INIT_IB_EVENT_HANDLER(&device->cache.event_handler,
 			      device, ib_cache_event);
-	err = ib_register_event_handler(&device->cache.event_handler);
-	if (err)
-		goto err;
-
+	ib_register_event_handler(&device->cache.event_handler);
 	return 0;
-
-err:
-	gid_table_cleanup_one(device);
-out:
-	return err;
 }
 
 void ib_cache_release_one(struct ib_device *device)

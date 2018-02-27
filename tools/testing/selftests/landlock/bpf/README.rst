@@ -1,1 +1,0 @@
-../../../../../samples/bpf/README.rst

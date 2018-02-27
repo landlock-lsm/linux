@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -11,6 +12,7 @@
 #include <stdlib.h>
 #include <linux/bpf.h>
 #include <linux/filter.h>
+#include <linux/landlock.h>
 #include <linux/perf_event.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
@@ -31,8 +33,6 @@
 
 static char license[128];
 static int kern_version;
-static union bpf_prog_subtype subtype = {};
-static bool has_subtype;
 static bool processed_sec[128];
 char bpf_log_buf[BPF_LOG_BUF_SIZE];
 int map_fd[MAX_MAPS];
@@ -43,6 +43,9 @@ int prog_array_fd = -1;
 
 struct bpf_map_data map_data[MAX_MAPS];
 int map_data_count = 0;
+
+struct bpf_subtype_data subtype_data[MAX_PROGS];
+int subtype_data_count = 0;
 
 static int populate_prog_array(const char *event, int prog_fd)
 {
@@ -75,6 +78,7 @@ static int load_and_attach(const char *event, struct bpf_insn *prog, int size)
 	int fd, efd, err, id;
 	struct perf_event_attr attr = {};
 	union bpf_prog_subtype *st = NULL;
+	struct bpf_subtype_data *sd = NULL;
 
 	attr.type = PERF_TYPE_TRACEPOINT;
 	attr.sample_type = PERF_SAMPLE_RAW;
@@ -100,12 +104,49 @@ static int load_and_attach(const char *event, struct bpf_insn *prog, int size)
 	} else if (is_sk_skb) {
 		prog_type = BPF_PROG_TYPE_SK_SKB;
 	} else if (is_landlock) {
-		prog_type = BPF_PROG_TYPE_LANDLOCK_RULE;
-		if (!has_subtype) {
-			printf("No subtype\n");
+		int i, prog_id;
+		const char *event_id = (event + 8);
+
+		if (!isdigit(*event_id)) {
+			printf("invalid prog number\n");
 			return -1;
 		}
-		st = &subtype;
+		prog_id = atoi(event_id);
+		for (i = 0; i < subtype_data_count; i++) {
+			if (subtype_data[i].name && strcmp(event,
+						subtype_data[i].name) == 0) {
+				/* save the prog_id for a next program */
+				sd = &subtype_data[i];
+				sd->prog_id = prog_id;
+				st = &sd->subtype;
+				free(sd->name);
+				sd->name = NULL;
+				break;
+			}
+		}
+		if (!st) {
+			printf("missing subtype\n");
+			return -1;
+		}
+		/* automatic conversion of program pointer to FD */
+		if (st->landlock_hook.options & LANDLOCK_OPTION_PREVIOUS) {
+			int previous = -1;
+
+			/* assume the previous program is already loaded */
+			for (i = 0; i < subtype_data_count; i++) {
+				if (subtype_data[i].prog_id ==
+						st->landlock_hook.previous) {
+					previous = subtype_data[i].prog_fd;
+					break;
+				}
+			}
+			if (previous == -1) {
+				printf("could not find the previous program\n");
+				return -1;
+			}
+			st->landlock_hook.previous = previous;
+		}
+		prog_type = BPF_PROG_TYPE_LANDLOCK_HOOK;
 	} else {
 		printf("Unknown event '%s'\n", event);
 		return -1;
@@ -117,6 +158,8 @@ static int load_and_attach(const char *event, struct bpf_insn *prog, int size)
 		printf("bpf_load_program() err=%d\n%s", errno, bpf_log_buf);
 		return -1;
 	}
+	if (sd)
+		sd->prog_fd = fd;
 
 	prog_fd[prog_cnt++] = fd;
 
@@ -204,8 +247,18 @@ static int load_and_attach(const char *event, struct bpf_insn *prog, int size)
 		return -1;
 	}
 	event_fd[prog_cnt - 1] = efd;
-	ioctl(efd, PERF_EVENT_IOC_ENABLE, 0);
-	ioctl(efd, PERF_EVENT_IOC_SET_BPF, fd);
+	err = ioctl(efd, PERF_EVENT_IOC_ENABLE, 0);
+	if (err < 0) {
+		printf("ioctl PERF_EVENT_IOC_ENABLE failed err %s\n",
+		       strerror(errno));
+		return -1;
+	}
+	err = ioctl(efd, PERF_EVENT_IOC_SET_BPF, fd);
+	if (err < 0) {
+		printf("ioctl PERF_EVENT_IOC_SET_BPF failed err %s\n",
+		       strerror(errno));
+		return -1;
+	}
 
 	return 0;
 }
@@ -233,6 +286,7 @@ static int load_maps(struct bpf_map_data *maps, int nr_maps,
 			int inner_map_fd = map_fd[maps[i].def.inner_map_idx];
 
 			map_fd[i] = bpf_create_map_in_map_node(maps[i].def.type,
+							maps[i].name,
 							maps[i].def.key_size,
 							inner_map_fd,
 							maps[i].def.max_entries,
@@ -240,6 +294,7 @@ static int load_maps(struct bpf_map_data *maps, int nr_maps,
 							numa_node);
 		} else {
 			map_fd[i] = bpf_create_map_node(maps[i].def.type,
+							maps[i].name,
 							maps[i].def.key_size,
 							maps[i].def.value_size,
 							maps[i].def.max_entries,
@@ -465,7 +520,6 @@ static int do_load_bpf_file(const char *path, fixup_map_cb fixup_map)
 	kern_version = 0;
 	memset(license, 0, sizeof(license));
 	memset(processed_sec, 0, sizeof(processed_sec));
-	has_subtype = false;
 
 	if (elf_version(EV_CURRENT) == EV_NONE)
 		return 1;
@@ -514,16 +568,29 @@ static int do_load_bpf_file(const char *path, fixup_map_cb fixup_map)
 			data_maps = data;
 			for (j = 0; j < MAX_MAPS; j++)
 				map_data[j].fd = -1;
-		} else if (strcmp(shname, "subtype") == 0) {
+		} else if (strncmp(shname, "subtype", 7) == 0) {
 			processed_sec[i] = true;
-			if (data->d_size != sizeof(union bpf_prog_subtype)) {
-				printf("invalid size of subtype section %zd\n",
-				       data->d_size);
+			if (*(shname + 7) != '/') {
+				printf("invalid name of subtype section");
 				return 1;
 			}
-			memcpy(&subtype, data->d_buf,
-			       sizeof(union bpf_prog_subtype));
-			has_subtype = true;
+			if (data->d_size != sizeof(union bpf_prog_subtype)) {
+				printf("invalid size of subtype section: %zd\n",
+				       data->d_size);
+				printf("ref: %zd\n",
+				       sizeof(union bpf_prog_subtype));
+				return 1;
+			}
+			if (subtype_data_count >= MAX_PROGS) {
+				printf("too many subtype sections");
+				return 1;
+			}
+			memcpy(&subtype_data[subtype_data_count].subtype,
+					data->d_buf,
+					sizeof(union bpf_prog_subtype));
+			subtype_data[subtype_data_count].name =
+				strdup((shname + 8));
+			subtype_data_count++;
 		} else if (shdr.sh_type == SHT_SYMTAB) {
 			strtabidx = shdr.sh_link;
 			symbols = data;
@@ -705,105 +772,3 @@ struct ksym *ksym_search(long key)
 	return &syms[0];
 }
 
-int set_link_xdp_fd(int ifindex, int fd, __u32 flags)
-{
-	struct sockaddr_nl sa;
-	int sock, seq = 0, len, ret = -1;
-	char buf[4096];
-	struct nlattr *nla, *nla_xdp;
-	struct {
-		struct nlmsghdr  nh;
-		struct ifinfomsg ifinfo;
-		char             attrbuf[64];
-	} req;
-	struct nlmsghdr *nh;
-	struct nlmsgerr *err;
-
-	memset(&sa, 0, sizeof(sa));
-	sa.nl_family = AF_NETLINK;
-
-	sock = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
-	if (sock < 0) {
-		printf("open netlink socket: %s\n", strerror(errno));
-		return -1;
-	}
-
-	if (bind(sock, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
-		printf("bind to netlink: %s\n", strerror(errno));
-		goto cleanup;
-	}
-
-	memset(&req, 0, sizeof(req));
-	req.nh.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
-	req.nh.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
-	req.nh.nlmsg_type = RTM_SETLINK;
-	req.nh.nlmsg_pid = 0;
-	req.nh.nlmsg_seq = ++seq;
-	req.ifinfo.ifi_family = AF_UNSPEC;
-	req.ifinfo.ifi_index = ifindex;
-
-	/* started nested attribute for XDP */
-	nla = (struct nlattr *)(((char *)&req)
-				+ NLMSG_ALIGN(req.nh.nlmsg_len));
-	nla->nla_type = NLA_F_NESTED | 43/*IFLA_XDP*/;
-	nla->nla_len = NLA_HDRLEN;
-
-	/* add XDP fd */
-	nla_xdp = (struct nlattr *)((char *)nla + nla->nla_len);
-	nla_xdp->nla_type = 1/*IFLA_XDP_FD*/;
-	nla_xdp->nla_len = NLA_HDRLEN + sizeof(int);
-	memcpy((char *)nla_xdp + NLA_HDRLEN, &fd, sizeof(fd));
-	nla->nla_len += nla_xdp->nla_len;
-
-	/* if user passed in any flags, add those too */
-	if (flags) {
-		nla_xdp = (struct nlattr *)((char *)nla + nla->nla_len);
-		nla_xdp->nla_type = 3/*IFLA_XDP_FLAGS*/;
-		nla_xdp->nla_len = NLA_HDRLEN + sizeof(flags);
-		memcpy((char *)nla_xdp + NLA_HDRLEN, &flags, sizeof(flags));
-		nla->nla_len += nla_xdp->nla_len;
-	}
-
-	req.nh.nlmsg_len += NLA_ALIGN(nla->nla_len);
-
-	if (send(sock, &req, req.nh.nlmsg_len, 0) < 0) {
-		printf("send to netlink: %s\n", strerror(errno));
-		goto cleanup;
-	}
-
-	len = recv(sock, buf, sizeof(buf), 0);
-	if (len < 0) {
-		printf("recv from netlink: %s\n", strerror(errno));
-		goto cleanup;
-	}
-
-	for (nh = (struct nlmsghdr *)buf; NLMSG_OK(nh, len);
-	     nh = NLMSG_NEXT(nh, len)) {
-		if (nh->nlmsg_pid != getpid()) {
-			printf("Wrong pid %d, expected %d\n",
-			       nh->nlmsg_pid, getpid());
-			goto cleanup;
-		}
-		if (nh->nlmsg_seq != seq) {
-			printf("Wrong seq %d, expected %d\n",
-			       nh->nlmsg_seq, seq);
-			goto cleanup;
-		}
-		switch (nh->nlmsg_type) {
-		case NLMSG_ERROR:
-			err = (struct nlmsgerr *)NLMSG_DATA(nh);
-			if (!err->error)
-				continue;
-			printf("nlmsg error %s\n", strerror(-err->error));
-			goto cleanup;
-		case NLMSG_DONE:
-			break;
-		}
-	}
-
-	ret = 0;
-
-cleanup:
-	close(sock);
-	return ret;
-}

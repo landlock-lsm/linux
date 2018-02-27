@@ -65,13 +65,28 @@ int pvrdma_req_notify_cq(struct ib_cq *ibcq,
 	struct pvrdma_dev *dev = to_vdev(ibcq->device);
 	struct pvrdma_cq *cq = to_vcq(ibcq);
 	u32 val = cq->cq_handle;
+	unsigned long flags;
+	int has_data = 0;
 
 	val |= (notify_flags & IB_CQ_SOLICITED_MASK) == IB_CQ_SOLICITED ?
 		PVRDMA_UAR_CQ_ARM_SOL : PVRDMA_UAR_CQ_ARM;
 
+	spin_lock_irqsave(&cq->cq_lock, flags);
+
 	pvrdma_write_uar_cq(dev, val);
 
-	return 0;
+	if (notify_flags & IB_CQ_REPORT_MISSED_EVENTS) {
+		unsigned int head;
+
+		has_data = pvrdma_idx_ring_has_data(&cq->ring_state->rx,
+						    cq->ibcq.cqe, &head);
+		if (unlikely(has_data == PVRDMA_INVALID_IDX))
+			dev_err(&dev->pdev->dev, "CQ ring state invalid\n");
+	}
+
+	spin_unlock_irqrestore(&cq->cq_lock, flags);
+
+	return has_data;
 }
 
 /**
@@ -117,8 +132,9 @@ struct ib_cq *pvrdma_create_cq(struct ib_device *ibdev,
 	}
 
 	cq->ibcq.cqe = entries;
+	cq->is_kernel = !context;
 
-	if (context) {
+	if (!cq->is_kernel) {
 		if (ib_copy_from_udata(&ucmd, udata, sizeof(ucmd))) {
 			ret = -EFAULT;
 			goto err_cq;
@@ -133,8 +149,6 @@ struct ib_cq *pvrdma_create_cq(struct ib_device *ibdev,
 
 		npages = ib_umem_page_count(cq->umem);
 	} else {
-		cq->is_kernel = true;
-
 		/* One extra page for shared ring state */
 		npages = 1 + (entries * sizeof(struct pvrdma_cqe) +
 			      PAGE_SIZE - 1) / PAGE_SIZE;
@@ -163,8 +177,8 @@ struct ib_cq *pvrdma_create_cq(struct ib_device *ibdev,
 	else
 		pvrdma_page_dir_insert_umem(&cq->pdir, cq->umem, 0);
 
-	atomic_set(&cq->refcnt, 1);
-	init_waitqueue_head(&cq->wait);
+	refcount_set(&cq->refcnt, 1);
+	init_completion(&cq->free);
 	spin_lock_init(&cq->cq_lock);
 
 	memset(cmd, 0, sizeof(*cmd));
@@ -187,7 +201,7 @@ struct ib_cq *pvrdma_create_cq(struct ib_device *ibdev,
 	dev->cq_tbl[cq->cq_handle % dev->dsr->caps.max_cq] = cq;
 	spin_unlock_irqrestore(&dev->cq_tbl_lock, flags);
 
-	if (context) {
+	if (!cq->is_kernel) {
 		cq->uar = &(to_vucontext(context)->uar);
 
 		/* Copy udata back. */
@@ -204,7 +218,7 @@ struct ib_cq *pvrdma_create_cq(struct ib_device *ibdev,
 err_page_dir:
 	pvrdma_page_dir_cleanup(dev, &cq->pdir);
 err_umem:
-	if (context)
+	if (!cq->is_kernel)
 		ib_umem_release(cq->umem);
 err_cq:
 	atomic_dec(&dev->num_cqs);
@@ -215,8 +229,9 @@ err_cq:
 
 static void pvrdma_free_cq(struct pvrdma_dev *dev, struct pvrdma_cq *cq)
 {
-	atomic_dec(&cq->refcnt);
-	wait_event(cq->wait, !atomic_read(&cq->refcnt));
+	if (refcount_dec_and_test(&cq->refcnt))
+		complete(&cq->free);
+	wait_for_completion(&cq->free);
 
 	if (!cq->is_kernel)
 		ib_umem_release(cq->umem);
@@ -284,7 +299,7 @@ static inline struct pvrdma_cqe *get_cqe(struct pvrdma_cq *cq, int i)
 
 void _pvrdma_flush_cqe(struct pvrdma_qp *qp, struct pvrdma_cq *cq)
 {
-	int head;
+	unsigned int head;
 	int has_data;
 
 	if (!cq->is_kernel)
@@ -374,6 +389,7 @@ retry:
 	wc->dlid_path_bits = cqe->dlid_path_bits;
 	wc->port_num = cqe->port_num;
 	wc->vendor_err = cqe->vendor_err;
+	wc->network_hdr_type = cqe->network_hdr_type;
 
 	/* Update shared ring state */
 	pvrdma_idx_ring_inc(&cq->ring_state->rx.cons_head, cq->ibcq.cqe);

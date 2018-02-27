@@ -48,6 +48,8 @@ enum sdio_interrupt_type {
 
 #define RSI_DEVICE_BUFFER_STATUS_REGISTER       0xf3
 #define RSI_FN1_INT_REGISTER                    0xf9
+#define RSI_INT_ENABLE_REGISTER			0x04
+#define RSI_INT_ENABLE_MASK			0xfc
 #define RSI_SD_REQUEST_MASTER                   0x10000
 
 /* FOR SD CARD ONLY */
@@ -114,6 +116,7 @@ struct rsi_91x_sdiodev {
 	u8 prev_desc[16];
 	u16 tx_blk_size;
 	u8 write_fail;
+	bool buff_status_updated;
 };
 
 void rsi_interrupt_handler(struct rsi_hw *adapter);
@@ -127,5 +130,5 @@ int rsi_sdio_write_register_multiple(struct rsi_hw *adapter, u32 addr,
 int rsi_sdio_master_access_msword(struct rsi_hw *adapter, u16 ms_word);
 void rsi_sdio_ack_intr(struct rsi_hw *adapter, u8 int_bit);
 int rsi_sdio_determine_event_timeout(struct rsi_hw *adapter);
-int rsi_sdio_read_buffer_status_register(struct rsi_hw *adapter, u8 q_num);
+int rsi_sdio_check_buffer_status(struct rsi_hw *adapter, u8 q_num);
 #endif

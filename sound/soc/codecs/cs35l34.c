@@ -779,7 +779,7 @@ static int cs35l34_probe(struct snd_soc_codec *codec)
 }
 
 
-static struct snd_soc_codec_driver soc_codec_dev_cs35l34 = {
+static const struct snd_soc_codec_driver soc_codec_dev_cs35l34 = {
 	.probe = cs35l34_probe,
 
 	.component_driver = {
@@ -1004,13 +1004,9 @@ static int cs35l34_i2c_probe(struct i2c_client *i2c_client,
 	unsigned int devid = 0;
 	unsigned int reg;
 
-	cs35l34 = devm_kzalloc(&i2c_client->dev,
-			       sizeof(struct cs35l34_private),
-			       GFP_KERNEL);
-	if (!cs35l34) {
-		dev_err(&i2c_client->dev, "could not allocate codec\n");
+	cs35l34 = devm_kzalloc(&i2c_client->dev, sizeof(*cs35l34), GFP_KERNEL);
+	if (!cs35l34)
 		return -ENOMEM;
-	}
 
 	i2c_set_clientdata(i2c_client, cs35l34);
 	cs35l34->regmap = devm_regmap_init_i2c(i2c_client, &cs35l34_regmap);
@@ -1044,14 +1040,11 @@ static int cs35l34_i2c_probe(struct i2c_client *i2c_client,
 	if (pdata) {
 		cs35l34->pdata = *pdata;
 	} else {
-		pdata = devm_kzalloc(&i2c_client->dev,
-				sizeof(struct cs35l34_platform_data),
-				GFP_KERNEL);
-		if (!pdata) {
-			dev_err(&i2c_client->dev,
-				"could not allocate pdata\n");
+		pdata = devm_kzalloc(&i2c_client->dev, sizeof(*pdata),
+				     GFP_KERNEL);
+		if (!pdata)
 			return -ENOMEM;
-		}
+
 		if (i2c_client->dev.of_node) {
 			ret = cs35l34_handle_of_data(i2c_client, pdata);
 			if (ret != 0)
@@ -1138,8 +1131,7 @@ static int cs35l34_i2c_remove(struct i2c_client *client)
 
 	snd_soc_unregister_codec(&client->dev);
 
-	if (cs35l34->reset_gpio)
-		gpiod_set_value_cansleep(cs35l34->reset_gpio, 0);
+	gpiod_set_value_cansleep(cs35l34->reset_gpio, 0);
 
 	pm_runtime_disable(&client->dev);
 	regulator_bulk_disable(cs35l34->num_core_supplies,

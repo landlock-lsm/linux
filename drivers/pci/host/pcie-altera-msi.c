@@ -1,21 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Altera PCIe MSI support
  *
  * Author: Ley Foon Tan <lftan@altera.com>
  *
  * Copyright Altera Corporation (C) 2013-2015. All rights reserved
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/interrupt.h>
@@ -64,13 +53,11 @@ static void altera_msi_isr(struct irq_desc *desc)
 	struct irq_chip *chip = irq_desc_get_chip(desc);
 	struct altera_msi *msi;
 	unsigned long status;
-	u32 num_of_vectors;
 	u32 bit;
 	u32 virq;
 
 	chained_irq_enter(chip, desc);
 	msi = irq_desc_get_handler_data(desc);
-	num_of_vectors = msi->num_of_vectors;
 
 	while ((status = msi_readl(msi, MSI_STATUS)) != 0) {
 		for_each_set_bit(bit, &status, msi->num_of_vectors) {
@@ -267,9 +254,9 @@ static int altera_msi_probe(struct platform_device *pdev)
 		return ret;
 
 	msi->irq = platform_get_irq(pdev, 0);
-	if (msi->irq <= 0) {
+	if (msi->irq < 0) {
 		dev_err(&pdev->dev, "failed to map IRQ: %d\n", msi->irq);
-		ret = -ENODEV;
+		ret = msi->irq;
 		goto err;
 	}
 

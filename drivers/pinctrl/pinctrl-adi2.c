@@ -612,7 +612,7 @@ static int adi_get_group_pins(struct pinctrl_dev *pctldev, unsigned selector,
 	return 0;
 }
 
-static struct pinctrl_ops adi_pctrl_ops = {
+static const struct pinctrl_ops adi_pctrl_ops = {
 	.get_groups_count = adi_get_groups_count,
 	.get_group_name = adi_get_group_name,
 	.get_group_pins = adi_get_group_pins,
@@ -696,7 +696,7 @@ static int adi_pinmux_request_gpio(struct pinctrl_dev *pctldev,
 	return 0;
 }
 
-static struct pinmux_ops adi_pinmux_ops = {
+static const struct pinmux_ops adi_pinmux_ops = {
 	.set_mux = adi_pinmux_set,
 	.get_functions_count = adi_pinmux_get_funcs_count,
 	.get_function_name = adi_pinmux_get_func_name,
@@ -827,13 +827,10 @@ static int adi_gpio_pint_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct resource *res;
-	struct gpio_pint *pint;
+	struct gpio_pint *pint = devm_kzalloc(dev, sizeof(*pint), GFP_KERNEL);
 
-	pint = devm_kzalloc(dev, sizeof(struct gpio_pint), GFP_KERNEL);
-	if (!pint) {
-		dev_err(dev, "Memory alloc failed\n");
+	if (!pint)
 		return -ENOMEM;
-	}
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	pint->base = devm_ioremap_resource(dev, res);
@@ -945,11 +942,9 @@ static int adi_gpio_probe(struct platform_device *pdev)
 	if (!pdata)
 		return -EINVAL;
 
-	port = devm_kzalloc(dev, sizeof(struct gpio_port), GFP_KERNEL);
-	if (!port) {
-		dev_err(dev, "Memory alloc failed\n");
+	port = devm_kzalloc(dev, sizeof(*port), GFP_KERNEL);
+	if (!port)
 		return -ENOMEM;
-	}
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	port->base = devm_ioremap_resource(dev, res);

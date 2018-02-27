@@ -34,7 +34,7 @@
 #include <linux/interrupt.h>
 #include <linux/ioport.h>
 #include <linux/mtd/mtd.h>
-#include <linux/mtd/nand.h>
+#include <linux/mtd/rawnand.h>
 #include <linux/mtd/nand_ecc.h>
 #include <linux/mtd/partitions.h>
 #include <linux/slab.h>
@@ -192,6 +192,7 @@ tmio_nand_wait(struct mtd_info *mtd, struct nand_chip *nand_chip)
 {
 	struct tmio_nand *tmio = mtd_to_tmio(mtd);
 	long timeout;
+	u8 status;
 
 	/* enable RDYREQ interrupt */
 	tmio_iowrite8(0x0f, tmio->fcr + FCR_ISR);
@@ -212,8 +213,8 @@ tmio_nand_wait(struct mtd_info *mtd, struct nand_chip *nand_chip)
 		dev_warn(&tmio->dev->dev, "timeout waiting for interrupt\n");
 	}
 
-	nand_chip->cmdfunc(mtd, NAND_CMD_STATUS, -1, -1);
-	return nand_chip->read_byte(mtd);
+	nand_status_op(nand_chip, &status);
+	return status;
 }
 
 /*
@@ -440,7 +441,9 @@ static int tmio_probe(struct platform_device *dev)
 		goto err_irq;
 
 	/* Register the partitions */
-	retval = mtd_device_parse_register(mtd, NULL, NULL,
+	retval = mtd_device_parse_register(mtd,
+					   data ? data->part_parsers : NULL,
+					   NULL,
 					   data ? data->partition : NULL,
 					   data ? data->num_partitions : 0);
 	if (!retval)

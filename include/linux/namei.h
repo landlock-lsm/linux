@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_NAMEI_H
 #define _LINUX_NAMEI_H
 
@@ -13,7 +14,19 @@ enum { MAX_NESTED_LINKS = 8 };
 /*
  * Type of the last component on LOOKUP_PARENT
  */
-enum {LAST_NORM, LAST_ROOT, LAST_DOT, LAST_DOTDOT, LAST_BIND};
+enum namei_type {LAST_NORM, LAST_ROOT, LAST_DOT, LAST_DOTDOT, LAST_BIND};
+
+#ifdef CONFIG_SECURITY
+struct nameidata_lookup {
+	void *security;
+	enum namei_type type;
+};
+
+struct inode;
+
+extern struct nameidata_lookup *current_nameidata_lookup(
+		const struct inode *inode);
+#endif
 
 /*
  * The bitmask for a lookup event:

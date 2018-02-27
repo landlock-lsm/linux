@@ -242,7 +242,7 @@ static void test_hashmap_percpu(int task, void *data)
 
 static void test_hashmap_walk(int task, void *data)
 {
-	int fd, i, max_entries = 100000;
+	int fd, i, max_entries = 1000;
 	long long key, value, next_key;
 	bool next_key_valid = true;
 
@@ -461,18 +461,19 @@ static void test_devmap(int task, void *data)
 #include <linux/err.h>
 #define SOCKMAP_PARSE_PROG "./sockmap_parse_prog.o"
 #define SOCKMAP_VERDICT_PROG "./sockmap_verdict_prog.o"
-static void test_sockmap(int task, void *data)
+static void test_sockmap(int tasks, void *data)
 {
+	int one = 1, map_fd_rx = 0, map_fd_tx = 0, map_fd_break, s, sc, rc;
+	struct bpf_map *bpf_map_rx, *bpf_map_tx, *bpf_map_break;
 	int ports[] = {50200, 50201, 50202, 50204};
-	int err, i, fd, sfd[6] = {0xdeadbeef};
-	char buf[] = "hello sockmap user\n";
-	int one = 1, map_fd, s, sc, rc;
+	int err, i, fd, udp, sfd[6] = {0xdeadbeef};
+	u8 buf[20] = {0x0, 0x5, 0x3, 0x2, 0x1, 0x0};
 	int parse_prog, verdict_prog;
-	struct bpf_map *bpf_map;
 	struct sockaddr_in addr;
 	struct bpf_object *obj;
 	struct timeval to;
 	__u32 key, value;
+	pid_t pid[tasks];
 	fd_set w;
 
 	/* Create some sockets to use with sockmap */
@@ -503,7 +504,7 @@ static void test_sockmap(int task, void *data)
 		}
 		err = listen(sfd[i], 32);
 		if (err < 0) {
-			printf("failed to listeen\n");
+			printf("failed to listen\n");
 			goto out;
 		}
 	}
@@ -524,7 +525,7 @@ static void test_sockmap(int task, void *data)
 		addr.sin_port = htons(ports[i - 2]);
 		err = connect(sfd[i], (struct sockaddr *)&addr, sizeof(addr));
 		if (err) {
-			printf("failed to conenct\n");
+			printf("failed to connect\n");
 			goto out;
 		}
 	}
@@ -547,20 +548,60 @@ static void test_sockmap(int task, void *data)
 		goto out_sockmap;
 	}
 
-	/* Nothing attached so these should fail */
+	/* Test update with unsupported UDP socket */
+	udp = socket(AF_INET, SOCK_DGRAM, 0);
+	i = 0;
+	err = bpf_map_update_elem(fd, &i, &udp, BPF_ANY);
+	if (!err) {
+		printf("Failed socket SOCK_DGRAM allowed '%i:%i'\n",
+		       i, udp);
+		goto out_sockmap;
+	}
+
+	/* Test update without programs */
 	for (i = 0; i < 6; i++) {
 		err = bpf_map_update_elem(fd, &i, &sfd[i], BPF_ANY);
-		if (!err) {
-			printf("Failed invalid update sockmap '%i:%i'\n",
+		if (err) {
+			printf("Failed noprog update sockmap '%i:%i'\n",
 			       i, sfd[i]);
 			goto out_sockmap;
 		}
 	}
 
-	/* Test attaching bad fds */
-	err = __bpf_prog_attach(-1, -2, fd, BPF_CGROUP_SMAP_INGRESS, 0);
+	/* Test attaching/detaching bad fds */
+	err = bpf_prog_attach(-1, fd, BPF_SK_SKB_STREAM_PARSER, 0);
 	if (!err) {
-		printf("Failed invalid prog attach\n");
+		printf("Failed invalid parser prog attach\n");
+		goto out_sockmap;
+	}
+
+	err = bpf_prog_attach(-1, fd, BPF_SK_SKB_STREAM_VERDICT, 0);
+	if (!err) {
+		printf("Failed invalid verdict prog attach\n");
+		goto out_sockmap;
+	}
+
+	err = bpf_prog_attach(-1, fd, __MAX_BPF_ATTACH_TYPE, 0);
+	if (!err) {
+		printf("Failed unknown prog attach\n");
+		goto out_sockmap;
+	}
+
+	err = bpf_prog_detach(fd, BPF_SK_SKB_STREAM_PARSER);
+	if (err) {
+		printf("Failed empty parser prog detach\n");
+		goto out_sockmap;
+	}
+
+	err = bpf_prog_detach(fd, BPF_SK_SKB_STREAM_VERDICT);
+	if (err) {
+		printf("Failed empty verdict prog detach\n");
+		goto out_sockmap;
+	}
+
+	err = bpf_prog_detach(fd, __MAX_BPF_ATTACH_TYPE);
+	if (!err) {
+		printf("Detach invalid prog successful\n");
 		goto out_sockmap;
 	}
 
@@ -579,30 +620,81 @@ static void test_sockmap(int task, void *data)
 		goto out_sockmap;
 	}
 
-	bpf_map = bpf_object__find_map_by_name(obj, "sock_map");
-	if (IS_ERR(bpf_map)) {
-		printf("Failed to load map from verdict prog\n");
+	bpf_map_rx = bpf_object__find_map_by_name(obj, "sock_map_rx");
+	if (IS_ERR(bpf_map_rx)) {
+		printf("Failed to load map rx from verdict prog\n");
 		goto out_sockmap;
 	}
 
-	map_fd = bpf_map__fd(bpf_map);
-	if (map_fd < 0) {
+	map_fd_rx = bpf_map__fd(bpf_map_rx);
+	if (map_fd_rx < 0) {
 		printf("Failed to get map fd\n");
 		goto out_sockmap;
 	}
 
-	err = __bpf_prog_attach(parse_prog, verdict_prog, map_fd,
-				BPF_CGROUP_SMAP_INGRESS, 0);
-	if (err) {
-		printf("Failed bpf prog attach\n");
+	bpf_map_tx = bpf_object__find_map_by_name(obj, "sock_map_tx");
+	if (IS_ERR(bpf_map_tx)) {
+		printf("Failed to load map tx from verdict prog\n");
 		goto out_sockmap;
 	}
 
-	/* Test map update elem */
+	map_fd_tx = bpf_map__fd(bpf_map_tx);
+	if (map_fd_tx < 0) {
+		printf("Failed to get map tx fd\n");
+		goto out_sockmap;
+	}
+
+	bpf_map_break = bpf_object__find_map_by_name(obj, "sock_map_break");
+	if (IS_ERR(bpf_map_break)) {
+		printf("Failed to load map tx from verdict prog\n");
+		goto out_sockmap;
+	}
+
+	map_fd_break = bpf_map__fd(bpf_map_break);
+	if (map_fd_break < 0) {
+		printf("Failed to get map tx fd\n");
+		goto out_sockmap;
+	}
+
+	err = bpf_prog_attach(parse_prog, map_fd_break,
+			      BPF_SK_SKB_STREAM_PARSER, 0);
+	if (!err) {
+		printf("Allowed attaching SK_SKB program to invalid map\n");
+		goto out_sockmap;
+	}
+
+	err = bpf_prog_attach(parse_prog, map_fd_rx,
+		      BPF_SK_SKB_STREAM_PARSER, 0);
+	if (err) {
+		printf("Failed stream parser bpf prog attach\n");
+		goto out_sockmap;
+	}
+
+	err = bpf_prog_attach(verdict_prog, map_fd_rx,
+			      BPF_SK_SKB_STREAM_VERDICT, 0);
+	if (err) {
+		printf("Failed stream verdict bpf prog attach\n");
+		goto out_sockmap;
+	}
+
+	err = bpf_prog_attach(verdict_prog, map_fd_rx,
+			      __MAX_BPF_ATTACH_TYPE, 0);
+	if (!err) {
+		printf("Attached unknown bpf prog\n");
+		goto out_sockmap;
+	}
+
+	/* Test map update elem afterwards fd lives in fd and map_fd */
 	for (i = 0; i < 6; i++) {
-		err = bpf_map_update_elem(map_fd, &i, &sfd[i], BPF_ANY);
+		err = bpf_map_update_elem(map_fd_rx, &i, &sfd[i], BPF_ANY);
 		if (err) {
-			printf("Failed map_fd update sockmap %i '%i:%i'\n",
+			printf("Failed map_fd_rx update sockmap %i '%i:%i'\n",
+			       err, i, sfd[i]);
+			goto out_sockmap;
+		}
+		err = bpf_map_update_elem(map_fd_tx, &i, &sfd[i], BPF_ANY);
+		if (err) {
+			printf("Failed map_fd_tx update sockmap %i '%i:%i'\n",
 			       err, i, sfd[i]);
 			goto out_sockmap;
 		}
@@ -610,142 +702,180 @@ static void test_sockmap(int task, void *data)
 
 	/* Test map delete elem and remove send/recv sockets */
 	for (i = 2; i < 4; i++) {
-		err = bpf_map_delete_elem(map_fd, &i);
+		err = bpf_map_delete_elem(map_fd_rx, &i);
 		if (err) {
-			printf("Failed delete  sockmap %i '%i:%i'\n",
+			printf("Failed delete sockmap rx %i '%i:%i'\n",
+			       err, i, sfd[i]);
+			goto out_sockmap;
+		}
+		err = bpf_map_delete_elem(map_fd_tx, &i);
+		if (err) {
+			printf("Failed delete sockmap tx %i '%i:%i'\n",
 			       err, i, sfd[i]);
 			goto out_sockmap;
 		}
 	}
 
 	/* Test map send/recv */
-	sc = send(sfd[2], buf, 10, 0);
+	for (i = 0; i < 2; i++) {
+		buf[0] = i;
+		buf[1] = 0x5;
+		sc = send(sfd[2], buf, 20, 0);
+		if (sc < 0) {
+			printf("Failed sockmap send\n");
+			goto out_sockmap;
+		}
+
+		FD_ZERO(&w);
+		FD_SET(sfd[3], &w);
+		to.tv_sec = 1;
+		to.tv_usec = 0;
+		s = select(sfd[3] + 1, &w, NULL, NULL, &to);
+		if (s == -1) {
+			perror("Failed sockmap select()");
+			goto out_sockmap;
+		} else if (!s) {
+			printf("Failed sockmap unexpected timeout\n");
+			goto out_sockmap;
+		}
+
+		if (!FD_ISSET(sfd[3], &w)) {
+			printf("Failed sockmap select/recv\n");
+			goto out_sockmap;
+		}
+
+		rc = recv(sfd[3], buf, sizeof(buf), 0);
+		if (rc < 0) {
+			printf("Failed sockmap recv\n");
+			goto out_sockmap;
+		}
+	}
+
+	/* Negative null entry lookup from datapath should be dropped */
+	buf[0] = 1;
+	buf[1] = 12;
+	sc = send(sfd[2], buf, 20, 0);
 	if (sc < 0) {
 		printf("Failed sockmap send\n");
 		goto out_sockmap;
 	}
 
-	FD_ZERO(&w);
-	FD_SET(sfd[3], &w);
-	to.tv_sec = 1;
-	to.tv_usec = 0;
-	s = select(sfd[3] + 1, &w, NULL, NULL, &to);
-	if (s == -1) {
-		perror("Failed sockmap select()");
-		goto out_sockmap;
-	} else if (!s) {
-		printf("Failed sockmap unexpected timeout\n");
-		goto out_sockmap;
-	}
-
-	if (!FD_ISSET(sfd[3], &w)) {
-		printf("Failed sockmap select/recv\n");
-		goto out_sockmap;
-	}
-
-	rc = recv(sfd[3], buf, sizeof(buf), 0);
-	if (rc < 0) {
-		printf("Failed sockmap recv\n");
-		goto out_sockmap;
-	}
-
-	/* Delete the reset of the elems include some NULL elems */
-	for (i = 0; i < 6; i++) {
-		err = bpf_map_delete_elem(map_fd, &i);
-		if (err && (i == 0 || i == 1 || i >= 4)) {
-			printf("Failed delete  sockmap %i '%i:%i'\n",
-			       err, i, sfd[i]);
-			goto out_sockmap;
-		} else if (!err && (i == 2 || i == 3)) {
-			printf("Failed null delete sockmap %i '%i:%i'\n",
-			       err, i, sfd[i]);
-			goto out_sockmap;
-		}
-	}
-
-	/* Test having multiple SMAPs open and active on same fds */
-	err = __bpf_prog_attach(parse_prog, verdict_prog, fd,
-				BPF_CGROUP_SMAP_INGRESS, 0);
-	if (err) {
-		printf("Failed fd bpf prog attach\n");
-		goto out_sockmap;
-	}
-
-	for (i = 0; i < 6; i++) {
-		err = bpf_map_update_elem(fd, &i, &sfd[i], BPF_ANY);
-		if (err) {
-			printf("Failed fd update sockmap %i '%i:%i'\n",
-			       err, i, sfd[i]);
-			goto out_sockmap;
-		}
-	}
-
-	/* Test duplicate socket add of NOEXIST, ANY and EXIST */
-	i = 0;
-	err = bpf_map_update_elem(fd, &i, &sfd[i], BPF_NOEXIST);
-	if (!err) {
-		printf("Failed BPF_NOEXIST create\n");
-		goto out_sockmap;
-	}
-
-	err = bpf_map_update_elem(fd, &i, &sfd[i], BPF_ANY);
-	if (err) {
-		printf("Failed sockmap update BPF_ANY\n");
-		goto out_sockmap;
-	}
-
-	err = bpf_map_update_elem(fd, &i, &sfd[i], BPF_EXIST);
-	if (err) {
-		printf("Failed sockmap update BPF_EXIST\n");
-		goto out_sockmap;
-	}
-
-	/* The above were pushing fd into same slot try different slot now */
+	/* Push fd into same slot */
 	i = 2;
 	err = bpf_map_update_elem(fd, &i, &sfd[i], BPF_NOEXIST);
 	if (!err) {
-		printf("Failed BPF_NOEXIST create\n");
+		printf("Failed allowed sockmap dup slot BPF_NOEXIST\n");
 		goto out_sockmap;
 	}
 
 	err = bpf_map_update_elem(fd, &i, &sfd[i], BPF_ANY);
 	if (err) {
-		printf("Failed sockmap update BPF_ANY\n");
+		printf("Failed sockmap update new slot BPF_ANY\n");
 		goto out_sockmap;
 	}
 
 	err = bpf_map_update_elem(fd, &i, &sfd[i], BPF_EXIST);
 	if (err) {
-		printf("Failed sockmap update BPF_EXIST\n");
+		printf("Failed sockmap update new slot BPF_EXIST\n");
 		goto out_sockmap;
 	}
 
-	/* Try pushing fd into different map, this is not allowed at the
-	 * moment. Which programs would we use?
-	 */
-	err = bpf_map_update_elem(map_fd, &i, &sfd[i], BPF_NOEXIST);
+	/* Delete the elems without programs */
+	for (i = 0; i < 6; i++) {
+		err = bpf_map_delete_elem(fd, &i);
+		if (err) {
+			printf("Failed delete sockmap %i '%i:%i'\n",
+			       err, i, sfd[i]);
+		}
+	}
+
+	/* Test having multiple maps open and set with programs on same fds */
+	err = bpf_prog_attach(parse_prog, fd,
+			      BPF_SK_SKB_STREAM_PARSER, 0);
+	if (err) {
+		printf("Failed fd bpf parse prog attach\n");
+		goto out_sockmap;
+	}
+	err = bpf_prog_attach(verdict_prog, fd,
+			      BPF_SK_SKB_STREAM_VERDICT, 0);
+	if (err) {
+		printf("Failed fd bpf verdict prog attach\n");
+		goto out_sockmap;
+	}
+
+	for (i = 4; i < 6; i++) {
+		err = bpf_map_update_elem(fd, &i, &sfd[i], BPF_ANY);
+		if (!err) {
+			printf("Failed allowed duplicate programs in update ANY sockmap %i '%i:%i'\n",
+			       err, i, sfd[i]);
+			goto out_sockmap;
+		}
+		err = bpf_map_update_elem(fd, &i, &sfd[i], BPF_NOEXIST);
+		if (!err) {
+			printf("Failed allowed duplicate program in update NOEXIST sockmap  %i '%i:%i'\n",
+			       err, i, sfd[i]);
+			goto out_sockmap;
+		}
+		err = bpf_map_update_elem(fd, &i, &sfd[i], BPF_EXIST);
+		if (!err) {
+			printf("Failed allowed duplicate program in update EXIST sockmap  %i '%i:%i'\n",
+			       err, i, sfd[i]);
+			goto out_sockmap;
+		}
+	}
+
+	/* Test tasks number of forked operations */
+	for (i = 0; i < tasks; i++) {
+		pid[i] = fork();
+		if (pid[i] == 0) {
+			for (i = 0; i < 6; i++) {
+				bpf_map_delete_elem(map_fd_tx, &i);
+				bpf_map_delete_elem(map_fd_rx, &i);
+				bpf_map_update_elem(map_fd_tx, &i,
+						    &sfd[i], BPF_ANY);
+				bpf_map_update_elem(map_fd_rx, &i,
+						    &sfd[i], BPF_ANY);
+			}
+			exit(0);
+		} else if (pid[i] == -1) {
+			printf("Couldn't spawn #%d process!\n", i);
+			exit(1);
+		}
+	}
+
+	for (i = 0; i < tasks; i++) {
+		int status;
+
+		assert(waitpid(pid[i], &status, 0) == pid[i]);
+		assert(status == 0);
+	}
+
+	err = bpf_prog_detach(map_fd_rx, __MAX_BPF_ATTACH_TYPE);
 	if (!err) {
-		printf("Failed BPF_NOEXIST create\n");
+		printf("Detached an invalid prog type.\n");
 		goto out_sockmap;
 	}
 
-	err = bpf_map_update_elem(map_fd, &i, &sfd[i], BPF_ANY);
-	if (!err) {
-		printf("Failed sockmap update BPF_ANY\n");
+	err = bpf_prog_detach(map_fd_rx, BPF_SK_SKB_STREAM_PARSER);
+	if (err) {
+		printf("Failed parser prog detach\n");
 		goto out_sockmap;
 	}
 
-	err = bpf_map_update_elem(map_fd, &i, &sfd[i], BPF_EXIST);
-	if (!err) {
-		printf("Failed sockmap update BPF_EXIST\n");
+	err = bpf_prog_detach(map_fd_rx, BPF_SK_SKB_STREAM_VERDICT);
+	if (err) {
+		printf("Failed parser prog detach\n");
 		goto out_sockmap;
 	}
 
-	/* Test map close sockets */
-	for (i = 0; i < 6; i++)
+	/* Test map close sockets and empty maps */
+	for (i = 0; i < 6; i++) {
+		bpf_map_delete_elem(map_fd_tx, &i);
+		bpf_map_delete_elem(map_fd_rx, &i);
 		close(sfd[i]);
+	}
 	close(fd);
-	close(map_fd);
+	close(map_fd_rx);
 	bpf_object__close(obj);
 	return;
 out:
@@ -754,8 +884,13 @@ out:
 	printf("Failed to create sockmap '%i:%s'!\n", i, strerror(errno));
 	exit(1);
 out_sockmap:
-	for (i = 0; i < 6; i++)
+	for (i = 0; i < 6; i++) {
+		if (map_fd_tx)
+			bpf_map_delete_elem(map_fd_tx, &i);
+		if (map_fd_rx)
+			bpf_map_delete_elem(map_fd_rx, &i);
 		close(sfd[i]);
+	}
 	close(fd);
 	exit(1);
 }
@@ -804,8 +939,12 @@ static void test_map_large(void)
 	close(fd);
 }
 
-static void run_parallel(int tasks, void (*fn)(int task, void *data),
-			 void *data)
+#define run_parallel(N, FN, DATA) \
+	printf("Fork %d tasks to '" #FN "'\n", N); \
+	__run_parallel(N, FN, DATA)
+
+static void __run_parallel(int tasks, void (*fn)(int task, void *data),
+			   void *data)
 {
 	pid_t pid[tasks];
 	int i;
@@ -845,7 +984,7 @@ static void test_map_stress(void)
 #define DO_UPDATE 1
 #define DO_DELETE 0
 
-static void do_work(int fn, void *data)
+static void test_update_delete(int fn, void *data)
 {
 	int do_update = ((int *)data)[1];
 	int fd = ((int *)data)[0];
@@ -885,7 +1024,7 @@ static void test_map_parallel(void)
 	 */
 	data[0] = fd;
 	data[1] = DO_UPDATE;
-	run_parallel(TASKS, do_work, data);
+	run_parallel(TASKS, test_update_delete, data);
 
 	/* Check that key=0 is already there. */
 	assert(bpf_map_update_elem(fd, &key, &value, BPF_NOEXIST) == -1 &&
@@ -908,12 +1047,57 @@ static void test_map_parallel(void)
 
 	/* Now let's delete all elemenets in parallel. */
 	data[1] = DO_DELETE;
-	run_parallel(TASKS, do_work, data);
+	run_parallel(TASKS, test_update_delete, data);
 
 	/* Nothing should be left. */
 	key = -1;
 	assert(bpf_map_get_next_key(fd, NULL, &key) == -1 && errno == ENOENT);
 	assert(bpf_map_get_next_key(fd, &key, &key) == -1 && errno == ENOENT);
+}
+
+static void test_map_rdonly(void)
+{
+	int fd, key = 0, value = 0;
+
+	fd = bpf_create_map(BPF_MAP_TYPE_HASH, sizeof(key), sizeof(value),
+			    MAP_SIZE, map_flags | BPF_F_RDONLY);
+	if (fd < 0) {
+		printf("Failed to create map for read only test '%s'!\n",
+		       strerror(errno));
+		exit(1);
+	}
+
+	key = 1;
+	value = 1234;
+	/* Insert key=1 element. */
+	assert(bpf_map_update_elem(fd, &key, &value, BPF_ANY) == -1 &&
+	       errno == EPERM);
+
+	/* Check that key=2 is not found. */
+	assert(bpf_map_lookup_elem(fd, &key, &value) == -1 && errno == ENOENT);
+	assert(bpf_map_get_next_key(fd, &key, &value) == -1 && errno == ENOENT);
+}
+
+static void test_map_wronly(void)
+{
+	int fd, key = 0, value = 0;
+
+	fd = bpf_create_map(BPF_MAP_TYPE_HASH, sizeof(key), sizeof(value),
+			    MAP_SIZE, map_flags | BPF_F_WRONLY);
+	if (fd < 0) {
+		printf("Failed to create map for read only test '%s'!\n",
+		       strerror(errno));
+		exit(1);
+	}
+
+	key = 1;
+	value = 1234;
+	/* Insert key=1 element. */
+	assert(bpf_map_update_elem(fd, &key, &value, BPF_ANY) == 0);
+
+	/* Check that key=2 is not found. */
+	assert(bpf_map_lookup_elem(fd, &key, &value) == -1 && errno == EPERM);
+	assert(bpf_map_get_next_key(fd, &key, &value) == -1 && errno == EPERM);
 }
 
 static void run_all_tests(void)
@@ -933,6 +1117,9 @@ static void run_all_tests(void)
 	test_map_large();
 	test_map_parallel();
 	test_map_stress();
+
+	test_map_rdonly();
+	test_map_wronly();
 }
 
 int main(void)

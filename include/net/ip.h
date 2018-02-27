@@ -26,14 +26,17 @@
 #include <linux/ip.h>
 #include <linux/in.h>
 #include <linux/skbuff.h>
+#include <linux/jhash.h>
 
 #include <net/inet_sock.h>
 #include <net/route.h>
 #include <net/snmp.h>
 #include <net/flow.h>
 #include <net/flow_dissector.h>
+#include <net/netns/hash.h>
 
 #define IPV4_MAX_PMTU		65535U		/* RFC 2675, Section 5.1 */
+#define IPV4_MIN_MTU		68			/* RFC 791 */
 
 struct sock;
 
@@ -362,7 +365,7 @@ static inline unsigned int ip_dst_mtu_maybe_forward(const struct dst_entry *dst,
 	    !forwarding)
 		return dst_mtu(dst);
 
-	return min(dst->dev->mtu, IP_MAX_MTU);
+	return min(READ_ONCE(dst->dev->mtu), IP_MAX_MTU);
 }
 
 static inline unsigned int ip_skb_dst_mtu(struct sock *sk,
@@ -374,7 +377,7 @@ static inline unsigned int ip_skb_dst_mtu(struct sock *sk,
 		return ip_dst_mtu_maybe_forward(skb_dst(skb), forwarding);
 	}
 
-	return min(skb_dst(skb)->dev->mtu, IP_MAX_MTU);
+	return min(READ_ONCE(skb_dst(skb)->dev->mtu), IP_MAX_MTU);
 }
 
 u32 ip_idents_reserve(u32 hash, int segs);
@@ -519,6 +522,13 @@ static __inline__ void inet_reset_saddr(struct sock *sk)
 static inline unsigned int ipv4_addr_hash(__be32 ip)
 {
 	return (__force unsigned int) ip;
+}
+
+static inline u32 ipv4_portaddr_hash(const struct net *net,
+				     __be32 saddr,
+				     unsigned int port)
+{
+	return jhash_1word((__force u32)saddr, net_hash_mix(net)) ^ port;
 }
 
 bool ip_call_ra_chain(struct sk_buff *skb);

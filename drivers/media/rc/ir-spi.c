@@ -1,13 +1,8 @@
-/*
- * Copyright (c) 2016 Samsung Electronics Co., Ltd.
- * Author: Andi Shyti <andi.shyti@samsung.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * SPI driven IR LED device driver
- */
+// SPDX-License-Identifier: GPL-2.0
+// SPI driven IR LED device driver
+//
+// Copyright (c) 2016 Samsung Electronics Co., Ltd.
+// Copyright (c) Andi Shyti <andi.shyti@samsung.com>
 
 #include <linux/delay.h>
 #include <linux/fs.h>
@@ -155,6 +150,7 @@ static int ir_spi_probe(struct spi_device *spi)
 	idata->rc->tx_ir           = ir_spi_tx;
 	idata->rc->s_tx_carrier    = ir_spi_set_tx_carrier;
 	idata->rc->s_tx_duty_cycle = ir_spi_set_duty_cycle;
+	idata->rc->device_name	   = "IR SPI";
 	idata->rc->driver_name     = IR_SPI_DRIVER_NAME;
 	idata->rc->priv            = idata;
 	idata->spi                 = spi;

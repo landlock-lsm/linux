@@ -74,10 +74,9 @@ struct strparser {
 	u32 unrecov_intr : 1;
 
 	struct sk_buff **skb_nextp;
-	struct timer_list msg_timer;
 	struct sk_buff *skb_head;
 	unsigned int need_bytes;
-	struct delayed_work delayed_work;
+	struct delayed_work msg_timer_work;
 	struct work_struct work;
 	struct strp_stats stats;
 	struct strp_callbacks cb;
@@ -138,7 +137,7 @@ void strp_done(struct strparser *strp);
 void strp_stop(struct strparser *strp);
 void strp_check_rcv(struct strparser *strp);
 int strp_init(struct strparser *strp, struct sock *sk,
-	      struct strp_callbacks *cb);
+	      const struct strp_callbacks *cb);
 void strp_data_ready(struct strparser *strp);
 int strp_process(struct strparser *strp, struct sk_buff *orig_skb,
 		 unsigned int orig_offset, size_t orig_len,

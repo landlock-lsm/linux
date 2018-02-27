@@ -41,6 +41,33 @@ struct kgd_dev;
 
 struct kgd_mem;
 
+enum kfd_preempt_type {
+	KFD_PREEMPT_TYPE_WAVEFRONT_DRAIN = 0,
+	KFD_PREEMPT_TYPE_WAVEFRONT_RESET,
+};
+
+struct kfd_cu_info {
+	uint32_t num_shader_engines;
+	uint32_t num_shader_arrays_per_engine;
+	uint32_t num_cu_per_sh;
+	uint32_t cu_active_number;
+	uint32_t cu_ao_mask;
+	uint32_t simd_per_cu;
+	uint32_t max_waves_per_simd;
+	uint32_t wave_front_size;
+	uint32_t max_scratch_slots_per_cu;
+	uint32_t lds_size;
+	uint32_t cu_bitmap[4][4];
+};
+
+/* For getting GPU local memory information from KGD */
+struct kfd_local_mem_info {
+	uint64_t local_mem_size_private;
+	uint64_t local_mem_size_public;
+	uint32_t vram_width;
+	uint32_t mem_clk_max;
+};
+
 enum kgd_memory_pool {
 	KGD_POOL_SYSTEM_CACHEABLE = 1,
 	KGD_POOL_SYSTEM_WRITECOMBINE = 2,
@@ -82,6 +109,17 @@ struct kgd2kfd_shared_resources {
 	size_t doorbell_start_offset;
 };
 
+struct tile_config {
+	uint32_t *tile_config_ptr;
+	uint32_t *macro_tile_config_ptr;
+	uint32_t num_tile_configs;
+	uint32_t num_macro_tile_configs;
+
+	uint32_t gb_addr_config;
+	uint32_t num_banks;
+	uint32_t num_ranks;
+};
+
 /**
  * struct kfd2kgd_calls
  *
@@ -90,11 +128,14 @@ struct kgd2kfd_shared_resources {
  *
  * @free_gtt_mem: Frees a buffer that was allocated on the gart aperture
  *
- * @get_vmem_size: Retrieves (physical) size of VRAM
+ * @get_local_mem_info: Retrieves information about GPU local memory
  *
  * @get_gpu_clock_counter: Retrieves GPU clock counter
  *
  * @get_max_engine_clock_in_mhz: Retrieves maximum GPU clock in MHz
+ *
+ * @alloc_pasid: Allocate a PASID
+ * @free_pasid: Free a PASID
  *
  * @program_sh_mem_settings: A function that should initiate the memory
  * properties such as main aperture memory type (cache / non cached) and
@@ -112,6 +153,12 @@ struct kgd2kfd_shared_resources {
  * @hqd_sdma_load: Loads the SDMA mqd structure to a H/W SDMA hqd slot.
  * used only for no HWS mode.
  *
+ * @hqd_dump: Dumps CPC HQD registers to an array of address-value pairs.
+ * Array is allocated with kmalloc, needs to be freed with kfree by caller.
+ *
+ * @hqd_sdma_dump: Dumps SDMA HQD registers to an array of address-value pairs.
+ * Array is allocated with kmalloc, needs to be freed with kfree by caller.
+ *
  * @hqd_is_occupies: Checks if a hqd slot is occupied.
  *
  * @hqd_destroy: Destructs and preempts the queue assigned to that hqd slot.
@@ -122,6 +169,15 @@ struct kgd2kfd_shared_resources {
  * SDMA hqd slot.
  *
  * @get_fw_version: Returns FW versions from the header
+ *
+ * @set_scratch_backing_va: Sets VA for scratch backing memory of a VMID.
+ * Only used for no cp scheduling mode
+ *
+ * @get_tile_config: Returns GPU-specific tiling mode information
+ *
+ * @get_cu_info: Retrieves activated cu info
+ *
+ * @get_vram_usage: Returns current VRAM usage
  *
  * This structure contains function pointers to services that the kgd driver
  * provides to amdkfd driver.
@@ -134,10 +190,14 @@ struct kfd2kgd_calls {
 
 	void (*free_gtt_mem)(struct kgd_dev *kgd, void *mem_obj);
 
-	uint64_t (*get_vmem_size)(struct kgd_dev *kgd);
+	void (*get_local_mem_info)(struct kgd_dev *kgd,
+			struct kfd_local_mem_info *mem_info);
 	uint64_t (*get_gpu_clock_counter)(struct kgd_dev *kgd);
 
 	uint32_t (*get_max_engine_clock_in_mhz)(struct kgd_dev *kgd);
+
+	int (*alloc_pasid)(unsigned int bits);
+	void (*free_pasid)(unsigned int pasid);
 
 	/* Register access functions */
 	void (*program_sh_mem_settings)(struct kgd_dev *kgd, uint32_t vmid,
@@ -153,14 +213,25 @@ struct kfd2kgd_calls {
 	int (*init_interrupts)(struct kgd_dev *kgd, uint32_t pipe_id);
 
 	int (*hqd_load)(struct kgd_dev *kgd, void *mqd, uint32_t pipe_id,
-			uint32_t queue_id, uint32_t __user *wptr);
+			uint32_t queue_id, uint32_t __user *wptr,
+			uint32_t wptr_shift, uint32_t wptr_mask,
+			struct mm_struct *mm);
 
-	int (*hqd_sdma_load)(struct kgd_dev *kgd, void *mqd);
+	int (*hqd_sdma_load)(struct kgd_dev *kgd, void *mqd,
+			     uint32_t __user *wptr, struct mm_struct *mm);
+
+	int (*hqd_dump)(struct kgd_dev *kgd,
+			uint32_t pipe_id, uint32_t queue_id,
+			uint32_t (**dump)[2], uint32_t *n_regs);
+
+	int (*hqd_sdma_dump)(struct kgd_dev *kgd,
+			     uint32_t engine_id, uint32_t queue_id,
+			     uint32_t (**dump)[2], uint32_t *n_regs);
 
 	bool (*hqd_is_occupied)(struct kgd_dev *kgd, uint64_t queue_address,
 				uint32_t pipe_id, uint32_t queue_id);
 
-	int (*hqd_destroy)(struct kgd_dev *kgd, uint32_t reset_type,
+	int (*hqd_destroy)(struct kgd_dev *kgd, void *mqd, uint32_t reset_type,
 				unsigned int timeout, uint32_t pipe_id,
 				uint32_t queue_id);
 
@@ -192,6 +263,13 @@ struct kfd2kgd_calls {
 
 	uint16_t (*get_fw_version)(struct kgd_dev *kgd,
 				enum kgd_engine_type type);
+	void (*set_scratch_backing_va)(struct kgd_dev *kgd,
+				uint64_t va, uint32_t vmid);
+	int (*get_tile_config)(struct kgd_dev *kgd, struct tile_config *config);
+
+	void (*get_cu_info)(struct kgd_dev *kgd,
+			struct kfd_cu_info *cu_info);
+	uint64_t (*get_vram_usage)(struct kgd_dev *kgd);
 };
 
 /**

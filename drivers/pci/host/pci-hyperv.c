@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) Microsoft Corporation.
  *
@@ -34,22 +35,12 @@
  * read and write handlers for config space must be aware of this mechanism.
  * Similarly, device setup and teardown involves messages sent to and from
  * the PCI back-end driver in Hyper-V.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, GOOD TITLE or
- * NON INFRINGEMENT.  See the GNU General Public License for more
- * details.
- *
  */
 
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <linux/delay.h>
 #include <linux/semaphore.h>
 #include <linux/irqdomain.h>
 #include <asm/irqdomain.h>
@@ -562,52 +553,6 @@ static void put_pcichild(struct hv_pci_dev *hv_pcidev,
 static void get_hvpcibus(struct hv_pcibus_device *hv_pcibus);
 static void put_hvpcibus(struct hv_pcibus_device *hv_pcibus);
 
-
-/*
- * Temporary CPU to vCPU mapping to address transitioning
- * vmbus_cpu_number_to_vp_number() being migrated to
- * hv_cpu_number_to_vp_number() in a separate patch. Once that patch
- * has been picked up in the main line, remove this code here and use
- * the official code.
- */
-static struct hv_tmpcpumap
-{
-	bool initialized;
-	u32 vp_index[NR_CPUS];
-} hv_tmpcpumap;
-
-static void hv_tmpcpumap_init_cpu(void *_unused)
-{
-	int cpu = smp_processor_id();
-	u64 vp_index;
-
-	hv_get_vp_index(vp_index);
-
-	hv_tmpcpumap.vp_index[cpu] = vp_index;
-}
-
-static void hv_tmpcpumap_init(void)
-{
-	if (hv_tmpcpumap.initialized)
-		return;
-
-	memset(hv_tmpcpumap.vp_index, -1, sizeof(hv_tmpcpumap.vp_index));
-	on_each_cpu(hv_tmpcpumap_init_cpu, NULL, true);
-	hv_tmpcpumap.initialized = true;
-}
-
-/**
- * hv_tmp_cpu_nr_to_vp_nr() - Convert Linux CPU nr to Hyper-V vCPU nr
- *
- * Remove once vmbus_cpu_number_to_vp_number() has been converted to
- * hv_cpu_number_to_vp_number() and replace callers appropriately.
- */
-static u32 hv_tmp_cpu_nr_to_vp_nr(int cpu)
-{
-	return hv_tmpcpumap.vp_index[cpu];
-}
-
-
 /**
  * devfn_to_wslot() - Convert from Linux PCI slot to Windows
  * @devfn:	The Linux representation of PCI slot
@@ -924,7 +869,7 @@ static void hv_irq_unmask(struct irq_data *data)
 	int cpu;
 	u64 res;
 
-	dest = irq_data_get_affinity_mask(data);
+	dest = irq_data_get_effective_affinity_mask(data);
 	pdev = msi_desc_to_pci_dev(msi_desc);
 	pbus = pdev->bus;
 	hbus = container_of(pbus->sysdata, struct hv_pcibus_device, sysdata);
@@ -971,7 +916,7 @@ static void hv_irq_unmask(struct irq_data *data)
 		var_size = 1 + HV_VP_SET_BANK_COUNT_MAX;
 
 		for_each_cpu_and(cpu, dest, cpu_online_mask) {
-			cpu_vmbus = hv_tmp_cpu_nr_to_vp_nr(cpu);
+			cpu_vmbus = hv_cpu_number_to_vp_number(cpu);
 
 			if (cpu_vmbus >= HV_VP_SET_BANK_COUNT_MAX * 64) {
 				dev_err(&hbus->hdev->device,
@@ -986,7 +931,7 @@ static void hv_irq_unmask(struct irq_data *data)
 	} else {
 		for_each_cpu_and(cpu, dest, cpu_online_mask) {
 			params->int_target.vp_mask |=
-				(1ULL << hv_tmp_cpu_nr_to_vp_nr(cpu));
+				(1ULL << hv_cpu_number_to_vp_number(cpu));
 		}
 	}
 
@@ -1030,9 +975,7 @@ static u32 hv_compose_msi_req_v1(
 	int_pkt->wslot.slot = slot;
 	int_pkt->int_desc.vector = vector;
 	int_pkt->int_desc.vector_count = 1;
-	int_pkt->int_desc.delivery_mode =
-		(apic->irq_delivery_mode == dest_LowestPrio) ?
-			dest_LowestPrio : dest_Fixed;
+	int_pkt->int_desc.delivery_mode = dest_Fixed;
 
 	/*
 	 * Create MSI w/ dummy vCPU set, overwritten by subsequent retarget in
@@ -1053,9 +996,7 @@ static u32 hv_compose_msi_req_v2(
 	int_pkt->wslot.slot = slot;
 	int_pkt->int_desc.vector = vector;
 	int_pkt->int_desc.vector_count = 1;
-	int_pkt->int_desc.delivery_mode =
-		(apic->irq_delivery_mode == dest_LowestPrio) ?
-			dest_LowestPrio : dest_Fixed;
+	int_pkt->int_desc.delivery_mode = dest_Fixed;
 
 	/*
 	 * Create MSI w/ dummy vCPU set targeting just one vCPU, overwritten
@@ -1063,7 +1004,7 @@ static u32 hv_compose_msi_req_v2(
 	 */
 	cpu = cpumask_first_and(affinity, cpu_online_mask);
 	int_pkt->int_desc.processor_array[0] =
-		hv_tmp_cpu_nr_to_vp_nr(cpu);
+		hv_cpu_number_to_vp_number(cpu);
 	int_pkt->int_desc.processor_count = 1;
 
 	return sizeof(*int_pkt);
@@ -1087,6 +1028,7 @@ static void hv_compose_msi_msg(struct irq_data *data, struct msi_msg *msg)
 	struct hv_pci_dev *hpdev;
 	struct pci_bus *pbus;
 	struct pci_dev *pdev;
+	struct cpumask *dest;
 	struct compose_comp_ctxt comp;
 	struct tran_int_desc *int_desc;
 	struct {
@@ -1101,6 +1043,7 @@ static void hv_compose_msi_msg(struct irq_data *data, struct msi_msg *msg)
 	int ret;
 
 	pdev = msi_desc_to_pci_dev(irq_data_get_msi_desc(data));
+	dest = irq_data_get_effective_affinity_mask(data);
 	pbus = pdev->bus;
 	hbus = container_of(pbus->sysdata, struct hv_pcibus_device, sysdata);
 	hpdev = get_pcichild_wslot(hbus, devfn_to_wslot(pdev->devfn));
@@ -1126,14 +1069,14 @@ static void hv_compose_msi_msg(struct irq_data *data, struct msi_msg *msg)
 	switch (pci_protocol_version) {
 	case PCI_PROTOCOL_VERSION_1_1:
 		size = hv_compose_msi_req_v1(&ctxt.int_pkts.v1,
-					irq_data_get_affinity_mask(data),
+					dest,
 					hpdev->desc.win_slot.slot,
 					cfg->vector);
 		break;
 
 	case PCI_PROTOCOL_VERSION_1_2:
 		size = hv_compose_msi_req_v2(&ctxt.int_pkts.v2,
-					irq_data_get_affinity_mask(data),
+					dest,
 					hpdev->desc.win_slot.slot,
 					cfg->vector);
 		break;
@@ -1159,7 +1102,12 @@ static void hv_compose_msi_msg(struct irq_data *data, struct msi_msg *msg)
 		goto free_int_desc;
 	}
 
-	wait_for_completion(&comp.comp_pkt.host_event);
+	/*
+	 * Since this function is called with IRQ locks held, can't
+	 * do normal wait for completion; instead poll.
+	 */
+	while (!try_wait_for_completion(&comp.comp_pkt.host_event))
+		udelay(100);
 
 	if (comp.comp_pkt.completion_status < 0) {
 		dev_err(&hbus->hdev->device,
@@ -2489,8 +2437,6 @@ static int hv_pci_probe(struct hv_device *hdev,
 	if (!hbus)
 		return -ENOMEM;
 	hbus->state = hv_pcibus_init;
-
-	hv_tmpcpumap_init();
 
 	/*
 	 * The PCI bus "domain" is what is called "segment" in ACPI and

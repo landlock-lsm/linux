@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * PCIe host controller driver for Kirin Phone SoCs
  *
@@ -5,10 +6,6 @@
  *		http://www.huawei.com
  *
  * Author: Xiaowei Song <songxiaowei@huawei.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <asm/compiler.h>
@@ -430,9 +427,11 @@ static int kirin_pcie_establish_link(struct pcie_port *pp)
 	return 0;
 }
 
-static void kirin_pcie_host_init(struct pcie_port *pp)
+static int kirin_pcie_host_init(struct pcie_port *pp)
 {
 	kirin_pcie_establish_link(pp);
+
+	return 0;
 }
 
 static struct dw_pcie_ops kirin_dw_pcie_ops = {
@@ -441,7 +440,7 @@ static struct dw_pcie_ops kirin_dw_pcie_ops = {
 	.link_up = kirin_pcie_link_up,
 };
 
-static struct dw_pcie_host_ops kirin_pcie_host_ops = {
+static const struct dw_pcie_host_ops kirin_pcie_host_ops = {
 	.rd_own_conf = kirin_pcie_rd_own_conf,
 	.wr_own_conf = kirin_pcie_wr_own_conf,
 	.host_init = kirin_pcie_host_init,

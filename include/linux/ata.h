@@ -60,7 +60,8 @@ enum {
 	ATA_ID_FW_REV		= 23,
 	ATA_ID_PROD		= 27,
 	ATA_ID_MAX_MULTSECT	= 47,
-	ATA_ID_DWORD_IO		= 48,
+	ATA_ID_DWORD_IO		= 48,	/* before ATA-8 */
+	ATA_ID_TRUSTED		= 48,	/* ATA-8 and later */
 	ATA_ID_CAPABILITY	= 49,
 	ATA_ID_OLD_PIO_MODES	= 51,
 	ATA_ID_OLD_DMA_MODES	= 52,
@@ -447,6 +448,8 @@ enum {
 	ATA_SET_MAX_LOCK	= 0x02,
 	ATA_SET_MAX_UNLOCK	= 0x03,
 	ATA_SET_MAX_FREEZE_LOCK	= 0x04,
+	ATA_SET_MAX_PASSWD_DMA	= 0x05,
+	ATA_SET_MAX_UNLOCK_DMA	= 0x06,
 
 	/* feature values for DEVICE CONFIGURATION OVERLAY */
 	ATA_DCO_RESTORE		= 0xC0,
@@ -887,6 +890,13 @@ static inline bool ata_id_has_dword_io(const u16 *id)
 	if (ata_id_major_version(id) > 7)
 		return false;
 	return id[ATA_ID_DWORD_IO] & (1 << 0);
+}
+
+static inline bool ata_id_has_trusted(const u16 *id)
+{
+	if (ata_id_major_version(id) <= 7)
+		return false;
+	return id[ATA_ID_TRUSTED] & (1 << 0);
 }
 
 static inline bool ata_id_has_unload(const u16 *id)

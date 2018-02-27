@@ -87,6 +87,14 @@
  * E.g., #define TH_LOG_ENABLED 1
  *
  * If no definition is provided, logging is enabled by default.
+ *
+ * If there is no way to print an error message for the process running the
+ * test (e.g. not allowed to write to stderr), it is still possible to get the
+ * ASSERT_* number for which the test failed.  This behavior can be enabled by
+ * writing `_metadata->no_print = true;` before the check sequence that is
+ * unable to print.  When an error occur, instead of printing an error message
+ * and calling `abort(3)`, the test process call `_exit(2)` with the assert
+ * number as argument, which is then printed by the parent process.
  */
 #define TH_LOG(fmt, ...) do { \
 	if (TH_LOG_ENABLED) \
@@ -569,7 +577,7 @@
 	/* Avoid multiple evaluation of the cases */ \
 	__typeof__(_expected) __exp = (_expected); \
 	__typeof__(_seen) __seen = (_seen); \
-	__INC_STEP(_metadata); \
+	if (_assert) __INC_STEP(_metadata); \
 	if (!(__exp _t __seen)) { \
 		unsigned long long __exp_print = (uintptr_t)__exp; \
 		unsigned long long __seen_print = (uintptr_t)__seen; \
@@ -585,7 +593,7 @@
 #define __EXPECT_STR(_expected, _seen, _t, _assert) do { \
 	const char *__exp = (_expected); \
 	const char *__seen = (_seen); \
-	__INC_STEP(_metadata); \
+	if (_assert) __INC_STEP(_metadata); \
 	if (!(strcmp(__exp, __seen) _t 0))  { \
 		__TH_LOG("Expected '%s' %s '%s'.", __exp, #_t, __seen); \
 		_metadata->passed = 0; \

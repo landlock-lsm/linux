@@ -79,8 +79,8 @@ make_one_node_map(struct device_node* node, u8 pci_bus)
 		return;
 	bus_range = of_get_property(node, "bus-range", &len);
 	if (bus_range == NULL || len < 2 * sizeof(int)) {
-		printk(KERN_WARNING "Can't get bus-range for %s, "
-		       "assuming it starts at 0\n", node->full_name);
+		printk(KERN_WARNING "Can't get bus-range for %pOF, "
+		       "assuming it starts at 0\n", node);
 		pci_to_OF_bus_map[pci_bus] = 0;
 	} else
 		pci_to_OF_bus_map[pci_bus] = bus_range[0];
@@ -96,7 +96,8 @@ make_one_node_map(struct device_node* node, u8 pci_bus)
 		reg = of_get_property(node, "reg", NULL);
 		if (!reg)
 			continue;
-		dev = pci_get_bus_and_slot(pci_bus, ((reg[0] >> 8) & 0xff));
+		dev = pci_get_domain_bus_and_slot(0, pci_bus,
+						  ((reg[0] >> 8) & 0xff));
 		if (!dev || !dev->subordinate) {
 			pci_dev_put(dev);
 			continue;

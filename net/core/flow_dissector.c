@@ -5,10 +5,12 @@
 #include <linux/ipv6.h>
 #include <linux/if_vlan.h>
 #include <net/dsa.h>
+#include <net/dst_metadata.h>
 #include <net/ip.h>
 #include <net/ipv6.h>
 #include <net/gre.h>
 #include <net/pptp.h>
+#include <net/tipc.h>
 #include <linux/igmp.h>
 #include <linux/icmp.h>
 #include <linux/sctp.h>
@@ -22,6 +24,7 @@
 #include <linux/tcp.h>
 #include <net/flow_dissector.h>
 #include <scsi/fc/fc_fcoe.h>
+#include <uapi/linux/batadv_packet.h>
 
 static void dissector_set_key(struct flow_dissector *flow_dissector,
 			      enum flow_dissector_key_id key_id)
@@ -115,11 +118,102 @@ __be32 __skb_flow_get_ports(const struct sk_buff *skb, int thoff, u8 ip_proto,
 }
 EXPORT_SYMBOL(__skb_flow_get_ports);
 
-enum flow_dissect_ret {
-	FLOW_DISSECT_RET_OUT_GOOD,
-	FLOW_DISSECT_RET_OUT_BAD,
-	FLOW_DISSECT_RET_OUT_PROTO_AGAIN,
-};
+static void
+skb_flow_dissect_set_enc_addr_type(enum flow_dissector_key_id type,
+				   struct flow_dissector *flow_dissector,
+				   void *target_container)
+{
+	struct flow_dissector_key_control *ctrl;
+
+	if (!dissector_uses_key(flow_dissector, FLOW_DISSECTOR_KEY_ENC_CONTROL))
+		return;
+
+	ctrl = skb_flow_dissector_target(flow_dissector,
+					 FLOW_DISSECTOR_KEY_ENC_CONTROL,
+					 target_container);
+	ctrl->addr_type = type;
+}
+
+void
+skb_flow_dissect_tunnel_info(const struct sk_buff *skb,
+			     struct flow_dissector *flow_dissector,
+			     void *target_container)
+{
+	struct ip_tunnel_info *info;
+	struct ip_tunnel_key *key;
+
+	/* A quick check to see if there might be something to do. */
+	if (!dissector_uses_key(flow_dissector,
+				FLOW_DISSECTOR_KEY_ENC_KEYID) &&
+	    !dissector_uses_key(flow_dissector,
+				FLOW_DISSECTOR_KEY_ENC_IPV4_ADDRS) &&
+	    !dissector_uses_key(flow_dissector,
+				FLOW_DISSECTOR_KEY_ENC_IPV6_ADDRS) &&
+	    !dissector_uses_key(flow_dissector,
+				FLOW_DISSECTOR_KEY_ENC_CONTROL) &&
+	    !dissector_uses_key(flow_dissector,
+				FLOW_DISSECTOR_KEY_ENC_PORTS))
+		return;
+
+	info = skb_tunnel_info(skb);
+	if (!info)
+		return;
+
+	key = &info->key;
+
+	switch (ip_tunnel_info_af(info)) {
+	case AF_INET:
+		skb_flow_dissect_set_enc_addr_type(FLOW_DISSECTOR_KEY_IPV4_ADDRS,
+						   flow_dissector,
+						   target_container);
+		if (dissector_uses_key(flow_dissector,
+				       FLOW_DISSECTOR_KEY_ENC_IPV4_ADDRS)) {
+			struct flow_dissector_key_ipv4_addrs *ipv4;
+
+			ipv4 = skb_flow_dissector_target(flow_dissector,
+							 FLOW_DISSECTOR_KEY_ENC_IPV4_ADDRS,
+							 target_container);
+			ipv4->src = key->u.ipv4.src;
+			ipv4->dst = key->u.ipv4.dst;
+		}
+		break;
+	case AF_INET6:
+		skb_flow_dissect_set_enc_addr_type(FLOW_DISSECTOR_KEY_IPV6_ADDRS,
+						   flow_dissector,
+						   target_container);
+		if (dissector_uses_key(flow_dissector,
+				       FLOW_DISSECTOR_KEY_ENC_IPV6_ADDRS)) {
+			struct flow_dissector_key_ipv6_addrs *ipv6;
+
+			ipv6 = skb_flow_dissector_target(flow_dissector,
+							 FLOW_DISSECTOR_KEY_ENC_IPV6_ADDRS,
+							 target_container);
+			ipv6->src = key->u.ipv6.src;
+			ipv6->dst = key->u.ipv6.dst;
+		}
+		break;
+	}
+
+	if (dissector_uses_key(flow_dissector, FLOW_DISSECTOR_KEY_ENC_KEYID)) {
+		struct flow_dissector_key_keyid *keyid;
+
+		keyid = skb_flow_dissector_target(flow_dissector,
+						  FLOW_DISSECTOR_KEY_ENC_KEYID,
+						  target_container);
+		keyid->keyid = tunnel_id_to_key32(key->tun_id);
+	}
+
+	if (dissector_uses_key(flow_dissector, FLOW_DISSECTOR_KEY_ENC_PORTS)) {
+		struct flow_dissector_key_ports *tp;
+
+		tp = skb_flow_dissector_target(flow_dissector,
+					       FLOW_DISSECTOR_KEY_ENC_PORTS,
+					       target_container);
+		tp->src = key->tp_src;
+		tp->dst = key->tp_dst;
+	}
+}
+EXPORT_SYMBOL(skb_flow_dissect_tunnel_info);
 
 static enum flow_dissect_ret
 __skb_flow_dissect_mpls(const struct sk_buff *skb,
@@ -341,7 +435,58 @@ __skb_flow_dissect_gre(const struct sk_buff *skb,
 	if (flags & FLOW_DISSECTOR_F_STOP_AT_ENCAP)
 		return FLOW_DISSECT_RET_OUT_GOOD;
 
-	return FLOW_DISSECT_RET_OUT_PROTO_AGAIN;
+	return FLOW_DISSECT_RET_PROTO_AGAIN;
+}
+
+/**
+ * __skb_flow_dissect_batadv() - dissect batman-adv header
+ * @skb: sk_buff to with the batman-adv header
+ * @key_control: flow dissectors control key
+ * @data: raw buffer pointer to the packet, if NULL use skb->data
+ * @p_proto: pointer used to update the protocol to process next
+ * @p_nhoff: pointer used to update inner network header offset
+ * @hlen: packet header length
+ * @flags: any combination of FLOW_DISSECTOR_F_*
+ *
+ * ETH_P_BATMAN packets are tried to be dissected. Only
+ * &struct batadv_unicast packets are actually processed because they contain an
+ * inner ethernet header and are usually followed by actual network header. This
+ * allows the flow dissector to continue processing the packet.
+ *
+ * Return: FLOW_DISSECT_RET_PROTO_AGAIN when &struct batadv_unicast was found,
+ *  FLOW_DISSECT_RET_OUT_GOOD when dissector should stop after encapsulation,
+ *  otherwise FLOW_DISSECT_RET_OUT_BAD
+ */
+static enum flow_dissect_ret
+__skb_flow_dissect_batadv(const struct sk_buff *skb,
+			  struct flow_dissector_key_control *key_control,
+			  void *data, __be16 *p_proto, int *p_nhoff, int hlen,
+			  unsigned int flags)
+{
+	struct {
+		struct batadv_unicast_packet batadv_unicast;
+		struct ethhdr eth;
+	} *hdr, _hdr;
+
+	hdr = __skb_header_pointer(skb, *p_nhoff, sizeof(_hdr), data, hlen,
+				   &_hdr);
+	if (!hdr)
+		return FLOW_DISSECT_RET_OUT_BAD;
+
+	if (hdr->batadv_unicast.version != BATADV_COMPAT_VERSION)
+		return FLOW_DISSECT_RET_OUT_BAD;
+
+	if (hdr->batadv_unicast.packet_type != BATADV_UNICAST)
+		return FLOW_DISSECT_RET_OUT_BAD;
+
+	*p_proto = hdr->eth.h_proto;
+	*p_nhoff += sizeof(*hdr);
+
+	key_control->flags |= FLOW_DIS_ENCAPSULATION;
+	if (flags & FLOW_DISSECTOR_F_STOP_AT_ENCAP)
+		return FLOW_DISSECT_RET_OUT_GOOD;
+
+	return FLOW_DISSECT_RET_PROTO_AGAIN;
 }
 
 static void
@@ -402,6 +547,18 @@ __skb_flow_dissect_ipv6(const struct sk_buff *skb,
 	key_ip->ttl = iph->hop_limit;
 }
 
+/* Maximum number of protocol headers that can be parsed in
+ * __skb_flow_dissect
+ */
+#define MAX_FLOW_DISSECT_HDRS	15
+
+static bool skb_flow_dissect_allowed(int *num_hdrs)
+{
+	++*num_hdrs;
+
+	return (*num_hdrs <= MAX_FLOW_DISSECT_HDRS);
+}
+
 /**
  * __skb_flow_dissect - extract the flow_keys struct and return it
  * @skb: sk_buff to extract the flow from, can be NULL if the rest are specified
@@ -431,7 +588,9 @@ bool __skb_flow_dissect(const struct sk_buff *skb,
 	struct flow_dissector_key_icmp *key_icmp;
 	struct flow_dissector_key_tags *key_tags;
 	struct flow_dissector_key_vlan *key_vlan;
+	enum flow_dissect_ret fdret;
 	bool skip_vlan = false;
+	int num_hdrs = 0;
 	u8 ip_proto = 0;
 	bool ret;
 
@@ -482,14 +641,19 @@ bool __skb_flow_dissect(const struct sk_buff *skb,
 	}
 
 proto_again:
+	fdret = FLOW_DISSECT_RET_CONTINUE;
+
 	switch (proto) {
 	case htons(ETH_P_IP): {
 		const struct iphdr *iph;
 		struct iphdr _iph;
-ip:
+
 		iph = __skb_header_pointer(skb, nhoff, sizeof(_iph), data, hlen, &_iph);
-		if (!iph || iph->ihl < 5)
-			goto out_bad;
+		if (!iph || iph->ihl < 5) {
+			fdret = FLOW_DISSECT_RET_OUT_BAD;
+			break;
+		}
+
 		nhoff += iph->ihl * 4;
 
 		ip_proto = iph->protocol;
@@ -509,19 +673,25 @@ ip:
 			key_control->flags |= FLOW_DIS_IS_FRAGMENT;
 
 			if (iph->frag_off & htons(IP_OFFSET)) {
-				goto out_good;
+				fdret = FLOW_DISSECT_RET_OUT_GOOD;
+				break;
 			} else {
 				key_control->flags |= FLOW_DIS_FIRST_FRAG;
-				if (!(flags & FLOW_DISSECTOR_F_PARSE_1ST_FRAG))
-					goto out_good;
+				if (!(flags &
+				      FLOW_DISSECTOR_F_PARSE_1ST_FRAG)) {
+					fdret = FLOW_DISSECT_RET_OUT_GOOD;
+					break;
+				}
 			}
 		}
 
 		__skb_flow_dissect_ipv4(skb, flow_dissector,
 					target_container, data, iph);
 
-		if (flags & FLOW_DISSECTOR_F_STOP_AT_L3)
-			goto out_good;
+		if (flags & FLOW_DISSECTOR_F_STOP_AT_L3) {
+			fdret = FLOW_DISSECT_RET_OUT_GOOD;
+			break;
+		}
 
 		break;
 	}
@@ -529,10 +699,11 @@ ip:
 		const struct ipv6hdr *iph;
 		struct ipv6hdr _iph;
 
-ipv6:
 		iph = __skb_header_pointer(skb, nhoff, sizeof(_iph), data, hlen, &_iph);
-		if (!iph)
-			goto out_bad;
+		if (!iph) {
+			fdret = FLOW_DISSECT_RET_OUT_BAD;
+			break;
+		}
 
 		ip_proto = iph->nexthdr;
 		nhoff += sizeof(struct ipv6hdr);
@@ -561,15 +732,17 @@ ipv6:
 								     target_container);
 				key_tags->flow_label = ntohl(flow_label);
 			}
-			if (flags & FLOW_DISSECTOR_F_STOP_AT_FLOW_LABEL)
-				goto out_good;
+			if (flags & FLOW_DISSECTOR_F_STOP_AT_FLOW_LABEL) {
+				fdret = FLOW_DISSECT_RET_OUT_GOOD;
+				break;
+			}
 		}
 
 		__skb_flow_dissect_ipv6(skb, flow_dissector,
 					target_container, data, iph);
 
 		if (flags & FLOW_DISSECTOR_F_STOP_AT_L3)
-			goto out_good;
+			fdret = FLOW_DISSECT_RET_OUT_GOOD;
 
 		break;
 	}
@@ -585,12 +758,17 @@ ipv6:
 		if (!vlan_tag_present || eth_type_vlan(skb->protocol)) {
 			vlan = __skb_header_pointer(skb, nhoff, sizeof(_vlan),
 						    data, hlen, &_vlan);
-			if (!vlan)
-				goto out_bad;
+			if (!vlan) {
+				fdret = FLOW_DISSECT_RET_OUT_BAD;
+				break;
+			}
+
 			proto = vlan->h_vlan_encapsulated_proto;
 			nhoff += sizeof(*vlan);
-			if (skip_vlan)
-				goto proto_again;
+			if (skip_vlan) {
+				fdret = FLOW_DISSECT_RET_PROTO_AGAIN;
+				break;
+			}
 		}
 
 		skip_vlan = true;
@@ -613,7 +791,8 @@ ipv6:
 			}
 		}
 
-		goto proto_again;
+		fdret = FLOW_DISSECT_RET_PROTO_AGAIN;
+		break;
 	}
 	case htons(ETH_P_PPP_SES): {
 		struct {
@@ -621,86 +800,109 @@ ipv6:
 			__be16 proto;
 		} *hdr, _hdr;
 		hdr = __skb_header_pointer(skb, nhoff, sizeof(_hdr), data, hlen, &_hdr);
-		if (!hdr)
-			goto out_bad;
+		if (!hdr) {
+			fdret = FLOW_DISSECT_RET_OUT_BAD;
+			break;
+		}
+
 		proto = hdr->proto;
 		nhoff += PPPOE_SES_HLEN;
 		switch (proto) {
 		case htons(PPP_IP):
-			goto ip;
+			proto = htons(ETH_P_IP);
+			fdret = FLOW_DISSECT_RET_PROTO_AGAIN;
+			break;
 		case htons(PPP_IPV6):
-			goto ipv6;
+			proto = htons(ETH_P_IPV6);
+			fdret = FLOW_DISSECT_RET_PROTO_AGAIN;
+			break;
 		default:
-			goto out_bad;
+			fdret = FLOW_DISSECT_RET_OUT_BAD;
+			break;
 		}
+		break;
 	}
 	case htons(ETH_P_TIPC): {
-		struct {
-			__be32 pre[3];
-			__be32 srcnode;
-		} *hdr, _hdr;
-		hdr = __skb_header_pointer(skb, nhoff, sizeof(_hdr), data, hlen, &_hdr);
-		if (!hdr)
-			goto out_bad;
+		struct tipc_basic_hdr *hdr, _hdr;
+
+		hdr = __skb_header_pointer(skb, nhoff, sizeof(_hdr),
+					   data, hlen, &_hdr);
+		if (!hdr) {
+			fdret = FLOW_DISSECT_RET_OUT_BAD;
+			break;
+		}
 
 		if (dissector_uses_key(flow_dissector,
-				       FLOW_DISSECTOR_KEY_TIPC_ADDRS)) {
+				       FLOW_DISSECTOR_KEY_TIPC)) {
 			key_addrs = skb_flow_dissector_target(flow_dissector,
-							      FLOW_DISSECTOR_KEY_TIPC_ADDRS,
+							      FLOW_DISSECTOR_KEY_TIPC,
 							      target_container);
-			key_addrs->tipcaddrs.srcnode = hdr->srcnode;
-			key_control->addr_type = FLOW_DISSECTOR_KEY_TIPC_ADDRS;
+			key_addrs->tipckey.key = tipc_hdr_rps_key(hdr);
+			key_control->addr_type = FLOW_DISSECTOR_KEY_TIPC;
 		}
-		goto out_good;
+		fdret = FLOW_DISSECT_RET_OUT_GOOD;
+		break;
 	}
 
 	case htons(ETH_P_MPLS_UC):
 	case htons(ETH_P_MPLS_MC):
-mpls:
-		switch (__skb_flow_dissect_mpls(skb, flow_dissector,
+		fdret = __skb_flow_dissect_mpls(skb, flow_dissector,
 						target_container, data,
-						nhoff, hlen)) {
-		case FLOW_DISSECT_RET_OUT_GOOD:
-			goto out_good;
-		case FLOW_DISSECT_RET_OUT_BAD:
-		default:
-			goto out_bad;
-		}
+						nhoff, hlen);
+		break;
 	case htons(ETH_P_FCOE):
-		if ((hlen - nhoff) < FCOE_HEADER_LEN)
-			goto out_bad;
+		if ((hlen - nhoff) < FCOE_HEADER_LEN) {
+			fdret = FLOW_DISSECT_RET_OUT_BAD;
+			break;
+		}
 
 		nhoff += FCOE_HEADER_LEN;
-		goto out_good;
+		fdret = FLOW_DISSECT_RET_OUT_GOOD;
+		break;
 
 	case htons(ETH_P_ARP):
 	case htons(ETH_P_RARP):
-		switch (__skb_flow_dissect_arp(skb, flow_dissector,
+		fdret = __skb_flow_dissect_arp(skb, flow_dissector,
 					       target_container, data,
-					       nhoff, hlen)) {
-		case FLOW_DISSECT_RET_OUT_GOOD:
-			goto out_good;
-		case FLOW_DISSECT_RET_OUT_BAD:
-		default:
-			goto out_bad;
-		}
+					       nhoff, hlen);
+		break;
+
+	case htons(ETH_P_BATMAN):
+		fdret = __skb_flow_dissect_batadv(skb, key_control, data,
+						  &proto, &nhoff, hlen, flags);
+		break;
+
+	default:
+		fdret = FLOW_DISSECT_RET_OUT_BAD;
+		break;
+	}
+
+	/* Process result of proto processing */
+	switch (fdret) {
+	case FLOW_DISSECT_RET_OUT_GOOD:
+		goto out_good;
+	case FLOW_DISSECT_RET_PROTO_AGAIN:
+		if (skb_flow_dissect_allowed(&num_hdrs))
+			goto proto_again;
+		goto out_good;
+	case FLOW_DISSECT_RET_CONTINUE:
+	case FLOW_DISSECT_RET_IPPROTO_AGAIN:
+		break;
+	case FLOW_DISSECT_RET_OUT_BAD:
 	default:
 		goto out_bad;
 	}
 
 ip_proto_again:
+	fdret = FLOW_DISSECT_RET_CONTINUE;
+
 	switch (ip_proto) {
 	case IPPROTO_GRE:
-		switch (__skb_flow_dissect_gre(skb, key_control, flow_dissector,
+		fdret = __skb_flow_dissect_gre(skb, key_control, flow_dissector,
 					       target_container, data,
-					       &proto, &nhoff, &hlen, flags)) {
-		case FLOW_DISSECT_RET_OUT_GOOD:
-			goto out_good;
-		case FLOW_DISSECT_RET_OUT_BAD:
-			goto out_bad;
-		case FLOW_DISSECT_RET_OUT_PROTO_AGAIN:
-			goto proto_again;
-		}
+					       &proto, &nhoff, &hlen, flags);
+		break;
+
 	case NEXTHDR_HOP:
 	case NEXTHDR_ROUTING:
 	case NEXTHDR_DEST: {
@@ -711,13 +913,16 @@ ip_proto_again:
 
 		opthdr = __skb_header_pointer(skb, nhoff, sizeof(_opthdr),
 					      data, hlen, &_opthdr);
-		if (!opthdr)
-			goto out_bad;
+		if (!opthdr) {
+			fdret = FLOW_DISSECT_RET_OUT_BAD;
+			break;
+		}
 
 		ip_proto = opthdr[0];
 		nhoff += (opthdr[1] + 1) << 3;
 
-		goto ip_proto_again;
+		fdret = FLOW_DISSECT_RET_IPPROTO_AGAIN;
+		break;
 	}
 	case NEXTHDR_FRAGMENT: {
 		struct frag_hdr _fh, *fh;
@@ -728,8 +933,10 @@ ip_proto_again:
 		fh = __skb_header_pointer(skb, nhoff, sizeof(_fh),
 					  data, hlen, &_fh);
 
-		if (!fh)
-			goto out_bad;
+		if (!fh) {
+			fdret = FLOW_DISSECT_RET_OUT_BAD;
+			break;
+		}
 
 		key_control->flags |= FLOW_DIS_IS_FRAGMENT;
 
@@ -738,34 +945,50 @@ ip_proto_again:
 
 		if (!(fh->frag_off & htons(IP6_OFFSET))) {
 			key_control->flags |= FLOW_DIS_FIRST_FRAG;
-			if (flags & FLOW_DISSECTOR_F_PARSE_1ST_FRAG)
-				goto ip_proto_again;
+			if (flags & FLOW_DISSECTOR_F_PARSE_1ST_FRAG) {
+				fdret = FLOW_DISSECT_RET_IPPROTO_AGAIN;
+				break;
+			}
 		}
-		goto out_good;
+
+		fdret = FLOW_DISSECT_RET_OUT_GOOD;
+		break;
 	}
 	case IPPROTO_IPIP:
 		proto = htons(ETH_P_IP);
 
 		key_control->flags |= FLOW_DIS_ENCAPSULATION;
-		if (flags & FLOW_DISSECTOR_F_STOP_AT_ENCAP)
-			goto out_good;
+		if (flags & FLOW_DISSECTOR_F_STOP_AT_ENCAP) {
+			fdret = FLOW_DISSECT_RET_OUT_GOOD;
+			break;
+		}
 
-		goto ip;
+		fdret = FLOW_DISSECT_RET_PROTO_AGAIN;
+		break;
+
 	case IPPROTO_IPV6:
 		proto = htons(ETH_P_IPV6);
 
 		key_control->flags |= FLOW_DIS_ENCAPSULATION;
-		if (flags & FLOW_DISSECTOR_F_STOP_AT_ENCAP)
-			goto out_good;
+		if (flags & FLOW_DISSECTOR_F_STOP_AT_ENCAP) {
+			fdret = FLOW_DISSECT_RET_OUT_GOOD;
+			break;
+		}
 
-		goto ipv6;
+		fdret = FLOW_DISSECT_RET_PROTO_AGAIN;
+		break;
+
+
 	case IPPROTO_MPLS:
 		proto = htons(ETH_P_MPLS_UC);
-		goto mpls;
+		fdret = FLOW_DISSECT_RET_PROTO_AGAIN;
+		break;
+
 	case IPPROTO_TCP:
 		__skb_flow_dissect_tcp(skb, flow_dissector, target_container,
 				       data, nhoff, hlen);
 		break;
+
 	default:
 		break;
 	}
@@ -787,11 +1010,29 @@ ip_proto_again:
 		key_icmp->icmp = skb_flow_get_be16(skb, nhoff, data, hlen);
 	}
 
+	/* Process result of IP proto processing */
+	switch (fdret) {
+	case FLOW_DISSECT_RET_PROTO_AGAIN:
+		if (skb_flow_dissect_allowed(&num_hdrs))
+			goto proto_again;
+		break;
+	case FLOW_DISSECT_RET_IPPROTO_AGAIN:
+		if (skb_flow_dissect_allowed(&num_hdrs))
+			goto ip_proto_again;
+		break;
+	case FLOW_DISSECT_RET_OUT_GOOD:
+	case FLOW_DISSECT_RET_CONTINUE:
+		break;
+	case FLOW_DISSECT_RET_OUT_BAD:
+	default:
+		goto out_bad;
+	}
+
 out_good:
 	ret = true;
 
-	key_control->thoff = (u16)nhoff;
 out:
+	key_control->thoff = min_t(u16, nhoff, skb ? skb->len : hlen);
 	key_basic->n_proto = proto;
 	key_basic->ip_proto = ip_proto;
 
@@ -799,7 +1040,6 @@ out:
 
 out_bad:
 	ret = false;
-	key_control->thoff = min_t(u16, nhoff, skb ? skb->len : hlen);
 	goto out;
 }
 EXPORT_SYMBOL(__skb_flow_dissect);
@@ -838,8 +1078,8 @@ static inline size_t flow_keys_hash_length(const struct flow_keys *flow)
 	case FLOW_DISSECTOR_KEY_IPV6_ADDRS:
 		diff -= sizeof(flow->addrs.v6addrs);
 		break;
-	case FLOW_DISSECTOR_KEY_TIPC_ADDRS:
-		diff -= sizeof(flow->addrs.tipcaddrs);
+	case FLOW_DISSECTOR_KEY_TIPC:
+		diff -= sizeof(flow->addrs.tipckey);
 		break;
 	}
 	return (sizeof(*flow) - diff) / sizeof(u32);
@@ -853,8 +1093,8 @@ __be32 flow_get_u32_src(const struct flow_keys *flow)
 	case FLOW_DISSECTOR_KEY_IPV6_ADDRS:
 		return (__force __be32)ipv6_addr_hash(
 			&flow->addrs.v6addrs.src);
-	case FLOW_DISSECTOR_KEY_TIPC_ADDRS:
-		return flow->addrs.tipcaddrs.srcnode;
+	case FLOW_DISSECTOR_KEY_TIPC:
+		return flow->addrs.tipckey.key;
 	default:
 		return 0;
 	}
@@ -1135,8 +1375,8 @@ static const struct flow_dissector_key flow_keys_dissector_keys[] = {
 		.offset = offsetof(struct flow_keys, addrs.v6addrs),
 	},
 	{
-		.key_id = FLOW_DISSECTOR_KEY_TIPC_ADDRS,
-		.offset = offsetof(struct flow_keys, addrs.tipcaddrs),
+		.key_id = FLOW_DISSECTOR_KEY_TIPC,
+		.offset = offsetof(struct flow_keys, addrs.tipckey),
 	},
 	{
 		.key_id = FLOW_DISSECTOR_KEY_PORTS,

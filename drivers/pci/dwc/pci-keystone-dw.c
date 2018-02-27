@@ -1,15 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Designware application register space functions for Keystone PCI controller
+ * DesignWare application register space functions for Keystone PCI controller
  *
  * Copyright (C) 2013-2014 Texas Instruments., Ltd.
  *		http://www.ti.com
  *
  * Author: Murali Karicheri <m-karicheri2@ti.com>
- *
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/irq.h>
@@ -168,16 +164,12 @@ void ks_dw_pcie_msi_clear_irq(struct pcie_port *pp, int irq)
 
 static void ks_dw_pcie_msi_irq_mask(struct irq_data *d)
 {
-	struct keystone_pcie *ks_pcie;
 	struct msi_desc *msi;
 	struct pcie_port *pp;
-	struct dw_pcie *pci;
 	u32 offset;
 
 	msi = irq_data_get_msi_desc(d);
 	pp = (struct pcie_port *) msi_desc_to_pci_sysdata(msi);
-	pci = to_dw_pcie_from_pp(pp);
-	ks_pcie = to_keystone_pcie(pci);
 	offset = d->irq - irq_linear_revmap(pp->irq_domain, 0);
 
 	/* Mask the end point if PVM implemented */
@@ -191,16 +183,12 @@ static void ks_dw_pcie_msi_irq_mask(struct irq_data *d)
 
 static void ks_dw_pcie_msi_irq_unmask(struct irq_data *d)
 {
-	struct keystone_pcie *ks_pcie;
 	struct msi_desc *msi;
 	struct pcie_port *pp;
-	struct dw_pcie *pci;
 	u32 offset;
 
 	msi = irq_data_get_msi_desc(d);
 	pp = (struct pcie_port *) msi_desc_to_pci_sysdata(msi);
-	pci = to_dw_pcie_from_pp(pp);
-	ks_pcie = to_keystone_pcie(pci);
 	offset = d->irq - irq_linear_revmap(pp->irq_domain, 0);
 
 	/* Mask the end point if PVM implemented */
@@ -259,7 +247,7 @@ void ks_dw_pcie_enable_legacy_irqs(struct keystone_pcie *ks_pcie)
 {
 	int i;
 
-	for (i = 0; i < MAX_LEGACY_IRQS; i++)
+	for (i = 0; i < PCI_NUM_INTX; i++)
 		ks_dw_app_writel(ks_pcie, IRQ_ENABLE_SET + (i << 4), 0x1);
 }
 
@@ -565,7 +553,7 @@ int __init ks_dw_pcie_host_init(struct keystone_pcie *ks_pcie,
 	/* Create legacy IRQ domain */
 	ks_pcie->legacy_irq_domain =
 			irq_domain_add_linear(ks_pcie->legacy_intc_np,
-					MAX_LEGACY_IRQS,
+					PCI_NUM_INTX,
 					&ks_dw_pcie_legacy_irq_domain_ops,
 					NULL);
 	if (!ks_pcie->legacy_irq_domain) {

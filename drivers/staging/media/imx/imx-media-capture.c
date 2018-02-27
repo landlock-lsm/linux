@@ -62,7 +62,7 @@ struct capture_priv {
 /* In bytes, per queue */
 #define VID_MEM_LIMIT	SZ_64M
 
-static struct vb2_ops capture_qops;
+static const struct vb2_ops capture_qops;
 
 /*
  * Video ioctls follow
@@ -449,9 +449,6 @@ static int capture_start_streaming(struct vb2_queue *vq, unsigned int count)
 	unsigned long flags;
 	int ret;
 
-	if (vb2_is_streaming(vq))
-		return 0;
-
 	ret = imx_media_pipeline_set_stream(priv->md, &priv->src_sd->entity,
 					    true);
 	if (ret) {
@@ -480,9 +477,6 @@ static void capture_stop_streaming(struct vb2_queue *vq)
 	unsigned long flags;
 	int ret;
 
-	if (!vb2_is_streaming(vq))
-		return;
-
 	spin_lock_irqsave(&priv->q_lock, flags);
 	priv->stop = true;
 	spin_unlock_irqrestore(&priv->q_lock, flags);
@@ -503,7 +497,7 @@ static void capture_stop_streaming(struct vb2_queue *vq)
 	spin_unlock_irqrestore(&priv->q_lock, flags);
 }
 
-static struct vb2_ops capture_qops = {
+static const struct vb2_ops capture_qops = {
 	.queue_setup	 = capture_queue_setup,
 	.buf_init        = capture_buf_init,
 	.buf_prepare	 = capture_buf_prepare,
@@ -753,6 +747,8 @@ imx_media_capture_device_init(struct v4l2_subdev *src_sd, int pad)
 	vfd->lock = &priv->mutex;
 	vfd->queue = &priv->q;
 	priv->vdev.vfd = vfd;
+
+	INIT_LIST_HEAD(&priv->vdev.list);
 
 	video_set_drvdata(vfd, priv);
 

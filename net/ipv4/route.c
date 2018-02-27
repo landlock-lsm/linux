@@ -240,7 +240,6 @@ static int rt_cache_seq_open(struct inode *inode, struct file *file)
 }
 
 static const struct file_operations rt_cache_seq_fops = {
-	.owner	 = THIS_MODULE,
 	.open	 = rt_cache_seq_open,
 	.read	 = seq_read,
 	.llseek	 = seq_lseek,
@@ -331,7 +330,6 @@ static int rt_cpu_seq_open(struct inode *inode, struct file *file)
 }
 
 static const struct file_operations rt_cpu_seq_fops = {
-	.owner	 = THIS_MODULE,
 	.open	 = rt_cpu_seq_open,
 	.read	 = seq_read,
 	.llseek	 = seq_lseek,
@@ -369,7 +367,6 @@ static int rt_acct_proc_open(struct inode *inode, struct file *file)
 }
 
 static const struct file_operations rt_acct_proc_fops = {
-	.owner		= THIS_MODULE,
 	.open		= rt_acct_proc_open,
 	.read		= seq_read,
 	.llseek		= seq_lseek,
@@ -420,6 +417,7 @@ static void __net_exit ip_rt_do_proc_exit(struct net *net)
 static struct pernet_operations ip_rt_proc_ops __net_initdata =  {
 	.init = ip_rt_do_proc_init,
 	.exit = ip_rt_do_proc_exit,
+	.async = true,
 };
 
 static int __init ip_rt_proc_init(void)
@@ -495,7 +493,7 @@ u32 ip_idents_reserve(u32 hash, int segs)
 {
 	u32 *p_tstamp = ip_tstamps + hash % IP_IDENTS_SZ;
 	atomic_t *p_id = ip_idents + hash % IP_IDENTS_SZ;
-	u32 old = ACCESS_ONCE(*p_tstamp);
+	u32 old = READ_ONCE(*p_tstamp);
 	u32 now = (u32)jiffies;
 	u32 new, delta = 0;
 
@@ -651,9 +649,12 @@ static void update_or_create_fnhe(struct fib_nh *nh, __be32 daddr, __be32 gw,
 	struct fnhe_hash_bucket *hash;
 	struct fib_nh_exception *fnhe;
 	struct rtable *rt;
+	u32 genid, hval;
 	unsigned int i;
 	int depth;
-	u32 hval = fnhe_hashfun(daddr);
+
+	genid = fnhe_genid(dev_net(nh->nh_dev));
+	hval = fnhe_hashfun(daddr);
 
 	spin_lock_bh(&fnhe_lock);
 
@@ -676,12 +677,13 @@ static void update_or_create_fnhe(struct fib_nh *nh, __be32 daddr, __be32 gw,
 	}
 
 	if (fnhe) {
+		if (fnhe->fnhe_genid != genid)
+			fnhe->fnhe_genid = genid;
 		if (gw)
 			fnhe->fnhe_gw = gw;
-		if (pmtu) {
+		if (pmtu)
 			fnhe->fnhe_pmtu = pmtu;
-			fnhe->fnhe_expires = max(1UL, expires);
-		}
+		fnhe->fnhe_expires = max(1UL, expires);
 		/* Update all cached dsts too */
 		rt = rcu_dereference(fnhe->fnhe_rth_input);
 		if (rt)
@@ -700,7 +702,7 @@ static void update_or_create_fnhe(struct fib_nh *nh, __be32 daddr, __be32 gw,
 			fnhe->fnhe_next = hash->chain;
 			rcu_assign_pointer(hash->chain, fnhe);
 		}
-		fnhe->fnhe_genid = fnhe_genid(dev_net(nh->nh_dev));
+		fnhe->fnhe_genid = genid;
 		fnhe->fnhe_daddr = daddr;
 		fnhe->fnhe_gw = gw;
 		fnhe->fnhe_pmtu = pmtu;
@@ -1102,7 +1104,7 @@ void ipv4_sk_update_pmtu(struct sk_buff *skb, struct sock *sk, u32 mtu)
 		new = true;
 	}
 
-	__ip_rt_update_pmtu((struct rtable *) rt->dst.path, &fl4, mtu);
+	__ip_rt_update_pmtu((struct rtable *) xfrm_dst_path(&rt->dst), &fl4, mtu);
 
 	if (!dst_check(&rt->dst, 0)) {
 		if (new)
@@ -1250,7 +1252,7 @@ static void set_class_tag(struct rtable *rt, u32 tag)
 static unsigned int ipv4_default_advmss(const struct dst_entry *dst)
 {
 	unsigned int header_size = sizeof(struct tcphdr) + sizeof(struct iphdr);
-	unsigned int advmss = max_t(unsigned int, dst->dev->mtu - header_size,
+	unsigned int advmss = max_t(unsigned int, ipv4_mtu(dst) - header_size,
 				    ip_rt_min_advmss);
 
 	return min(advmss, IPV4_MAX_PMTU - header_size);
@@ -1267,7 +1269,7 @@ static unsigned int ipv4_mtu(const struct dst_entry *dst)
 	if (mtu)
 		return mtu;
 
-	mtu = dst->dev->mtu;
+	mtu = READ_ONCE(dst->dev->mtu);
 
 	if (unlikely(dst_metric_locked(dst, RTAX_MTU))) {
 		if (rt->rt_uses_gateway && mtu > 576)
@@ -1520,43 +1522,56 @@ struct rtable *rt_dst_alloc(struct net_device *dev,
 EXPORT_SYMBOL(rt_dst_alloc);
 
 /* called in rcu_read_lock() section */
-static int ip_route_input_mc(struct sk_buff *skb, __be32 daddr, __be32 saddr,
-				u8 tos, struct net_device *dev, int our)
+int ip_mc_validate_source(struct sk_buff *skb, __be32 daddr, __be32 saddr,
+			  u8 tos, struct net_device *dev,
+			  struct in_device *in_dev, u32 *itag)
 {
-	struct rtable *rth;
-	struct in_device *in_dev = __in_dev_get_rcu(dev);
-	unsigned int flags = RTCF_MULTICAST;
-	u32 itag = 0;
 	int err;
 
 	/* Primary sanity checks. */
-
 	if (!in_dev)
 		return -EINVAL;
 
 	if (ipv4_is_multicast(saddr) || ipv4_is_lbcast(saddr) ||
 	    skb->protocol != htons(ETH_P_IP))
-		goto e_inval;
+		return -EINVAL;
 
 	if (ipv4_is_loopback(saddr) && !IN_DEV_ROUTE_LOCALNET(in_dev))
-		goto e_inval;
+		return -EINVAL;
 
 	if (ipv4_is_zeronet(saddr)) {
 		if (!ipv4_is_local_multicast(daddr))
-			goto e_inval;
+			return -EINVAL;
 	} else {
 		err = fib_validate_source(skb, saddr, 0, tos, 0, dev,
-					  in_dev, &itag);
+					  in_dev, itag);
 		if (err < 0)
-			goto e_err;
+			return err;
 	}
+	return 0;
+}
+
+/* called in rcu_read_lock() section */
+static int ip_route_input_mc(struct sk_buff *skb, __be32 daddr, __be32 saddr,
+			     u8 tos, struct net_device *dev, int our)
+{
+	struct in_device *in_dev = __in_dev_get_rcu(dev);
+	unsigned int flags = RTCF_MULTICAST;
+	struct rtable *rth;
+	u32 itag = 0;
+	int err;
+
+	err = ip_mc_validate_source(skb, daddr, saddr, tos, dev, in_dev, &itag);
+	if (err)
+		return err;
+
 	if (our)
 		flags |= RTCF_LOCAL;
 
 	rth = rt_dst_alloc(dev_net(dev)->loopback_dev, flags, RTN_MULTICAST,
 			   IN_DEV_CONF_GET(in_dev, NOPOLICY), false, false);
 	if (!rth)
-		goto e_nobufs;
+		return -ENOBUFS;
 
 #ifdef CONFIG_IP_ROUTE_CLASSID
 	rth->dst.tclassid = itag;
@@ -1572,13 +1587,6 @@ static int ip_route_input_mc(struct sk_buff *skb, __be32 daddr, __be32 saddr,
 
 	skb_dst_set(skb, &rth->dst);
 	return 0;
-
-e_nobufs:
-	return -ENOBUFS;
-e_inval:
-	return -EINVAL;
-e_err:
-	return err;
 }
 
 
@@ -1839,7 +1847,6 @@ int fib_multipath_hash(const struct fib_info *fi, const struct flowi4 *fl4,
 
 	return mhash >> 1;
 }
-EXPORT_SYMBOL_GPL(fib_multipath_hash);
 #endif /* CONFIG_IP_ROUTE_MULTIPATH */
 
 static int ip_mkroute_input(struct sk_buff *skb,
@@ -2507,7 +2514,7 @@ struct dst_entry *ipv4_blackhole_route(struct net *net, struct dst_entry *dst_or
 	struct rtable *ort = (struct rtable *) dst_orig;
 	struct rtable *rt;
 
-	rt = dst_alloc(&ipv4_dst_blackhole_ops, NULL, 1, DST_OBSOLETE_NONE, 0);
+	rt = dst_alloc(&ipv4_dst_blackhole_ops, NULL, 1, DST_OBSOLETE_DEAD, 0);
 	if (rt) {
 		struct dst_entry *new = &rt->dst;
 
@@ -2752,6 +2759,7 @@ static int inet_rtm_getroute(struct sk_buff *in_skb, struct nlmsghdr *nlh,
 		if (err == 0 && rt->dst.error)
 			err = -rt->dst.error;
 	} else {
+		fl4.flowi4_iif = LOOPBACK_IFINDEX;
 		rt = ip_route_output_key_hash_rcu(net, &fl4, &res, skb);
 		err = 0;
 		if (IS_ERR(rt))
@@ -2769,14 +2777,21 @@ static int inet_rtm_getroute(struct sk_buff *in_skb, struct nlmsghdr *nlh,
 	if (rtm->rtm_flags & RTM_F_LOOKUP_TABLE)
 		table_id = rt->rt_table_id;
 
-	if (rtm->rtm_flags & RTM_F_FIB_MATCH)
+	if (rtm->rtm_flags & RTM_F_FIB_MATCH) {
+		if (!res.fi) {
+			err = fib_props[res.type].error;
+			if (!err)
+				err = -EHOSTUNREACH;
+			goto errout_free;
+		}
 		err = fib_dump_info(skb, NETLINK_CB(in_skb).portid,
 				    nlh->nlmsg_seq, RTM_NEWROUTE, table_id,
 				    rt->rt_type, res.prefix, res.prefixlen,
 				    fl4.flowi4_tos, res.fi, 0);
-	else
+	} else {
 		err = rt_fill_info(net, dst, src, table_id, &fl4, skb,
 				   NETLINK_CB(in_skb).portid, nlh->nlmsg_seq);
+	}
 	if (err < 0)
 		goto errout_free;
 
@@ -2979,6 +2994,7 @@ static __net_exit void sysctl_route_net_exit(struct net *net)
 static __net_initdata struct pernet_operations sysctl_route_ops = {
 	.init = sysctl_route_net_init,
 	.exit = sysctl_route_net_exit,
+	.async = true,
 };
 #endif
 
@@ -2992,6 +3008,7 @@ static __net_init int rt_genid_init(struct net *net)
 
 static __net_initdata struct pernet_operations rt_genid_ops = {
 	.init = rt_genid_init,
+	.async = true,
 };
 
 static int __net_init ipv4_inetpeer_init(struct net *net)
@@ -3017,6 +3034,7 @@ static void __net_exit ipv4_inetpeer_exit(struct net *net)
 static __net_initdata struct pernet_operations ipv4_inetpeer_ops = {
 	.init	=	ipv4_inetpeer_init,
 	.exit	=	ipv4_inetpeer_exit,
+	.async	=	true,
 };
 
 #ifdef CONFIG_IP_ROUTE_CLASSID
@@ -3025,7 +3043,6 @@ struct ip_rt_acct __percpu *ip_rt_acct __read_mostly;
 
 int __init ip_rt_init(void)
 {
-	int rc = 0;
 	int cpu;
 
 	ip_idents = kmalloc(IP_IDENTS_SZ * sizeof(*ip_idents), GFP_KERNEL);
@@ -3082,7 +3099,7 @@ int __init ip_rt_init(void)
 #endif
 	register_pernet_subsys(&rt_genid_ops);
 	register_pernet_subsys(&ipv4_inetpeer_ops);
-	return rc;
+	return 0;
 }
 
 #ifdef CONFIG_SYSCTL

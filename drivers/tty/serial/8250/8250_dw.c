@@ -1,13 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Synopsys DesignWare 8250 driver.
  *
  * Copyright 2011 Picochip, Jamie Iles.
  * Copyright 2013 Intel Corporation
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  *
  * The Synopsys DesignWare 8250 has an extra feature whereby it detects if the
  * LCR is written whilst busy.  If it is, then a busy detect interrupt is
@@ -513,7 +509,8 @@ static int dw8250_probe(struct platform_device *pdev)
 	/* If no clock rate is defined, fail. */
 	if (!p->uartclk) {
 		dev_err(dev, "clock rate not defined\n");
-		return -EINVAL;
+		err = -EINVAL;
+		goto err_clk;
 	}
 
 	data->pclk = devm_clk_get(dev, "apb_pclk");
@@ -529,7 +526,7 @@ static int dw8250_probe(struct platform_device *pdev)
 		}
 	}
 
-	data->rst = devm_reset_control_get_optional(dev, NULL);
+	data->rst = devm_reset_control_get_optional_exclusive(dev, NULL);
 	if (IS_ERR(data->rst)) {
 		err = PTR_ERR(data->rst);
 		goto err_pclk;

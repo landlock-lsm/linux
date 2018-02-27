@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Samsung's Exynos4210 based Trats board device tree source
  *
@@ -6,11 +7,7 @@
  *
  * Device tree source file for Samsung's Trats board which is based on
  * Samsung's Exynos4210 SoC.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
-*/
+ */
 
 /dts-v1/;
 #include "exynos4210.dtsi"
@@ -202,21 +199,6 @@
 	samsung,pll-clock-frequency = <24000000>;
 	status = "okay";
 
-	ports {
-		#address-cells = <1>;
-		#size-cells = <0>;
-
-		port@1 {
-			reg = <1>;
-
-			dsi_out: endpoint {
-				remote-endpoint = <&dsi_in>;
-				samsung,burst-clock-frequency = <500000000>;
-				samsung,esc-clock-frequency = <20000000>;
-			};
-		};
-	};
-
 	panel@0 {
 		reg = <0>;
 		compatible = "samsung,s6e8aa0";
@@ -242,12 +224,6 @@
 				vfront-porch = <13>;
 				vback-porch = <1>;
 				vsync-len = <2>;
-			};
-		};
-
-		port {
-			dsi_in: endpoint {
-				remote-endpoint = <&dsi_out>;
 			};
 		};
 	};

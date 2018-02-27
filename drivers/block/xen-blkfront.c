@@ -911,7 +911,7 @@ out_err:
 out_busy:
 	blk_mq_stop_hw_queue(hctx);
 	spin_unlock_irqrestore(&rinfo->ring_lock, flags);
-	return BLK_STS_RESOURCE;
+	return BLK_STS_DEV_RESOURCE;
 }
 
 static void blkif_complete_rq(struct request *rq)
@@ -2075,9 +2075,9 @@ static int blkfront_resume(struct xenbus_device *dev)
 			/*
 			 * Get the bios in the request so we can re-queue them.
 			 */
-			if (req_op(shadow[i].request) == REQ_OP_FLUSH ||
-			    req_op(shadow[i].request) == REQ_OP_DISCARD ||
-			    req_op(shadow[i].request) == REQ_OP_SECURE_ERASE ||
+			if (req_op(shadow[j].request) == REQ_OP_FLUSH ||
+			    req_op(shadow[j].request) == REQ_OP_DISCARD ||
+			    req_op(shadow[j].request) == REQ_OP_SECURE_ERASE ||
 			    shadow[j].request->cmd_flags & REQ_FUA) {
 				/*
 				 * Flush operations don't contain bios, so
@@ -2456,7 +2456,7 @@ static void blkback_changed(struct xenbus_device *dev,
 	case XenbusStateClosed:
 		if (dev->state == XenbusStateClosed)
 			break;
-		/* Missed the backend's Closing state -- fallthrough */
+		/* fall through */
 	case XenbusStateClosing:
 		if (info)
 			blkfront_closing(info);

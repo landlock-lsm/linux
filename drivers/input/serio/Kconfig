@@ -96,16 +96,6 @@ config SERIO_RPCKBD
 	  To compile this driver as a module, choose M here: the
 	  module will be called rpckbd.
 
-config SERIO_AT32PSIF
-	tristate "AVR32 PSIF PS/2 keyboard and mouse controller"
-	depends on AVR32
-	help
-	  Say Y here if you want to use the PSIF peripheral on AVR32 devices
-	  and connect a PS/2 keyboard and/or mouse to it.
-
-	  To compile this driver as a module, choose M here: the module will
-	  be called at32psif.
-
 config SERIO_AMBAKMI
 	tristate "AMBA KMI keyboard controller"
 	depends on ARM_AMBA
@@ -291,6 +281,17 @@ config SERIO_SUN4I_PS2
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called sun4i-ps2.
+
+config SERIO_GPIO_PS2
+	tristate "GPIO PS/2 bit banging driver"
+	depends on GPIOLIB
+	help
+	  Say Y here if you want PS/2 bit banging support via GPIO.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called ps2-gpio.
+
+	  If you are unsure, say N.
 
 config USERIO
 	tristate "User space serio port driver support"

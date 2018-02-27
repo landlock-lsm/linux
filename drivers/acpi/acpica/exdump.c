@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2017, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -102,7 +102,7 @@ static struct acpi_exdump_info acpi_ex_dump_package[6] = {
 	{ACPI_EXD_INIT, ACPI_EXD_TABLE_SIZE(acpi_ex_dump_package), NULL},
 	{ACPI_EXD_NODE, ACPI_EXD_OFFSET(package.node), "Parent Node"},
 	{ACPI_EXD_UINT8, ACPI_EXD_OFFSET(package.flags), "Flags"},
-	{ACPI_EXD_UINT32, ACPI_EXD_OFFSET(package.count), "Elements"},
+	{ACPI_EXD_UINT32, ACPI_EXD_OFFSET(package.count), "Element Count"},
 	{ACPI_EXD_POINTER, ACPI_EXD_OFFSET(package.elements), "Element List"},
 	{ACPI_EXD_PACKAGE, 0, NULL}
 };
@@ -384,6 +384,10 @@ acpi_ex_dump_object(union acpi_operand_object *obj_desc,
 	count = info->offset;
 
 	while (count) {
+		if (!obj_desc) {
+			return;
+		}
+
 		target = ACPI_ADD_PTR(u8, obj_desc, info->offset);
 		name = info->name;
 
@@ -469,9 +473,9 @@ acpi_ex_dump_object(union acpi_operand_object *obj_desc,
 			start = *ACPI_CAST_PTR(void *, target);
 			next = start;
 
-			acpi_os_printf("%20s : %p", name, next);
+			acpi_os_printf("%20s : %p ", name, next);
 			if (next) {
-				acpi_os_printf("(%s %2.2X)",
+				acpi_os_printf("%s (Type %2.2X)",
 					       acpi_ut_get_object_type_name
 					       (next), next->common.type);
 
@@ -493,6 +497,8 @@ acpi_ex_dump_object(union acpi_operand_object *obj_desc,
 						break;
 					}
 				}
+			} else {
+				acpi_os_printf("- No attached objects");
 			}
 
 			acpi_os_printf("\n");
@@ -611,10 +617,11 @@ void acpi_ex_dump_operand(union acpi_operand_object *obj_desc, u32 depth)
 	u32 length;
 	u32 index;
 
-	ACPI_FUNCTION_NAME(ex_dump_operand)
+	ACPI_FUNCTION_NAME(ex_dump_operand);
 
-	    /* Check if debug output enabled */
-	    if (!ACPI_IS_DEBUG_ENABLED(ACPI_LV_EXEC, _COMPONENT)) {
+	/* Check if debug output enabled */
+
+	if (!ACPI_IS_DEBUG_ENABLED(ACPI_LV_EXEC, _COMPONENT)) {
 		return;
 	}
 
@@ -898,7 +905,7 @@ void
 acpi_ex_dump_operands(union acpi_operand_object **operands,
 		      const char *opcode_name, u32 num_operands)
 {
-	ACPI_FUNCTION_NAME(ex_dump_operands);
+	ACPI_FUNCTION_TRACE(ex_dump_operands);
 
 	if (!opcode_name) {
 		opcode_name = "UNKNOWN";
@@ -922,7 +929,7 @@ acpi_ex_dump_operands(union acpi_operand_object **operands,
 
 	ACPI_DEBUG_PRINT((ACPI_DB_EXEC,
 			  "**** End operand dump for [%s]\n", opcode_name));
-	return;
+	return_VOID;
 }
 
 /*******************************************************************************
@@ -1129,7 +1136,9 @@ acpi_ex_dump_package_obj(union acpi_operand_object *obj_desc,
 
 	default:
 
-		acpi_os_printf("[Unknown Type] %X\n", obj_desc->common.type);
+		acpi_os_printf("[%s] Type: %2.2X\n",
+			       acpi_ut_get_type_name(obj_desc->common.type),
+			       obj_desc->common.type);
 		break;
 	}
 }
@@ -1167,11 +1176,17 @@ acpi_ex_dump_object_descriptor(union acpi_operand_object *obj_desc, u32 flags)
 		acpi_ex_dump_namespace_node((struct acpi_namespace_node *)
 					    obj_desc, flags);
 
-		acpi_os_printf("\nAttached Object (%p):\n",
-			       ((struct acpi_namespace_node *)obj_desc)->
-			       object);
-
 		obj_desc = ((struct acpi_namespace_node *)obj_desc)->object;
+		if (!obj_desc) {
+			return_VOID;
+		}
+
+		acpi_os_printf("\nAttached Object %p", obj_desc);
+		if (ACPI_GET_DESCRIPTOR_TYPE(obj_desc) == ACPI_DESC_TYPE_NAMED) {
+			acpi_os_printf(" - Namespace Node");
+		}
+
+		acpi_os_printf(":\n");
 		goto dump_object;
 	}
 
@@ -1190,6 +1205,10 @@ acpi_ex_dump_object_descriptor(union acpi_operand_object *obj_desc, u32 flags)
 	}
 
 dump_object:
+
+	if (!obj_desc) {
+		return_VOID;
+	}
 
 	/* Common Fields */
 

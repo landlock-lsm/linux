@@ -289,6 +289,7 @@ static void qxl_crtc_destroy(struct drm_crtc *crtc)
 {
 	struct qxl_crtc *qxl_crtc = to_qxl_crtc(crtc);
 
+	qxl_bo_unref(&qxl_crtc->cursor_bo);
 	drm_crtc_cleanup(crtc);
 	kfree(qxl_crtc);
 }
@@ -305,7 +306,9 @@ static const struct drm_crtc_funcs qxl_crtc_funcs = {
 void qxl_user_framebuffer_destroy(struct drm_framebuffer *fb)
 {
 	struct qxl_framebuffer *qxl_fb = to_qxl_framebuffer(fb);
+	struct qxl_bo *bo = gem_to_qxl_bo(qxl_fb->obj);
 
+	WARN_ON(bo->shadow);
 	drm_gem_object_unreference_unlocked(qxl_fb->obj);
 	drm_framebuffer_cleanup(fb);
 	kfree(qxl_fb);
@@ -378,10 +381,6 @@ qxl_framebuffer_init(struct drm_device *dev,
 	return 0;
 }
 
-static void qxl_crtc_dpms(struct drm_crtc *crtc, int mode)
-{
-}
-
 static bool qxl_crtc_mode_fixup(struct drm_crtc *crtc,
 				  const struct drm_display_mode *mode,
 				  struct drm_display_mode *adjusted_mode)
@@ -437,7 +436,7 @@ static void qxl_monitors_config_set(struct qxl_device *qdev,
 
 }
 
-void qxl_mode_set_nofb(struct drm_crtc *crtc)
+static void qxl_mode_set_nofb(struct drm_crtc *crtc)
 {
 	struct qxl_device *qdev = crtc->dev->dev_private;
 	struct qxl_crtc *qcrtc = to_qxl_crtc(crtc);
@@ -451,12 +450,14 @@ void qxl_mode_set_nofb(struct drm_crtc *crtc)
 
 }
 
-static void qxl_crtc_commit(struct drm_crtc *crtc)
+static void qxl_crtc_atomic_enable(struct drm_crtc *crtc,
+				   struct drm_crtc_state *old_state)
 {
 	DRM_DEBUG("\n");
 }
 
-static void qxl_crtc_disable(struct drm_crtc *crtc)
+static void qxl_crtc_atomic_disable(struct drm_crtc *crtc,
+				    struct drm_crtc_state *old_state)
 {
 	struct qxl_crtc *qcrtc = to_qxl_crtc(crtc);
 	struct qxl_device *qdev = crtc->dev->dev_private;
@@ -467,16 +468,15 @@ static void qxl_crtc_disable(struct drm_crtc *crtc)
 }
 
 static const struct drm_crtc_helper_funcs qxl_crtc_helper_funcs = {
-	.dpms = qxl_crtc_dpms,
-	.disable = qxl_crtc_disable,
 	.mode_fixup = qxl_crtc_mode_fixup,
 	.mode_set_nofb = qxl_mode_set_nofb,
-	.commit = qxl_crtc_commit,
 	.atomic_flush = qxl_crtc_atomic_flush,
+	.atomic_enable = qxl_crtc_atomic_enable,
+	.atomic_disable = qxl_crtc_atomic_disable,
 };
 
-int qxl_primary_atomic_check(struct drm_plane *plane,
-			     struct drm_plane_state *state)
+static int qxl_primary_atomic_check(struct drm_plane *plane,
+				    struct drm_plane_state *state)
 {
 	struct qxl_device *qdev = plane->dev->dev_private;
 	struct qxl_framebuffer *qfb;
@@ -496,6 +496,53 @@ int qxl_primary_atomic_check(struct drm_plane *plane,
 	return 0;
 }
 
+static int qxl_primary_apply_cursor(struct drm_plane *plane)
+{
+	struct drm_device *dev = plane->dev;
+	struct qxl_device *qdev = dev->dev_private;
+	struct drm_framebuffer *fb = plane->state->fb;
+	struct qxl_crtc *qcrtc = to_qxl_crtc(plane->state->crtc);
+	struct qxl_cursor_cmd *cmd;
+	struct qxl_release *release;
+	int ret = 0;
+
+	if (!qcrtc->cursor_bo)
+		return 0;
+
+	ret = qxl_alloc_release_reserved(qdev, sizeof(*cmd),
+					 QXL_RELEASE_CURSOR_CMD,
+					 &release, NULL);
+	if (ret)
+		return ret;
+
+	ret = qxl_release_list_add(release, qcrtc->cursor_bo);
+	if (ret)
+		goto out_free_release;
+
+	ret = qxl_release_reserve_list(release, false);
+	if (ret)
+		goto out_free_release;
+
+	cmd = (struct qxl_cursor_cmd *)qxl_release_map(qdev, release);
+	cmd->type = QXL_CURSOR_SET;
+	cmd->u.set.position.x = plane->state->crtc_x + fb->hot_x;
+	cmd->u.set.position.y = plane->state->crtc_y + fb->hot_y;
+
+	cmd->u.set.shape = qxl_bo_physical_address(qdev, qcrtc->cursor_bo, 0);
+
+	cmd->u.set.visible = 1;
+	qxl_release_unmap(qdev, release, &cmd->release_info);
+
+	qxl_push_cursor_ring_release(qdev, release, QXL_CMD_CURSOR, false);
+	qxl_release_fence_buffer_objects(release);
+
+	return ret;
+
+out_free_release:
+	qxl_release_free(qdev, release);
+	return ret;
+}
+
 static void qxl_primary_atomic_update(struct drm_plane *plane,
 				      struct drm_plane_state *old_state)
 {
@@ -511,24 +558,41 @@ static void qxl_primary_atomic_update(struct drm_plane *plane,
 	    .x2 = qfb->base.width,
 	    .y2 = qfb->base.height
 	};
+	int ret;
+	bool same_shadow = false;
 
-	if (!old_state->fb) {
-		qxl_io_log(qdev,
-			   "create primary fb: %dx%d,%d,%d\n",
-			   bo->surf.width, bo->surf.height,
-			   bo->surf.stride, bo->surf.format);
-
-		qxl_io_create_primary(qdev, 0, bo);
-		bo->is_primary = true;
-		return;
-
-	} else {
+	if (old_state->fb) {
 		qfb_old = to_qxl_framebuffer(old_state->fb);
 		bo_old = gem_to_qxl_bo(qfb_old->obj);
-		bo_old->is_primary = false;
+	} else {
+		bo_old = NULL;
 	}
 
-	bo->is_primary = true;
+	if (bo == bo_old)
+		return;
+
+	if (bo_old && bo_old->shadow && bo->shadow &&
+	    bo_old->shadow == bo->shadow) {
+		same_shadow = true;
+	}
+
+	if (bo_old && bo_old->is_primary) {
+		if (!same_shadow)
+			qxl_io_destroy_primary(qdev);
+		bo_old->is_primary = false;
+
+		ret = qxl_primary_apply_cursor(plane);
+		if (ret)
+			DRM_ERROR(
+			"could not set cursor after creating primary");
+	}
+
+	if (!bo->is_primary) {
+		if (!same_shadow)
+			qxl_io_create_primary(qdev, 0, bo);
+		bo->is_primary = true;
+	}
+
 	qxl_draw_dirty_fb(qdev, qfb, bo, 0, 0, &norect, 1, 1);
 }
 
@@ -537,18 +601,20 @@ static void qxl_primary_atomic_disable(struct drm_plane *plane,
 {
 	struct qxl_device *qdev = plane->dev->dev_private;
 
-	if (old_state->fb)
-	{	struct qxl_framebuffer *qfb =
+	if (old_state->fb) {
+		struct qxl_framebuffer *qfb =
 			to_qxl_framebuffer(old_state->fb);
 		struct qxl_bo *bo = gem_to_qxl_bo(qfb->obj);
 
-		qxl_io_destroy_primary(qdev);
-		bo->is_primary = false;
+		if (bo->is_primary) {
+			qxl_io_destroy_primary(qdev);
+			bo->is_primary = false;
+		}
 	}
 }
 
-int qxl_plane_atomic_check(struct drm_plane *plane,
-			   struct drm_plane_state *state)
+static int qxl_plane_atomic_check(struct drm_plane *plane,
+				  struct drm_plane_state *state)
 {
 	return 0;
 }
@@ -559,11 +625,12 @@ static void qxl_cursor_atomic_update(struct drm_plane *plane,
 	struct drm_device *dev = plane->dev;
 	struct qxl_device *qdev = dev->dev_private;
 	struct drm_framebuffer *fb = plane->state->fb;
+	struct qxl_crtc *qcrtc = to_qxl_crtc(plane->state->crtc);
 	struct qxl_release *release;
 	struct qxl_cursor_cmd *cmd;
 	struct qxl_cursor *cursor;
 	struct drm_gem_object *obj;
-	struct qxl_bo *cursor_bo, *user_bo = NULL;
+	struct qxl_bo *cursor_bo = NULL, *user_bo = NULL;
 	int ret;
 	void *user_ptr;
 	int size = 64*64*4;
@@ -616,6 +683,10 @@ static void qxl_cursor_atomic_update(struct drm_plane *plane,
 		cmd->u.set.shape = qxl_bo_physical_address(qdev,
 							   cursor_bo, 0);
 		cmd->type = QXL_CURSOR_SET;
+
+		qxl_bo_unref(&qcrtc->cursor_bo);
+		qcrtc->cursor_bo = cursor_bo;
+		cursor_bo = NULL;
 	} else {
 
 		ret = qxl_release_reserve_list(release, true);
@@ -633,6 +704,8 @@ static void qxl_cursor_atomic_update(struct drm_plane *plane,
 	qxl_push_cursor_ring_release(qdev, release, QXL_CMD_CURSOR, false);
 	qxl_release_fence_buffer_objects(release);
 
+	qxl_bo_unref(&cursor_bo);
+
 	return;
 
 out_backoff:
@@ -647,8 +720,8 @@ out_free_release:
 
 }
 
-void qxl_cursor_atomic_disable(struct drm_plane *plane,
-			       struct drm_plane_state *old_state)
+static void qxl_cursor_atomic_disable(struct drm_plane *plane,
+				      struct drm_plane_state *old_state)
 {
 	struct qxl_device *qdev = plane->dev->dev_private;
 	struct qxl_release *release;
@@ -675,11 +748,12 @@ void qxl_cursor_atomic_disable(struct drm_plane *plane,
 	qxl_release_fence_buffer_objects(release);
 }
 
-int qxl_plane_prepare_fb(struct drm_plane *plane,
-			 struct drm_plane_state *new_state)
+static int qxl_plane_prepare_fb(struct drm_plane *plane,
+				struct drm_plane_state *new_state)
 {
+	struct qxl_device *qdev = plane->dev->dev_private;
 	struct drm_gem_object *obj;
-	struct qxl_bo *user_bo;
+	struct qxl_bo *user_bo, *old_bo = NULL;
 	int ret;
 
 	if (!new_state->fb)
@@ -687,6 +761,32 @@ int qxl_plane_prepare_fb(struct drm_plane *plane,
 
 	obj = to_qxl_framebuffer(new_state->fb)->obj;
 	user_bo = gem_to_qxl_bo(obj);
+
+	if (plane->type == DRM_PLANE_TYPE_PRIMARY &&
+	    user_bo->is_dumb && !user_bo->shadow) {
+		if (plane->state->fb) {
+			obj = to_qxl_framebuffer(plane->state->fb)->obj;
+			old_bo = gem_to_qxl_bo(obj);
+		}
+		if (old_bo && old_bo->shadow &&
+		    user_bo->gem_base.size == old_bo->gem_base.size &&
+		    plane->state->crtc     == new_state->crtc &&
+		    plane->state->crtc_w   == new_state->crtc_w &&
+		    plane->state->crtc_h   == new_state->crtc_h &&
+		    plane->state->src_x    == new_state->src_x &&
+		    plane->state->src_y    == new_state->src_y &&
+		    plane->state->src_w    == new_state->src_w &&
+		    plane->state->src_h    == new_state->src_h &&
+		    plane->state->rotation == new_state->rotation &&
+		    plane->state->zpos     == new_state->zpos) {
+			drm_gem_object_get(&old_bo->shadow->gem_base);
+			user_bo->shadow = old_bo->shadow;
+		} else {
+			qxl_bo_create(qdev, user_bo->gem_base.size,
+				      true, true, QXL_GEM_DOMAIN_VRAM, NULL,
+				      &user_bo->shadow);
+		}
+	}
 
 	ret = qxl_bo_pin(user_bo, QXL_GEM_DOMAIN_CPU, NULL);
 	if (ret)
@@ -701,16 +801,22 @@ static void qxl_plane_cleanup_fb(struct drm_plane *plane,
 	struct drm_gem_object *obj;
 	struct qxl_bo *user_bo;
 
-	if (!plane->state->fb) {
-		/* we never executed prepare_fb, so there's nothing to
+	if (!old_state->fb) {
+		/*
+		 * we never executed prepare_fb, so there's nothing to
 		 * unpin.
 		 */
 		return;
 	}
 
-	obj = to_qxl_framebuffer(plane->state->fb)->obj;
+	obj = to_qxl_framebuffer(old_state->fb)->obj;
 	user_bo = gem_to_qxl_bo(obj);
 	qxl_bo_unpin(user_bo);
+
+	if (user_bo->shadow && !user_bo->is_primary) {
+		drm_gem_object_put_unlocked(&user_bo->shadow->gem_base);
+		user_bo->shadow = NULL;
+	}
 }
 
 static const uint32_t qxl_cursor_plane_formats[] = {
@@ -787,7 +893,7 @@ static struct drm_plane *qxl_create_plane(struct qxl_device *qdev,
 
 	err = drm_universal_plane_init(&qdev->ddev, plane, possible_crtcs,
 				       funcs, formats, num_formats,
-				       type, NULL);
+				       NULL, type, NULL);
 	if (err)
 		goto free_plane;
 

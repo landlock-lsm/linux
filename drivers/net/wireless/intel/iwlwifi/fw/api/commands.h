@@ -136,12 +136,6 @@ enum iwl_legacy_cmds {
 	DBG_CFG = 0x9,
 
 	/**
-	 * @ANTENNA_COUPLING_NOTIFICATION:
-	 * Antenna coupling data, &struct iwl_mvm_antenna_coupling_notif
-	 */
-	ANTENNA_COUPLING_NOTIFICATION = 0xa,
-
-	/**
 	 * @SCAN_ITERATION_COMPLETE_UMAC:
 	 * Firmware indicates a scan iteration completed, using
 	 * &struct iwl_umac_scan_iter_complete_notif.
@@ -221,7 +215,7 @@ enum iwl_legacy_cmds {
 	/**
 	 * @SCD_QUEUE_CFG: &struct iwl_scd_txq_cfg_cmd for older hardware,
 	 *	&struct iwl_tx_queue_cfg_cmd with &struct iwl_tx_queue_cfg_rsp
-	 *	for newer (A000) hardware.
+	 *	for newer (22000) hardware.
 	 */
 	SCD_QUEUE_CFG = 0x1d,
 
@@ -286,6 +280,11 @@ enum iwl_legacy_cmds {
 	 * command is &struct iwl_nonqos_seq_query_cmd
 	 */
 	NON_QOS_TX_COUNTER_CMD = 0x2d,
+
+	/**
+	 * @LEDS_CMD: command is &struct iwl_led_cmd
+	 */
+	LEDS_CMD = 0x48,
 
 	/**
 	 * @LQ_CMD: using &struct iwl_lq_cmd
@@ -505,6 +504,7 @@ enum iwl_legacy_cmds {
 
 	/**
 	 * @MARKER_CMD: trace marker command, uses &struct iwl_mvm_marker
+	 * with &struct iwl_mvm_marker_rsp
 	 */
 	MARKER_CMD = 0xcb,
 
@@ -517,12 +517,6 @@ enum iwl_legacy_cmds {
 	 * @BT_CONFIG: &struct iwl_bt_coex_cmd
 	 */
 	BT_CONFIG = 0x9b,
-
-	/**
-	 * @BT_COEX_UPDATE_CORUN_LUT:
-	 * &struct iwl_bt_coex_corun_lut_update_cmd
-	 */
-	BT_COEX_UPDATE_CORUN_LUT = 0x5b,
 
 	/**
 	 * @BT_COEX_UPDATE_REDUCED_TXP:

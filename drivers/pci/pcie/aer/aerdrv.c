@@ -1,9 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * drivers/pci/pcie/aer/aerdrv.c
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  *
  * This file implements the AER root port service driver. The driver will
  * register an irq handler. When root port triggers an AER interrupt, the irq
@@ -32,15 +29,8 @@
 
 static int aer_probe(struct pcie_device *dev);
 static void aer_remove(struct pcie_device *dev);
-static pci_ers_result_t aer_error_detected(struct pci_dev *dev,
-	enum pci_channel_state error);
 static void aer_error_resume(struct pci_dev *dev);
 static pci_ers_result_t aer_root_reset(struct pci_dev *dev);
-
-static const struct pci_error_handlers aer_error_handlers = {
-	.error_detected = aer_error_detected,
-	.resume		= aer_error_resume,
-};
 
 static struct pcie_port_service_driver aerdriver = {
 	.name		= "aer",
@@ -49,9 +39,7 @@ static struct pcie_port_service_driver aerdriver = {
 
 	.probe		= aer_probe,
 	.remove		= aer_remove,
-
-	.err_handler	= &aer_error_handlers,
-
+	.error_resume	= aer_error_resume,
 	.reset_link	= aer_root_reset,
 };
 
@@ -335,7 +323,7 @@ static pci_ers_result_t aer_root_reset(struct pci_dev *dev)
 	pci_write_config_dword(dev, pos + PCI_ERR_ROOT_COMMAND, reg32);
 
 	pci_reset_bridge_secondary_bus(dev);
-	dev_printk(KERN_DEBUG, &dev->dev, "Root Port link has been reset\n");
+	pci_printk(KERN_DEBUG, dev, "Root Port link has been reset\n");
 
 	/* Clear Root Error Status */
 	pci_read_config_dword(dev, pos + PCI_ERR_ROOT_STATUS, &reg32);
@@ -347,20 +335,6 @@ static pci_ers_result_t aer_root_reset(struct pci_dev *dev)
 	pci_write_config_dword(dev, pos + PCI_ERR_ROOT_COMMAND, reg32);
 
 	return PCI_ERS_RESULT_RECOVERED;
-}
-
-/**
- * aer_error_detected - update severity status
- * @dev: pointer to Root Port's pci_dev data structure
- * @error: error severity being notified by port bus
- *
- * Invoked by Port Bus driver during error recovery.
- */
-static pci_ers_result_t aer_error_detected(struct pci_dev *dev,
-			enum pci_channel_state error)
-{
-	/* Root Port has no impact. Always recovers. */
-	return PCI_ERS_RESULT_CAN_RECOVER;
 }
 
 /**

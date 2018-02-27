@@ -189,6 +189,7 @@ struct mlx5e_lbt_priv {
 	struct packet_type pt;
 	struct completion comp;
 	bool loopback_ok;
+	bool local_lb;
 };
 
 static int
@@ -236,9 +237,20 @@ static int mlx5e_test_loopback_setup(struct mlx5e_priv *priv,
 {
 	int err = 0;
 
-	err = mlx5e_refresh_tirs(priv, true);
+	/* Temporarily enable local_lb */
+	err = mlx5_nic_vport_query_local_lb(priv->mdev, &lbtp->local_lb);
 	if (err)
 		return err;
+
+	if (!lbtp->local_lb) {
+		err = mlx5_nic_vport_update_local_lb(priv->mdev, true);
+		if (err)
+			return err;
+	}
+
+	err = mlx5e_refresh_tirs(priv, true);
+	if (err)
+		goto out;
 
 	lbtp->loopback_ok = false;
 	init_completion(&lbtp->comp);
@@ -248,12 +260,22 @@ static int mlx5e_test_loopback_setup(struct mlx5e_priv *priv,
 	lbtp->pt.dev = priv->netdev;
 	lbtp->pt.af_packet_priv = lbtp;
 	dev_add_pack(&lbtp->pt);
+
+	return 0;
+
+out:
+	if (!lbtp->local_lb)
+		mlx5_nic_vport_update_local_lb(priv->mdev, false);
+
 	return err;
 }
 
 static void mlx5e_test_loopback_cleanup(struct mlx5e_priv *priv,
 					struct mlx5e_lbt_priv *lbtp)
 {
+	if (!lbtp->local_lb)
+		mlx5_nic_vport_update_local_lb(priv->mdev, false);
+
 	dev_remove_pack(&lbtp->pt);
 	mlx5e_refresh_tirs(priv, false);
 }

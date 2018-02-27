@@ -36,7 +36,6 @@
 #include <linux/of_irq.h>
 #include <linux/mfd/syscon.h>
 #include <linux/reset-controller.h>
-#include <linux/clk.h>
 
 #include "hi6210-i2s.h"
 
@@ -517,7 +516,7 @@ static int hi6210_i2s_dai_probe(struct snd_soc_dai *dai)
 }
 
 
-static struct snd_soc_dai_ops hi6210_i2s_dai_ops = {
+static const struct snd_soc_dai_ops hi6210_i2s_dai_ops = {
 	.trigger	= hi6210_i2s_trigger,
 	.hw_params	= hi6210_i2s_hw_params,
 	.set_fmt	= hi6210_i2s_set_fmt,

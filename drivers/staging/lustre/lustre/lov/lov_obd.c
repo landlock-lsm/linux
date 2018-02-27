@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * GPL HEADER START
  *
@@ -38,22 +39,22 @@
  */
 
 #define DEBUG_SUBSYSTEM S_LOV
-#include "../../include/linux/libcfs/libcfs.h"
+#include <linux/libcfs/libcfs.h>
 
-#include "../include/lustre/lustre_idl.h"
-#include "../include/lustre/lustre_ioctl.h"
+#include <uapi/linux/lustre/lustre_idl.h>
+#include <uapi/linux/lustre/lustre_ioctl.h>
 
-#include "../include/cl_object.h"
-#include "../include/lustre_dlm.h"
-#include "../include/lustre_fid.h"
-#include "../include/lustre_lib.h"
-#include "../include/lustre_mds.h"
-#include "../include/lustre_net.h"
-#include "../include/lustre_param.h"
-#include "../include/lustre_swab.h"
-#include "../include/lprocfs_status.h"
-#include "../include/obd_class.h"
-#include "../include/obd_support.h"
+#include <cl_object.h>
+#include <lustre_dlm.h>
+#include <lustre_fid.h>
+#include <lustre_lib.h>
+#include <lustre_mds.h>
+#include <lustre_net.h>
+#include <uapi/linux/lustre/lustre_param.h>
+#include <lustre_swab.h>
+#include <lprocfs_status.h>
+#include <obd_class.h>
+#include <obd_support.h>
 
 #include "lov_internal.h"
 
@@ -827,11 +828,9 @@ out:
 static int lov_cleanup(struct obd_device *obd)
 {
 	struct lov_obd *lov = &obd->u.lov;
-	struct list_head *pos, *tmp;
-	struct pool_desc *pool;
+	struct pool_desc *pool, *tmp;
 
-	list_for_each_safe(pos, tmp, &lov->lov_pool_list) {
-		pool = list_entry(pos, struct pool_desc, pool_list);
+	list_for_each_entry_safe(pool, tmp, &lov->lov_pool_list, pool_list) {
 		/* free pool structs */
 		CDEBUG(D_INFO, "delete pool %p\n", pool);
 		/* In the function below, .hs_keycmp resolves to
@@ -947,7 +946,8 @@ out:
 	return rc;
 }
 
-int lov_statfs_interpret(struct ptlrpc_request_set *rqset, void *data, int rc)
+static int
+lov_statfs_interpret(struct ptlrpc_request_set *rqset, void *data, int rc)
 {
 	struct lov_request_set *lovset = (struct lov_request_set *)data;
 	int err;
@@ -1086,17 +1086,17 @@ static int lov_iocontrol(unsigned int cmd, struct obd_export *exp, int len,
 		data = (struct obd_ioctl_data *)buf;
 
 		if (sizeof(*desc) > data->ioc_inllen1) {
-			obd_ioctl_freedata(buf, len);
+			kvfree(buf);
 			return -EINVAL;
 		}
 
 		if (sizeof(uuidp->uuid) * count > data->ioc_inllen2) {
-			obd_ioctl_freedata(buf, len);
+			kvfree(buf);
 			return -EINVAL;
 		}
 
 		if (sizeof(__u32) * count > data->ioc_inllen3) {
-			obd_ioctl_freedata(buf, len);
+			kvfree(buf);
 			return -EINVAL;
 		}
 
@@ -1115,7 +1115,7 @@ static int lov_iocontrol(unsigned int cmd, struct obd_export *exp, int len,
 
 		if (copy_to_user(uarg, buf, len))
 			rc = -EFAULT;
-		obd_ioctl_freedata(buf, len);
+		kvfree(buf);
 		break;
 	}
 	case OBD_IOC_QUOTACTL: {

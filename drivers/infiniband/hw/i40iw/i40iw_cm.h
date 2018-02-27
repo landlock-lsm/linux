@@ -71,6 +71,9 @@
 #define	I40IW_HW_IRD_SETTING_32	32
 #define	I40IW_HW_IRD_SETTING_64	64
 
+#define MAX_PORTS		65536
+#define I40IW_VLAN_PRIO_SHIFT   13
+
 enum ietf_mpa_flags {
 	IETF_MPA_FLAGS_MARKERS = 0x80,	/* receive Markers */
 	IETF_MPA_FLAGS_CRC = 0x40,	/* receive Markers */
@@ -273,8 +276,6 @@ struct i40iw_cm_tcp_context {
 	u32 mss;
 	u8 snd_wscale;
 	u8 rcv_wscale;
-
-	struct timeval sent_ts;
 };
 
 enum i40iw_cm_listener_state {
@@ -334,7 +335,7 @@ struct i40iw_cm_node {
 	u16     mpav2_ird_ord;
 	struct iw_cm_id *cm_id;
 	struct list_head list;
-	int accelerated;
+	bool accelerated;
 	struct i40iw_cm_listener *listener;
 	int apbvt_set;
 	int accept_pend;
@@ -357,6 +358,7 @@ struct i40iw_cm_node {
 
 	u8 pdata_buf[IETF_MAX_PRIV_DATA_LEN];
 	struct i40iw_kmem_info mpa_hdr;
+	bool ack_rcvd;
 };
 
 /* structure for client or CM to fill when making CM api calls. */
@@ -411,6 +413,8 @@ struct i40iw_cm_core {
 	spinlock_t ht_lock; /* manage hash table */
 	spinlock_t listen_list_lock; /* listen list */
 
+	unsigned long active_side_ports[BITS_TO_LONGS(MAX_PORTS)];
+
 	u64	stats_nodes_created;
 	u64	stats_nodes_destroyed;
 	u64	stats_listen_created;
@@ -449,5 +453,7 @@ int i40iw_arp_table(struct i40iw_device *iwdev,
 
 void i40iw_if_notify(struct i40iw_device *iwdev, struct net_device *netdev,
 		     u32 *ipaddr, bool ipv4, bool ifup);
-void i40iw_cm_disconnect_all(struct i40iw_device *iwdev);
+void i40iw_cm_teardown_connections(struct i40iw_device *iwdev, u32 *ipaddr,
+				   struct i40iw_cm_info *nfo,
+				   bool disconnect_all);
 #endif /* I40IW_CM_H */

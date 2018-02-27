@@ -93,6 +93,8 @@ struct aic3x_priv {
 
 	/* Selects the micbias voltage */
 	enum aic3x_micbias_voltage micbias_vg;
+	/* Output Common-Mode Voltage */
+	u8 ocmv;
 };
 
 static const struct reg_default aic3x_reg[] = {
@@ -1572,6 +1574,10 @@ static int aic3x_init(struct snd_soc_codec *codec)
 		break;
 	}
 
+	/*  Output common-mode voltage = 1.5 V */
+	snd_soc_update_bits(codec, HPOUT_SC, HPOUT_SC_OCMV_MASK,
+			    aic3x->ocmv << HPOUT_SC_OCMV_SHIFT);
+
 	return 0;
 }
 
@@ -1684,7 +1690,7 @@ static int aic3x_remove(struct snd_soc_codec *codec)
 	return 0;
 }
 
-static struct snd_soc_codec_driver soc_codec_dev_aic3x = {
+static const struct snd_soc_codec_driver soc_codec_dev_aic3x = {
 	.set_bias_level = aic3x_set_bias_level,
 	.idle_bias_off = true,
 	.probe = aic3x_probe,
@@ -1698,6 +1704,43 @@ static struct snd_soc_codec_driver soc_codec_dev_aic3x = {
 		.num_dapm_routes	= ARRAY_SIZE(intercon),
 	},
 };
+
+static void aic3x_configure_ocmv(struct i2c_client *client)
+{
+	struct device_node *np = client->dev.of_node;
+	struct aic3x_priv *aic3x = i2c_get_clientdata(client);
+	u32 value;
+	int dvdd, avdd;
+
+	if (np && !of_property_read_u32(np, "ai3x-ocmv", &value)) {
+		/* OCMV setting is forced by DT */
+		if (value <= 3) {
+			aic3x->ocmv = value;
+			return;
+		}
+	}
+
+	dvdd = regulator_get_voltage(aic3x->supplies[1].consumer);
+	avdd = regulator_get_voltage(aic3x->supplies[2].consumer);
+
+	if (avdd > 3600000 || dvdd > 1950000) {
+		dev_warn(&client->dev,
+			 "Too high supply voltage(s) AVDD: %d, DVDD: %d\n",
+			 avdd, dvdd);
+	} else if (avdd == 3600000 && dvdd == 1950000) {
+		aic3x->ocmv = HPOUT_SC_OCMV_1_8V;
+	} else if (avdd > 3300000 && dvdd > 1800000) {
+		aic3x->ocmv = HPOUT_SC_OCMV_1_65V;
+	} else if (avdd > 3000000 && dvdd > 1650000) {
+		aic3x->ocmv = HPOUT_SC_OCMV_1_5V;
+	} else if (avdd >= 2700000 && dvdd >= 1525000) {
+		aic3x->ocmv = HPOUT_SC_OCMV_1_35V;
+	} else {
+		dev_warn(&client->dev,
+			 "Invalid supply voltage(s) AVDD: %d, DVDD: %d\n",
+			 avdd, dvdd);
+	}
+}
 
 /*
  * AIC3X 2 wire address can be up to 4 devices with device addresses
@@ -1761,11 +1804,18 @@ static int aic3x_i2c_probe(struct i2c_client *i2c,
 		if (!ai3x_setup)
 			return -ENOMEM;
 
-		ret = of_get_named_gpio(np, "gpio-reset", 0);
-		if (ret >= 0)
+		ret = of_get_named_gpio(np, "reset-gpios", 0);
+		if (ret >= 0) {
 			aic3x->gpio_reset = ret;
-		else
-			aic3x->gpio_reset = -1;
+		} else {
+			ret = of_get_named_gpio(np, "gpio-reset", 0);
+			if (ret > 0) {
+				dev_warn(&i2c->dev, "Using deprecated property \"gpio-reset\", please update your DT");
+				aic3x->gpio_reset = ret;
+			} else {
+				aic3x->gpio_reset = -1;
+			}
+		}
 
 		if (of_property_read_u32_array(np, "ai3x-gpio-func",
 					ai3x_setup->gpio_func, 2) >= 0) {
@@ -1815,6 +1865,8 @@ static int aic3x_i2c_probe(struct i2c_client *i2c,
 		dev_err(&i2c->dev, "Failed to request supplies: %d\n", ret);
 		goto err_gpio;
 	}
+
+	aic3x_configure_ocmv(i2c);
 
 	if (aic3x->model == AIC3X_MODEL_3007) {
 		ret = regmap_register_patch(aic3x->regmap, aic3007_class_d,

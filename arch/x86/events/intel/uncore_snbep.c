@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /* SandyBridge-EP/IvyTown uncore support */
 #include "uncore.h"
 
@@ -602,27 +603,27 @@ static struct uncore_event_desc snbep_uncore_qpi_events[] = {
 	{ /* end: all zeroes */ },
 };
 
-static struct attribute_group snbep_uncore_format_group = {
+static const struct attribute_group snbep_uncore_format_group = {
 	.name = "format",
 	.attrs = snbep_uncore_formats_attr,
 };
 
-static struct attribute_group snbep_uncore_ubox_format_group = {
+static const struct attribute_group snbep_uncore_ubox_format_group = {
 	.name = "format",
 	.attrs = snbep_uncore_ubox_formats_attr,
 };
 
-static struct attribute_group snbep_uncore_cbox_format_group = {
+static const struct attribute_group snbep_uncore_cbox_format_group = {
 	.name = "format",
 	.attrs = snbep_uncore_cbox_formats_attr,
 };
 
-static struct attribute_group snbep_uncore_pcu_format_group = {
+static const struct attribute_group snbep_uncore_pcu_format_group = {
 	.name = "format",
 	.attrs = snbep_uncore_pcu_formats_attr,
 };
 
-static struct attribute_group snbep_uncore_qpi_format_group = {
+static const struct attribute_group snbep_uncore_qpi_format_group = {
 	.name = "format",
 	.attrs = snbep_uncore_qpi_formats_attr,
 };
@@ -1056,7 +1057,7 @@ static void snbep_qpi_enable_event(struct intel_uncore_box *box, struct perf_eve
 
 	if (reg1->idx != EXTRA_REG_NONE) {
 		int idx = box->pmu->pmu_idx + SNBEP_PCI_QPI_PORT0_FILTER;
-		int pkg = topology_phys_to_logical_pkg(box->pci_phys_id);
+		int pkg = box->pkgid;
 		struct pci_dev *filter_pdev = uncore_extra_pci_dev[pkg].dev[idx];
 
 		if (filter_pdev) {
@@ -1431,27 +1432,27 @@ static struct attribute *ivbep_uncore_qpi_formats_attr[] = {
 	NULL,
 };
 
-static struct attribute_group ivbep_uncore_format_group = {
+static const struct attribute_group ivbep_uncore_format_group = {
 	.name = "format",
 	.attrs = ivbep_uncore_formats_attr,
 };
 
-static struct attribute_group ivbep_uncore_ubox_format_group = {
+static const struct attribute_group ivbep_uncore_ubox_format_group = {
 	.name = "format",
 	.attrs = ivbep_uncore_ubox_formats_attr,
 };
 
-static struct attribute_group ivbep_uncore_cbox_format_group = {
+static const struct attribute_group ivbep_uncore_cbox_format_group = {
 	.name = "format",
 	.attrs = ivbep_uncore_cbox_formats_attr,
 };
 
-static struct attribute_group ivbep_uncore_pcu_format_group = {
+static const struct attribute_group ivbep_uncore_pcu_format_group = {
 	.name = "format",
 	.attrs = ivbep_uncore_pcu_formats_attr,
 };
 
-static struct attribute_group ivbep_uncore_qpi_format_group = {
+static const struct attribute_group ivbep_uncore_qpi_format_group = {
 	.name = "format",
 	.attrs = ivbep_uncore_qpi_formats_attr,
 };
@@ -1887,7 +1888,7 @@ static struct attribute *knl_uncore_ubox_formats_attr[] = {
 	NULL,
 };
 
-static struct attribute_group knl_uncore_ubox_format_group = {
+static const struct attribute_group knl_uncore_ubox_format_group = {
 	.name = "format",
 	.attrs = knl_uncore_ubox_formats_attr,
 };
@@ -1927,7 +1928,7 @@ static struct attribute *knl_uncore_cha_formats_attr[] = {
 	NULL,
 };
 
-static struct attribute_group knl_uncore_cha_format_group = {
+static const struct attribute_group knl_uncore_cha_format_group = {
 	.name = "format",
 	.attrs = knl_uncore_cha_formats_attr,
 };
@@ -2037,7 +2038,7 @@ static struct attribute *knl_uncore_pcu_formats_attr[] = {
 	NULL,
 };
 
-static struct attribute_group knl_uncore_pcu_format_group = {
+static const struct attribute_group knl_uncore_pcu_format_group = {
 	.name = "format",
 	.attrs = knl_uncore_pcu_formats_attr,
 };
@@ -2187,7 +2188,7 @@ static struct attribute *knl_uncore_irp_formats_attr[] = {
 	NULL,
 };
 
-static struct attribute_group knl_uncore_irp_format_group = {
+static const struct attribute_group knl_uncore_irp_format_group = {
 	.name = "format",
 	.attrs = knl_uncore_irp_formats_attr,
 };
@@ -2385,7 +2386,7 @@ static struct attribute *hswep_uncore_ubox_formats_attr[] = {
 	NULL,
 };
 
-static struct attribute_group hswep_uncore_ubox_format_group = {
+static const struct attribute_group hswep_uncore_ubox_format_group = {
 	.name = "format",
 	.attrs = hswep_uncore_ubox_formats_attr,
 };
@@ -2439,7 +2440,7 @@ static struct attribute *hswep_uncore_cbox_formats_attr[] = {
 	NULL,
 };
 
-static struct attribute_group hswep_uncore_cbox_format_group = {
+static const struct attribute_group hswep_uncore_cbox_format_group = {
 	.name = "format",
 	.attrs = hswep_uncore_cbox_formats_attr,
 };
@@ -2621,7 +2622,7 @@ static struct attribute *hswep_uncore_sbox_formats_attr[] = {
 	NULL,
 };
 
-static struct attribute_group hswep_uncore_sbox_format_group = {
+static const struct attribute_group hswep_uncore_sbox_format_group = {
 	.name = "format",
 	.attrs = hswep_uncore_sbox_formats_attr,
 };
@@ -3034,11 +3035,19 @@ static struct intel_uncore_type *bdx_msr_uncores[] = {
 	NULL,
 };
 
+/* Bit 7 'Use Occupancy' is not available for counter 0 on BDX */
+static struct event_constraint bdx_uncore_pcu_constraints[] = {
+	EVENT_CONSTRAINT(0x80, 0xe, 0x80),
+	EVENT_CONSTRAINT_END
+};
+
 void bdx_uncore_cpu_init(void)
 {
 	if (bdx_uncore_cbox.num_boxes > boot_cpu_data.x86_max_cores)
 		bdx_uncore_cbox.num_boxes = boot_cpu_data.x86_max_cores;
 	uncore_msr_uncores = bdx_msr_uncores;
+
+	hswep_uncore_pcu.constraints = bdx_uncore_pcu_constraints;
 }
 
 static struct intel_uncore_type bdx_uncore_ha = {
@@ -3314,7 +3323,7 @@ static struct attribute *skx_uncore_cha_formats_attr[] = {
 	NULL,
 };
 
-static struct attribute_group skx_uncore_chabox_format_group = {
+static const struct attribute_group skx_uncore_chabox_format_group = {
 	.name = "format",
 	.attrs = skx_uncore_cha_formats_attr,
 };
@@ -3427,7 +3436,7 @@ static struct attribute *skx_uncore_iio_formats_attr[] = {
 	NULL,
 };
 
-static struct attribute_group skx_uncore_iio_format_group = {
+static const struct attribute_group skx_uncore_iio_format_group = {
 	.name = "format",
 	.attrs = skx_uncore_iio_formats_attr,
 };
@@ -3462,7 +3471,7 @@ static struct intel_uncore_ops skx_uncore_iio_ops = {
 static struct intel_uncore_type skx_uncore_iio = {
 	.name			= "iio",
 	.num_counters		= 4,
-	.num_boxes		= 5,
+	.num_boxes		= 6,
 	.perf_ctr_bits		= 48,
 	.event_ctl		= SKX_IIO0_MSR_PMON_CTL0,
 	.perf_ctr		= SKX_IIO0_MSR_PMON_CTR0,
@@ -3484,7 +3493,7 @@ static struct attribute *skx_uncore_formats_attr[] = {
 	NULL,
 };
 
-static struct attribute_group skx_uncore_format_group = {
+static const struct attribute_group skx_uncore_format_group = {
 	.name = "format",
 	.attrs = skx_uncore_formats_attr,
 };
@@ -3492,7 +3501,7 @@ static struct attribute_group skx_uncore_format_group = {
 static struct intel_uncore_type skx_uncore_irp = {
 	.name			= "irp",
 	.num_counters		= 2,
-	.num_boxes		= 5,
+	.num_boxes		= 6,
 	.perf_ctr_bits		= 48,
 	.event_ctl		= SKX_IRP0_MSR_PMON_CTL0,
 	.perf_ctr		= SKX_IRP0_MSR_PMON_CTR0,
@@ -3605,7 +3614,7 @@ static struct attribute *skx_upi_uncore_formats_attr[] = {
 	NULL,
 };
 
-static struct attribute_group skx_upi_uncore_format_group = {
+static const struct attribute_group skx_upi_uncore_format_group = {
 	.name = "format",
 	.attrs = skx_upi_uncore_formats_attr,
 };

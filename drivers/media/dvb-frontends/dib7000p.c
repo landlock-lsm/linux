@@ -16,8 +16,8 @@
 #include <linux/mutex.h>
 #include <asm/div64.h>
 
-#include "dvb_math.h"
-#include "dvb_frontend.h"
+#include <media/dvb_math.h>
+#include <media/dvb_frontend.h>
 
 #include "dib7000p.h"
 
@@ -2388,7 +2388,7 @@ static u32 dib7000p_i2c_func(struct i2c_adapter *adapter)
 	return I2C_FUNC_I2C;
 }
 
-static struct i2c_algorithm dib7090_tuner_xfer_algo = {
+static const struct i2c_algorithm dib7090_tuner_xfer_algo = {
 	.master_xfer = dib7090_tuner_xfer,
 	.functionality = dib7000p_i2c_func,
 };

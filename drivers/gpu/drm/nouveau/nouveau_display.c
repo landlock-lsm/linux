@@ -29,6 +29,7 @@
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_crtc_helper.h>
+#include <drm/drm_fb_helper.h>
 
 #include <nvif/class.h>
 
@@ -159,8 +160,6 @@ nouveau_display_vblank_fini(struct drm_device *dev)
 {
 	struct drm_crtc *crtc;
 
-	drm_vblank_cleanup(dev);
-
 	list_for_each_entry(crtc, &dev->mode_config.crtc_list, head) {
 		struct nouveau_crtc *nv_crtc = nouveau_crtc(crtc);
 		nvif_notify_fini(&nv_crtc->vblank);
@@ -233,8 +232,29 @@ nouveau_framebuffer_new(struct drm_device *dev,
 			struct nouveau_bo *nvbo,
 			struct nouveau_framebuffer **pfb)
 {
+	struct nouveau_drm *drm = nouveau_drm(dev);
 	struct nouveau_framebuffer *fb;
 	int ret;
+
+        /* YUV overlays have special requirements pre-NV50 */
+	if (drm->client.device.info.family < NV_DEVICE_INFO_V0_TESLA &&
+
+	    (mode_cmd->pixel_format == DRM_FORMAT_YUYV ||
+	     mode_cmd->pixel_format == DRM_FORMAT_UYVY ||
+	     mode_cmd->pixel_format == DRM_FORMAT_NV12 ||
+	     mode_cmd->pixel_format == DRM_FORMAT_NV21) &&
+	    (mode_cmd->pitches[0] & 0x3f || /* align 64 */
+	     mode_cmd->pitches[0] >= 0x10000 || /* at most 64k pitch */
+	     (mode_cmd->pitches[1] && /* pitches for planes must match */
+	      mode_cmd->pitches[0] != mode_cmd->pitches[1]))) {
+		struct drm_format_name_buf format_name;
+		DRM_DEBUG_KMS("Unsuitable framebuffer: format: %s; pitches: 0x%x\n 0x%x\n",
+			      drm_get_format_name(mode_cmd->pixel_format,
+						  &format_name),
+			      mode_cmd->pitches[0],
+			      mode_cmd->pitches[1]);
+		return -EINVAL;
+	}
 
 	if (!(fb = *pfb = kzalloc(sizeof(*fb), GFP_KERNEL)))
 		return -ENOMEM;
@@ -273,7 +293,7 @@ nouveau_user_framebuffer_create(struct drm_device *dev,
 
 static const struct drm_mode_config_funcs nouveau_mode_config_funcs = {
 	.fb_create = nouveau_user_framebuffer_create,
-	.output_poll_changed = nouveau_fbcon_output_poll_changed,
+	.output_poll_changed = drm_fb_helper_output_poll_changed,
 };
 
 

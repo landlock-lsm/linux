@@ -32,6 +32,7 @@
  */
 
 #include <linux/etherdevice.h>
+#include <linux/lockdep.h>
 #include <linux/pci.h>
 #include <linux/skbuff.h>
 #include <linux/vmalloc.h>
@@ -98,7 +99,57 @@ nfp_flower_repr_get(struct nfp_app *app, u32 port_id)
 	if (port >= reprs->num_reprs)
 		return NULL;
 
-	return reprs->reprs[port];
+	return rcu_dereference(reprs->reprs[port]);
+}
+
+static int
+nfp_flower_reprs_reify(struct nfp_app *app, enum nfp_repr_type type,
+		       bool exists)
+{
+	struct nfp_reprs *reprs;
+	int i, err, count = 0;
+
+	reprs = rcu_dereference_protected(app->reprs[type],
+					  lockdep_is_held(&app->pf->lock));
+	if (!reprs)
+		return 0;
+
+	for (i = 0; i < reprs->num_reprs; i++) {
+		struct net_device *netdev;
+
+		netdev = nfp_repr_get_locked(app, reprs, i);
+		if (netdev) {
+			struct nfp_repr *repr = netdev_priv(netdev);
+
+			err = nfp_flower_cmsg_portreify(repr, exists);
+			if (err)
+				return err;
+			count++;
+		}
+	}
+
+	return count;
+}
+
+static int
+nfp_flower_wait_repr_reify(struct nfp_app *app, atomic_t *replies, int tot_repl)
+{
+	struct nfp_flower_priv *priv = app->priv;
+	int err;
+
+	if (!tot_repl)
+		return 0;
+
+	lockdep_assert_held(&app->pf->lock);
+	err = wait_event_interruptible_timeout(priv->reify_wait_queue,
+					       atomic_read(replies) >= tot_repl,
+					       msecs_to_jiffies(10));
+	if (err <= 0) {
+		nfp_warn(app->cpp, "Not all reprs responded to reify\n");
+		return -EIO;
+	}
+
+	return 0;
 }
 
 static int
@@ -110,7 +161,6 @@ nfp_flower_repr_netdev_open(struct nfp_app *app, struct nfp_repr *repr)
 	if (err)
 		return err;
 
-	netif_carrier_on(repr->netdev);
 	netif_tx_wake_all_queues(repr->netdev);
 
 	return 0;
@@ -119,14 +169,51 @@ nfp_flower_repr_netdev_open(struct nfp_app *app, struct nfp_repr *repr)
 static int
 nfp_flower_repr_netdev_stop(struct nfp_app *app, struct nfp_repr *repr)
 {
-	netif_carrier_off(repr->netdev);
 	netif_tx_disable(repr->netdev);
 
 	return nfp_flower_cmsg_portmod(repr, false);
 }
 
+static int
+nfp_flower_repr_netdev_init(struct nfp_app *app, struct net_device *netdev)
+{
+	return tc_setup_cb_egdev_register(netdev,
+					  nfp_flower_setup_tc_egress_cb,
+					  netdev_priv(netdev));
+}
+
+static void
+nfp_flower_repr_netdev_clean(struct nfp_app *app, struct net_device *netdev)
+{
+	tc_setup_cb_egdev_unregister(netdev, nfp_flower_setup_tc_egress_cb,
+				     netdev_priv(netdev));
+}
+
+static void
+nfp_flower_repr_netdev_preclean(struct nfp_app *app, struct net_device *netdev)
+{
+	struct nfp_repr *repr = netdev_priv(netdev);
+	struct nfp_flower_priv *priv = app->priv;
+	atomic_t *replies = &priv->reify_replies;
+	int err;
+
+	atomic_set(replies, 0);
+	err = nfp_flower_cmsg_portreify(repr, false);
+	if (err) {
+		nfp_warn(app->cpp, "Failed to notify firmware about repr destruction\n");
+		return;
+	}
+
+	nfp_flower_wait_repr_reify(app, replies, 1);
+}
+
 static void nfp_flower_sriov_disable(struct nfp_app *app)
 {
+	struct nfp_flower_priv *priv = app->priv;
+
+	if (!priv->nn)
+		return;
+
 	nfp_reprs_clean_and_free_by_type(app, NFP_REPR_TYPE_VF);
 }
 
@@ -137,10 +224,11 @@ nfp_flower_spawn_vnic_reprs(struct nfp_app *app,
 {
 	u8 nfp_pcie = nfp_cppcore_pcie_unit(app->pf->cpp);
 	struct nfp_flower_priv *priv = app->priv;
-	struct nfp_reprs *reprs, *old_reprs;
+	atomic_t *replies = &priv->reify_replies;
 	enum nfp_port_type port_type;
+	struct nfp_reprs *reprs;
+	int i, err, reify_cnt;
 	const u8 queue = 0;
-	int i, err;
 
 	port_type = repr_type == NFP_REPR_TYPE_PF ? NFP_PORT_PF_PORT :
 						    NFP_PORT_VF_PORT;
@@ -150,19 +238,21 @@ nfp_flower_spawn_vnic_reprs(struct nfp_app *app,
 		return -ENOMEM;
 
 	for (i = 0; i < cnt; i++) {
+		struct net_device *repr;
 		struct nfp_port *port;
 		u32 port_id;
 
-		reprs->reprs[i] = nfp_repr_alloc(app);
-		if (!reprs->reprs[i]) {
+		repr = nfp_repr_alloc(app);
+		if (!repr) {
 			err = -ENOMEM;
 			goto err_reprs_clean;
 		}
+		RCU_INIT_POINTER(reprs->reprs[i], repr);
 
 		/* For now we only support 1 PF */
 		WARN_ON(repr_type == NFP_REPR_TYPE_PF && i);
 
-		port = nfp_port_alloc(app, port_type, reprs->reprs[i]);
+		port = nfp_port_alloc(app, port_type, repr);
 		if (repr_type == NFP_REPR_TYPE_PF) {
 			port->pf_id = i;
 			port->vnic = priv->nn->dp.ctrl_bar;
@@ -173,11 +263,11 @@ nfp_flower_spawn_vnic_reprs(struct nfp_app *app,
 				app->pf->vf_cfg_mem + i * NFP_NET_CFG_BAR_SZ;
 		}
 
-		eth_hw_addr_random(reprs->reprs[i]);
+		eth_hw_addr_random(repr);
 
 		port_id = nfp_flower_cmsg_pcie_port(nfp_pcie, vnic_type,
 						    i, queue);
-		err = nfp_repr_init(app, reprs->reprs[i],
+		err = nfp_repr_init(app, repr,
 				    port_id, port, priv->nn->dp.netdev);
 		if (err) {
 			nfp_port_free(port);
@@ -186,43 +276,52 @@ nfp_flower_spawn_vnic_reprs(struct nfp_app *app,
 
 		nfp_info(app->cpp, "%s%d Representor(%s) created\n",
 			 repr_type == NFP_REPR_TYPE_PF ? "PF" : "VF", i,
-			 reprs->reprs[i]->name);
+			 repr->name);
 	}
 
-	old_reprs = nfp_app_reprs_set(app, repr_type, reprs);
-	if (IS_ERR(old_reprs)) {
-		err = PTR_ERR(old_reprs);
-		goto err_reprs_clean;
+	nfp_app_reprs_set(app, repr_type, reprs);
+
+	atomic_set(replies, 0);
+	reify_cnt = nfp_flower_reprs_reify(app, repr_type, true);
+	if (reify_cnt < 0) {
+		err = reify_cnt;
+		nfp_warn(app->cpp, "Failed to notify firmware about repr creation\n");
+		goto err_reprs_remove;
 	}
+
+	err = nfp_flower_wait_repr_reify(app, replies, reify_cnt);
+	if (err)
+		goto err_reprs_remove;
 
 	return 0;
+err_reprs_remove:
+	reprs = nfp_app_reprs_set(app, repr_type, NULL);
 err_reprs_clean:
-	nfp_reprs_clean_and_free(reprs);
+	nfp_reprs_clean_and_free(app, reprs);
 	return err;
 }
 
 static int nfp_flower_sriov_enable(struct nfp_app *app, int num_vfs)
 {
+	struct nfp_flower_priv *priv = app->priv;
+
+	if (!priv->nn)
+		return 0;
+
 	return nfp_flower_spawn_vnic_reprs(app,
 					   NFP_FLOWER_CMSG_PORT_VNIC_TYPE_VF,
 					   NFP_REPR_TYPE_VF, num_vfs);
-}
-
-static void nfp_flower_stop(struct nfp_app *app)
-{
-	nfp_reprs_clean_and_free_by_type(app, NFP_REPR_TYPE_PF);
-	nfp_reprs_clean_and_free_by_type(app, NFP_REPR_TYPE_PHYS_PORT);
-
 }
 
 static int
 nfp_flower_spawn_phy_reprs(struct nfp_app *app, struct nfp_flower_priv *priv)
 {
 	struct nfp_eth_table *eth_tbl = app->pf->eth_tbl;
-	struct nfp_reprs *reprs, *old_reprs;
+	atomic_t *replies = &priv->reify_replies;
 	struct sk_buff *ctrl_skb;
+	struct nfp_reprs *reprs;
+	int err, reify_cnt;
 	unsigned int i;
-	int err;
 
 	ctrl_skb = nfp_flower_cmsg_mac_repr_start(app, eth_tbl->count);
 	if (!ctrl_skb)
@@ -236,17 +335,18 @@ nfp_flower_spawn_phy_reprs(struct nfp_app *app, struct nfp_flower_priv *priv)
 
 	for (i = 0; i < eth_tbl->count; i++) {
 		unsigned int phys_port = eth_tbl->ports[i].index;
+		struct net_device *repr;
 		struct nfp_port *port;
 		u32 cmsg_port_id;
 
-		reprs->reprs[phys_port] = nfp_repr_alloc(app);
-		if (!reprs->reprs[phys_port]) {
+		repr = nfp_repr_alloc(app);
+		if (!repr) {
 			err = -ENOMEM;
 			goto err_reprs_clean;
 		}
+		RCU_INIT_POINTER(reprs->reprs[phys_port], repr);
 
-		port = nfp_port_alloc(app, NFP_PORT_PHYS_PORT,
-				      reprs->reprs[phys_port]);
+		port = nfp_port_alloc(app, NFP_PORT_PHYS_PORT, repr);
 		if (IS_ERR(port)) {
 			err = PTR_ERR(port);
 			goto err_reprs_clean;
@@ -257,11 +357,11 @@ nfp_flower_spawn_phy_reprs(struct nfp_app *app, struct nfp_flower_priv *priv)
 			goto err_reprs_clean;
 		}
 
-		SET_NETDEV_DEV(reprs->reprs[phys_port], &priv->nn->pdev->dev);
+		SET_NETDEV_DEV(repr, &priv->nn->pdev->dev);
 		nfp_net_get_mac_addr(app->pf, port);
 
 		cmsg_port_id = nfp_flower_cmsg_phys_port(phys_port);
-		err = nfp_repr_init(app, reprs->reprs[phys_port],
+		err = nfp_repr_init(app, repr,
 				    cmsg_port_id, port, priv->nn->dp.netdev);
 		if (err) {
 			nfp_port_free(port);
@@ -274,56 +374,49 @@ nfp_flower_spawn_phy_reprs(struct nfp_app *app, struct nfp_flower_priv *priv)
 					     phys_port);
 
 		nfp_info(app->cpp, "Phys Port %d Representor(%s) created\n",
-			 phys_port, reprs->reprs[phys_port]->name);
+			 phys_port, repr->name);
 	}
 
-	old_reprs = nfp_app_reprs_set(app, NFP_REPR_TYPE_PHYS_PORT, reprs);
-	if (IS_ERR(old_reprs)) {
-		err = PTR_ERR(old_reprs);
-		goto err_reprs_clean;
-	}
+	nfp_app_reprs_set(app, NFP_REPR_TYPE_PHYS_PORT, reprs);
 
-	/* The MAC_REPR control message should be sent after the MAC
+	/* The REIFY/MAC_REPR control messages should be sent after the MAC
 	 * representors are registered using nfp_app_reprs_set().  This is
 	 * because the firmware may respond with control messages for the
 	 * MAC representors, f.e. to provide the driver with information
 	 * about their state, and without registration the driver will drop
 	 * any such messages.
 	 */
+	atomic_set(replies, 0);
+	reify_cnt = nfp_flower_reprs_reify(app, NFP_REPR_TYPE_PHYS_PORT, true);
+	if (reify_cnt < 0) {
+		err = reify_cnt;
+		nfp_warn(app->cpp, "Failed to notify firmware about repr creation\n");
+		goto err_reprs_remove;
+	}
+
+	err = nfp_flower_wait_repr_reify(app, replies, reify_cnt);
+	if (err)
+		goto err_reprs_remove;
+
 	nfp_ctrl_tx(app->ctrl, ctrl_skb);
 
 	return 0;
+err_reprs_remove:
+	reprs = nfp_app_reprs_set(app, NFP_REPR_TYPE_PHYS_PORT, NULL);
 err_reprs_clean:
-	nfp_reprs_clean_and_free(reprs);
+	nfp_reprs_clean_and_free(app, reprs);
 err_free_ctrl_skb:
 	kfree_skb(ctrl_skb);
 	return err;
 }
 
-static int nfp_flower_start(struct nfp_app *app)
+static int nfp_flower_vnic_alloc(struct nfp_app *app, struct nfp_net *nn,
+				 unsigned int id)
 {
-	int err;
-
-	err = nfp_flower_spawn_phy_reprs(app, app->priv);
-	if (err)
-		return err;
-
-	return nfp_flower_spawn_vnic_reprs(app,
-					   NFP_FLOWER_CMSG_PORT_VNIC_TYPE_PF,
-					   NFP_REPR_TYPE_PF, 1);
-}
-
-static int nfp_flower_vnic_init(struct nfp_app *app, struct nfp_net *nn,
-				unsigned int id)
-{
-	struct nfp_flower_priv *priv = app->priv;
-
 	if (id > 0) {
 		nfp_warn(app->cpp, "FlowerNIC doesn't support more than one data vNIC\n");
 		goto err_invalid_port;
 	}
-
-	priv->nn = nn;
 
 	eth_hw_addr_random(nn->dp.netdev);
 	netif_keep_dst(nn->dp.netdev);
@@ -335,11 +428,60 @@ err_invalid_port:
 	return PTR_ERR_OR_ZERO(nn->port);
 }
 
+static void nfp_flower_vnic_clean(struct nfp_app *app, struct nfp_net *nn)
+{
+	struct nfp_flower_priv *priv = app->priv;
+
+	if (app->pf->num_vfs)
+		nfp_reprs_clean_and_free_by_type(app, NFP_REPR_TYPE_VF);
+	nfp_reprs_clean_and_free_by_type(app, NFP_REPR_TYPE_PF);
+	nfp_reprs_clean_and_free_by_type(app, NFP_REPR_TYPE_PHYS_PORT);
+
+	priv->nn = NULL;
+}
+
+static int nfp_flower_vnic_init(struct nfp_app *app, struct nfp_net *nn)
+{
+	struct nfp_flower_priv *priv = app->priv;
+	int err;
+
+	priv->nn = nn;
+
+	err = nfp_flower_spawn_phy_reprs(app, app->priv);
+	if (err)
+		goto err_clear_nn;
+
+	err = nfp_flower_spawn_vnic_reprs(app,
+					  NFP_FLOWER_CMSG_PORT_VNIC_TYPE_PF,
+					  NFP_REPR_TYPE_PF, 1);
+	if (err)
+		goto err_destroy_reprs_phy;
+
+	if (app->pf->num_vfs) {
+		err = nfp_flower_spawn_vnic_reprs(app,
+						  NFP_FLOWER_CMSG_PORT_VNIC_TYPE_VF,
+						  NFP_REPR_TYPE_VF,
+						  app->pf->num_vfs);
+		if (err)
+			goto err_destroy_reprs_pf;
+	}
+
+	return 0;
+
+err_destroy_reprs_pf:
+	nfp_reprs_clean_and_free_by_type(app, NFP_REPR_TYPE_PF);
+err_destroy_reprs_phy:
+	nfp_reprs_clean_and_free_by_type(app, NFP_REPR_TYPE_PHYS_PORT);
+err_clear_nn:
+	priv->nn = NULL;
+	return err;
+}
+
 static int nfp_flower_init(struct nfp_app *app)
 {
 	const struct nfp_pf *pf = app->pf;
 	struct nfp_flower_priv *app_priv;
-	u64 version;
+	u64 version, features;
 	int err;
 
 	if (!pf->eth_tbl) {
@@ -374,12 +516,22 @@ static int nfp_flower_init(struct nfp_app *app)
 		return -ENOMEM;
 
 	app->priv = app_priv;
+	app_priv->app = app;
 	skb_queue_head_init(&app_priv->cmsg_skbs);
 	INIT_WORK(&app_priv->cmsg_work, nfp_flower_cmsg_process_rx);
+	init_waitqueue_head(&app_priv->reify_wait_queue);
 
 	err = nfp_flower_metadata_init(app);
 	if (err)
 		goto err_free_app_priv;
+
+	/* Extract the extra features supported by the firmware. */
+	features = nfp_rtsym_read_le(app->pf->rtbl,
+				     "_abi_flower_extra_features", &err);
+	if (err)
+		app_priv->flower_ext_feats = 0;
+	else
+		app_priv->flower_ext_feats = features;
 
 	return 0;
 
@@ -400,9 +552,21 @@ static void nfp_flower_clean(struct nfp_app *app)
 	app->priv = NULL;
 }
 
+static int nfp_flower_start(struct nfp_app *app)
+{
+	return nfp_tunnel_config_start(app);
+}
+
+static void nfp_flower_stop(struct nfp_app *app)
+{
+	nfp_tunnel_config_stop(app);
+}
+
 const struct nfp_app_type app_flower = {
 	.id		= NFP_APP_FLOWER_NIC,
 	.name		= "flower",
+
+	.ctrl_cap_mask	= ~0U,
 	.ctrl_has_meta	= true,
 
 	.extra_cap	= nfp_flower_extra_cap,
@@ -410,7 +574,13 @@ const struct nfp_app_type app_flower = {
 	.init		= nfp_flower_init,
 	.clean		= nfp_flower_clean,
 
+	.vnic_alloc	= nfp_flower_vnic_alloc,
 	.vnic_init	= nfp_flower_vnic_init,
+	.vnic_clean	= nfp_flower_vnic_clean,
+
+	.repr_init	= nfp_flower_repr_netdev_init,
+	.repr_preclean	= nfp_flower_repr_netdev_preclean,
+	.repr_clean	= nfp_flower_repr_netdev_clean,
 
 	.repr_open	= nfp_flower_repr_netdev_open,
 	.repr_stop	= nfp_flower_repr_netdev_stop,

@@ -274,7 +274,7 @@ static struct key *nfs_idmap_request_key(const char *name, size_t namelen,
 	ssize_t ret;
 
 	ret = nfs_idmap_get_desc(name, namelen, type, strlen(type), &desc);
-	if (ret <= 0)
+	if (ret < 0)
 		return ERR_PTR(ret);
 
 	rkey = request_key(&key_type_id_resolver, desc, "");
@@ -568,9 +568,13 @@ static int nfs_idmap_legacy_upcall(struct key_construction *cons,
 	struct idmap_msg *im;
 	struct idmap *idmap = (struct idmap *)aux;
 	struct key *key = cons->key;
-	int ret = -ENOMEM;
+	int ret = -ENOKEY;
+
+	if (!aux)
+		goto out1;
 
 	/* msg and im are freed in idmap_pipe_destroy_msg */
+	ret = -ENOMEM;
 	data = kzalloc(sizeof(*data), GFP_KERNEL);
 	if (!data)
 		goto out1;

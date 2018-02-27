@@ -62,7 +62,7 @@ enum conf_def_mode {
 #define T_OPT_ALLNOCONFIG_Y	4
 
 struct kconf_id {
-	int name;
+	const char *name;
 	int token;
 	unsigned int flags;
 	enum symbol_type stype;
@@ -100,7 +100,6 @@ void menu_warn(struct menu *menu, const char *fmt, ...);
 struct menu *menu_add_menu(void);
 void menu_end_menu(void);
 void menu_add_entry(struct symbol *sym);
-void menu_end_entry(void);
 void menu_add_dep(struct expr *dep);
 void menu_add_visibility(struct expr *dep);
 struct property *menu_add_prompt(enum prop_type type, char *prompt, struct expr *dep);
@@ -115,6 +114,7 @@ struct file *file_lookup(const char *name);
 int file_write_dep(const char *name);
 void *xmalloc(size_t size);
 void *xcalloc(size_t nmemb, size_t size);
+void *xrealloc(void *p, size_t size);
 
 struct gstr {
 	size_t len;

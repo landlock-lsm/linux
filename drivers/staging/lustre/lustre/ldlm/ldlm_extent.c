@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * GPL HEADER START
  *
@@ -46,12 +47,12 @@
  */
 
 #define DEBUG_SUBSYSTEM S_LDLM
-#include "../../include/linux/libcfs/libcfs.h"
-#include "../include/lustre_dlm.h"
-#include "../include/obd_support.h"
-#include "../include/obd.h"
-#include "../include/obd_class.h"
-#include "../include/lustre_lib.h"
+#include <linux/libcfs/libcfs.h>
+#include <lustre_dlm.h>
+#include <obd_support.h>
+#include <obd.h>
+#include <obd_class.h>
+#include <lustre_lib.h>
 #include "ldlm_internal.h"
 
 /* When a lock is cancelled by a client, the KMS may undergo change if this
@@ -63,7 +64,6 @@
 __u64 ldlm_extent_shift_kms(struct ldlm_lock *lock, __u64 old_kms)
 {
 	struct ldlm_resource *res = lock->l_resource;
-	struct list_head *tmp;
 	struct ldlm_lock *lck;
 	__u64 kms = 0;
 
@@ -73,8 +73,7 @@ __u64 ldlm_extent_shift_kms(struct ldlm_lock *lock, __u64 old_kms)
 	 */
 	ldlm_set_kms_ignore(lock);
 
-	list_for_each(tmp, &res->lr_granted) {
-		lck = list_entry(tmp, struct ldlm_lock, l_res_link);
+	list_for_each_entry(lck, &res->lr_granted, l_res_link) {
 
 		if (ldlm_is_kms_ignore(lck))
 			continue;
@@ -207,7 +206,8 @@ void ldlm_extent_add_lock(struct ldlm_resource *res,
 				continue;
 			if (ldlm_extent_overlap(&lck->l_req_extent,
 						&lock->l_req_extent)) {
-				CDEBUG(D_ERROR, "granting conflicting lock %p %p\n",
+				CDEBUG(D_ERROR,
+				       "granting conflicting lock %p %p\n",
 				       lck, lock);
 				ldlm_resource_dump(D_ERROR, res);
 				LBUG();

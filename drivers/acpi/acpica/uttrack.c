@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2017, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -402,8 +402,8 @@ acpi_ut_track_allocation(struct acpi_debug_mem_block *allocation,
 	allocation->component = component;
 	allocation->line = line;
 
-	strncpy(allocation->module, module, ACPI_MAX_MODULE_NAME);
-	allocation->module[ACPI_MAX_MODULE_NAME - 1] = 0;
+	acpi_ut_safe_strncpy(allocation->module, (char *)module,
+			     ACPI_MAX_MODULE_NAME);
 
 	if (!element) {
 
@@ -591,6 +591,10 @@ void acpi_ut_dump_allocations(u32 component, const char *module)
 		return_VOID;
 	}
 
+	if (!acpi_gbl_global_list) {
+		goto exit;
+	}
+
 	element = acpi_gbl_global_list->list_head;
 	while (element) {
 		if ((element->component & component) &&
@@ -602,7 +606,7 @@ void acpi_ut_dump_allocations(u32 component, const char *module)
 
 			if (element->size <
 			    sizeof(struct acpi_common_descriptor)) {
-				acpi_os_printf("%p Length 0x%04X %9.9s-%u "
+				acpi_os_printf("%p Length 0x%04X %9.9s-%4.4u "
 					       "[Not a Descriptor - too small]\n",
 					       descriptor, element->size,
 					       element->module, element->line);
@@ -612,7 +616,7 @@ void acpi_ut_dump_allocations(u32 component, const char *module)
 				if (ACPI_GET_DESCRIPTOR_TYPE(descriptor) !=
 				    ACPI_DESC_TYPE_CACHED) {
 					acpi_os_printf
-					    ("%p Length 0x%04X %9.9s-%u [%s] ",
+					    ("%p Length 0x%04X %9.9s-%4.4u [%s] ",
 					     descriptor, element->size,
 					     element->module, element->line,
 					     acpi_ut_get_descriptor_name
@@ -705,6 +709,7 @@ void acpi_ut_dump_allocations(u32 component, const char *module)
 		element = element->next;
 	}
 
+exit:
 	(void)acpi_ut_release_mutex(ACPI_MTX_MEMORY);
 
 	/* Print summary */
@@ -712,7 +717,7 @@ void acpi_ut_dump_allocations(u32 component, const char *module)
 	if (!num_outstanding) {
 		ACPI_INFO(("No outstanding allocations"));
 	} else {
-		ACPI_ERROR((AE_INFO, "%u(0x%X) Outstanding allocations",
+		ACPI_ERROR((AE_INFO, "%u (0x%X) Outstanding cache allocations",
 			    num_outstanding, num_outstanding));
 	}
 

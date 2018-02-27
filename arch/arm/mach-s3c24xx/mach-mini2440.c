@@ -1,17 +1,12 @@
-/* linux/arch/arm/mach-s3c2440/mach-mini2440.c
- *
- * Copyright (c) 2008 Ramax Lo <ramaxlo@gmail.com>
- *      Based on mach-anubis.c by Ben Dooks <ben@simtec.co.uk>
- *      and modifications by SBZ <sbz@spgui.org> and
- *      Weibing <http://weibing.blogbus.com> and
- *      Michel Pollet <buserror@gmail.com>
- *
- * For product information, visit http://code.google.com/p/mini2440/
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
-*/
+// SPDX-License-Identifier: GPL-2.0
+//
+// Copyright (c) 2008 Ramax Lo <ramaxlo@gmail.com>
+//      Based on mach-anubis.c by Ben Dooks <ben@simtec.co.uk>
+//      and modifications by SBZ <sbz@spgui.org> and
+//      Weibing <http://weibing.blogbus.com> and
+//      Michel Pollet <buserror@gmail.com>
+//
+// For product information, visit http://code.google.com/p/mini2440/
 
 #include <linux/kernel.h>
 #include <linux/types.h>
@@ -49,7 +44,7 @@
 #include <linux/platform_data/usb-s3c2410_udc.h>
 
 #include <linux/mtd/mtd.h>
-#include <linux/mtd/nand.h>
+#include <linux/mtd/rawnand.h>
 #include <linux/mtd/nand_ecc.h>
 #include <linux/mtd/partitions.h>
 
@@ -287,7 +282,7 @@ static struct s3c2410_platform_nand mini2440_nand_info __initdata = {
 	.nr_sets	= ARRAY_SIZE(mini2440_nand_sets),
 	.sets		= mini2440_nand_sets,
 	.ignore_unset_ecc = 1,
-	.ecc_mode       = NAND_ECC_SOFT,
+	.ecc_mode       = NAND_ECC_HW,
 };
 
 /* DM9000AEP 10/100 ethernet controller */

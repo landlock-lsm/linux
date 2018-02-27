@@ -1185,7 +1185,7 @@ static int iss_video_release(struct file *file)
 	return 0;
 }
 
-static unsigned int iss_video_poll(struct file *file, poll_table *wait)
+static __poll_t iss_video_poll(struct file *file, poll_table *wait)
 {
 	struct iss_video_fh *vfh = to_iss_video_fh(file->private_data);
 
@@ -1199,7 +1199,7 @@ static int iss_video_mmap(struct file *file, struct vm_area_struct *vma)
 	return vb2_mmap(&vfh->queue, vma);
 }
 
-static struct v4l2_file_operations iss_video_fops = {
+static const struct v4l2_file_operations iss_video_fops = {
 	.owner = THIS_MODULE,
 	.unlocked_ioctl = video_ioctl2,
 	.open = iss_video_open,

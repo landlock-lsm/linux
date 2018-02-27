@@ -288,7 +288,7 @@ static int sock_diag_bind(struct net *net, int group)
 	case SKNLGRP_INET6_UDP_DESTROY:
 		if (!sock_diag_handlers[AF_INET6])
 			request_module("net-pf-%d-proto-%d-type-%d", PF_NETLINK,
-				       NETLINK_SOCK_DIAG, AF_INET);
+				       NETLINK_SOCK_DIAG, AF_INET6);
 		break;
 	}
 	return 0;
@@ -328,6 +328,7 @@ static void __net_exit diag_net_exit(struct net *net)
 static struct pernet_operations diag_net_ops = {
 	.init = diag_net_init,
 	.exit = diag_net_exit,
+	.async = true,
 };
 
 static int __init sock_diag_init(void)

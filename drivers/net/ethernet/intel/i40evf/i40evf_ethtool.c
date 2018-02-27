@@ -258,29 +258,50 @@ static u32 i40evf_get_priv_flags(struct net_device *netdev)
 static int i40evf_set_priv_flags(struct net_device *netdev, u32 flags)
 {
 	struct i40evf_adapter *adapter = netdev_priv(netdev);
-	u64 changed_flags;
+	u32 orig_flags, new_flags, changed_flags;
 	u32 i;
 
-	changed_flags = adapter->flags;
+	orig_flags = READ_ONCE(adapter->flags);
+	new_flags = orig_flags;
 
 	for (i = 0; i < I40EVF_PRIV_FLAGS_STR_LEN; i++) {
 		const struct i40evf_priv_flags *priv_flags;
 
 		priv_flags = &i40evf_gstrings_priv_flags[i];
 
-		if (priv_flags->read_only)
-			continue;
-
 		if (flags & BIT(i))
-			adapter->flags |= priv_flags->flag;
+			new_flags |= priv_flags->flag;
 		else
-			adapter->flags &= ~(priv_flags->flag);
+			new_flags &= ~(priv_flags->flag);
+
+		if (priv_flags->read_only &&
+		    ((orig_flags ^ new_flags) & ~BIT(i)))
+			return -EOPNOTSUPP;
 	}
 
-	/* check for flags that changed */
-	changed_flags ^= adapter->flags;
+	/* Before we finalize any flag changes, any checks which we need to
+	 * perform to determine if the new flags will be supported should go
+	 * here...
+	 */
 
-	/* Process any additional changes needed as a result of flag changes. */
+	/* Compare and exchange the new flags into place. If we failed, that
+	 * is if cmpxchg returns anything but the old value, this means
+	 * something else must have modified the flags variable since we
+	 * copied it. We'll just punt with an error and log something in the
+	 * message buffer.
+	 */
+	if (cmpxchg(&adapter->flags, orig_flags, new_flags) != orig_flags) {
+		dev_warn(&adapter->pdev->dev,
+			 "Unable to update adapter->flags as it was modified by another thread...\n");
+		return -EAGAIN;
+	}
+
+	changed_flags = orig_flags ^ new_flags;
+
+	/* Process any additional changes needed as a result of flag changes.
+	 * The changed_flags value reflects the list of bits that were changed
+	 * in the code above.
+	 */
 
 	/* issue a reset to force legacy-rx change to take effect */
 	if (changed_flags & I40EVF_FLAG_LEGACY_RX) {
@@ -436,14 +457,14 @@ static int __i40evf_get_coalesce(struct net_device *netdev,
 	rx_ring = &adapter->rx_rings[queue];
 	tx_ring = &adapter->tx_rings[queue];
 
-	if (ITR_IS_DYNAMIC(rx_ring->rx_itr_setting))
+	if (ITR_IS_DYNAMIC(rx_ring->itr_setting))
 		ec->use_adaptive_rx_coalesce = 1;
 
-	if (ITR_IS_DYNAMIC(tx_ring->tx_itr_setting))
+	if (ITR_IS_DYNAMIC(tx_ring->itr_setting))
 		ec->use_adaptive_tx_coalesce = 1;
 
-	ec->rx_coalesce_usecs = rx_ring->rx_itr_setting & ~I40E_ITR_DYNAMIC;
-	ec->tx_coalesce_usecs = tx_ring->tx_itr_setting & ~I40E_ITR_DYNAMIC;
+	ec->rx_coalesce_usecs = rx_ring->itr_setting & ~I40E_ITR_DYNAMIC;
+	ec->tx_coalesce_usecs = tx_ring->itr_setting & ~I40E_ITR_DYNAMIC;
 
 	return 0;
 }
@@ -481,7 +502,7 @@ static int i40evf_get_per_queue_coalesce(struct net_device *netdev,
 
 /**
  * i40evf_set_itr_per_queue - set ITR values for specific queue
- * @vsi: the VSI to set values for
+ * @adapter: the VF adapter struct to set values for
  * @ec: coalesce settings from ethtool
  * @queue: the queue to modify
  *
@@ -491,35 +512,31 @@ static void i40evf_set_itr_per_queue(struct i40evf_adapter *adapter,
 				     struct ethtool_coalesce *ec,
 				     int queue)
 {
-	struct i40e_vsi *vsi = &adapter->vsi;
-	struct i40e_hw *hw = &adapter->hw;
+	struct i40e_ring *rx_ring = &adapter->rx_rings[queue];
+	struct i40e_ring *tx_ring = &adapter->tx_rings[queue];
 	struct i40e_q_vector *q_vector;
-	u16 vector;
 
-	adapter->rx_rings[queue].rx_itr_setting = ec->rx_coalesce_usecs;
-	adapter->tx_rings[queue].tx_itr_setting = ec->tx_coalesce_usecs;
+	rx_ring->itr_setting = ITR_REG_ALIGN(ec->rx_coalesce_usecs);
+	tx_ring->itr_setting = ITR_REG_ALIGN(ec->tx_coalesce_usecs);
 
-	if (ec->use_adaptive_rx_coalesce)
-		adapter->rx_rings[queue].rx_itr_setting |= I40E_ITR_DYNAMIC;
-	else
-		adapter->rx_rings[queue].rx_itr_setting &= ~I40E_ITR_DYNAMIC;
+	rx_ring->itr_setting |= I40E_ITR_DYNAMIC;
+	if (!ec->use_adaptive_rx_coalesce)
+		rx_ring->itr_setting ^= I40E_ITR_DYNAMIC;
 
-	if (ec->use_adaptive_tx_coalesce)
-		adapter->tx_rings[queue].tx_itr_setting |= I40E_ITR_DYNAMIC;
-	else
-		adapter->tx_rings[queue].tx_itr_setting &= ~I40E_ITR_DYNAMIC;
+	tx_ring->itr_setting |= I40E_ITR_DYNAMIC;
+	if (!ec->use_adaptive_tx_coalesce)
+		tx_ring->itr_setting ^= I40E_ITR_DYNAMIC;
 
-	q_vector = adapter->rx_rings[queue].q_vector;
-	q_vector->rx.itr = ITR_TO_REG(adapter->rx_rings[queue].rx_itr_setting);
-	vector = vsi->base_vector + q_vector->v_idx;
-	wr32(hw, I40E_VFINT_ITRN1(I40E_RX_ITR, vector - 1), q_vector->rx.itr);
+	q_vector = rx_ring->q_vector;
+	q_vector->rx.target_itr = ITR_TO_REG(rx_ring->itr_setting);
 
-	q_vector = adapter->tx_rings[queue].q_vector;
-	q_vector->tx.itr = ITR_TO_REG(adapter->tx_rings[queue].tx_itr_setting);
-	vector = vsi->base_vector + q_vector->v_idx;
-	wr32(hw, I40E_VFINT_ITRN1(I40E_TX_ITR, vector - 1), q_vector->tx.itr);
+	q_vector = tx_ring->q_vector;
+	q_vector->tx.target_itr = ITR_TO_REG(tx_ring->itr_setting);
 
-	i40e_flush(hw);
+	/* The interrupt handler itself will take care of programming
+	 * the Tx and Rx ITR values based on the values we have entered
+	 * into the q_vector, no need to write the values now.
+	 */
 }
 
 /**
@@ -544,8 +561,8 @@ static int __i40evf_set_coalesce(struct net_device *netdev,
 	if (ec->rx_coalesce_usecs == 0) {
 		if (ec->use_adaptive_rx_coalesce)
 			netif_info(adapter, drv, netdev, "rx-usecs=0, need to disable adaptive-rx for a complete disable\n");
-	} else if ((ec->rx_coalesce_usecs < (I40E_MIN_ITR << 1)) ||
-		   (ec->rx_coalesce_usecs > (I40E_MAX_ITR << 1))) {
+	} else if ((ec->rx_coalesce_usecs < I40E_MIN_ITR) ||
+		   (ec->rx_coalesce_usecs > I40E_MAX_ITR)) {
 		netif_info(adapter, drv, netdev, "Invalid value, rx-usecs range is 0-8160\n");
 		return -EINVAL;
 	}
@@ -554,8 +571,8 @@ static int __i40evf_set_coalesce(struct net_device *netdev,
 	if (ec->tx_coalesce_usecs == 0) {
 		if (ec->use_adaptive_tx_coalesce)
 			netif_info(adapter, drv, netdev, "tx-usecs=0, need to disable adaptive-tx for a complete disable\n");
-	} else if ((ec->tx_coalesce_usecs < (I40E_MIN_ITR << 1)) ||
-		   (ec->tx_coalesce_usecs > (I40E_MAX_ITR << 1))) {
+	} else if ((ec->tx_coalesce_usecs < I40E_MIN_ITR) ||
+		   (ec->tx_coalesce_usecs > I40E_MAX_ITR)) {
 		netif_info(adapter, drv, netdev, "Invalid value, tx-usecs range is 0-8160\n");
 		return -EINVAL;
 	}
@@ -648,12 +665,47 @@ static void i40evf_get_channels(struct net_device *netdev,
 	struct i40evf_adapter *adapter = netdev_priv(netdev);
 
 	/* Report maximum channels */
-	ch->max_combined = adapter->num_active_queues;
+	ch->max_combined = I40EVF_MAX_REQ_QUEUES;
 
 	ch->max_other = NONQ_VECS;
 	ch->other_count = NONQ_VECS;
 
 	ch->combined_count = adapter->num_active_queues;
+}
+
+/**
+ * i40evf_set_channels: set the new channel count
+ * @netdev: network interface device structure
+ * @ch: channel information structure
+ *
+ * Negotiate a new number of channels with the PF then do a reset.  During
+ * reset we'll realloc queues and fix the RSS table.  Returns 0 on success,
+ * negative on failure.
+ **/
+static int i40evf_set_channels(struct net_device *netdev,
+			       struct ethtool_channels *ch)
+{
+	struct i40evf_adapter *adapter = netdev_priv(netdev);
+	int num_req = ch->combined_count;
+
+	if (num_req != adapter->num_active_queues &&
+	    !(adapter->vf_res->vf_cap_flags &
+	      VIRTCHNL_VF_OFFLOAD_REQ_QUEUES)) {
+		dev_info(&adapter->pdev->dev, "PF is not capable of queue negotiation.\n");
+		return -EINVAL;
+	}
+
+	/* All of these should have already been checked by ethtool before this
+	 * even gets to us, but just to be sure.
+	 */
+	if (num_req <= 0 || num_req > I40EVF_MAX_REQ_QUEUES)
+		return -EINVAL;
+
+	if (ch->rx_count || ch->tx_count || ch->other_count != NONQ_VECS)
+		return -EINVAL;
+
+	adapter->num_req_queues = num_req;
+	return i40evf_request_queues(adapter, num_req);
 }
 
 /**
@@ -764,6 +816,7 @@ static const struct ethtool_ops i40evf_ethtool_ops = {
 	.get_rxfh		= i40evf_get_rxfh,
 	.set_rxfh		= i40evf_set_rxfh,
 	.get_channels		= i40evf_get_channels,
+	.set_channels		= i40evf_set_channels,
 	.get_rxfh_key_size	= i40evf_get_rxfh_key_size,
 	.get_link_ksettings	= i40evf_get_link_ksettings,
 };

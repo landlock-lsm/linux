@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_POWERPC_BOOK3S_64_HASH_H
 #define _ASM_POWERPC_BOOK3S_64_HASH_H
 #ifdef __KERNEL__
@@ -8,11 +9,6 @@
  *
  */
 #define H_PTE_NONE_MASK		_PAGE_HPTEFLAGS
-#define H_PAGE_F_GIX_SHIFT	56
-#define H_PAGE_BUSY		_RPAGE_RSV1 /* software: PTE & hash are busy */
-#define H_PAGE_F_SECOND		_RPAGE_RSV2	/* HPTE is in 2ndary HPTEG */
-#define H_PAGE_F_GIX		(_RPAGE_RSV3 | _RPAGE_RSV4 | _RPAGE_RPN44)
-#define H_PAGE_HASHPTE		_RPAGE_RPN43	/* PTE has associated HPTE */
 
 #ifdef CONFIG_PPC_64K_PAGES
 #include <asm/book3s/64/hash-64k.h>
@@ -40,7 +36,7 @@
  * Define the address range of the kernel non-linear virtual area
  */
 #define H_KERN_VIRT_START ASM_CONST(0xD000000000000000)
-#define H_KERN_VIRT_SIZE	ASM_CONST(0x0000100000000000)
+#define H_KERN_VIRT_SIZE  ASM_CONST(0x0000400000000000) /* 64T */
 
 /*
  * The vmalloc space starts at the beginning of that region, and
@@ -48,8 +44,10 @@
  * (we keep a quarter for the virtual memmap)
  */
 #define H_VMALLOC_START	H_KERN_VIRT_START
-#define H_VMALLOC_SIZE	(H_KERN_VIRT_SIZE >> 1)
+#define H_VMALLOC_SIZE	ASM_CONST(0x380000000000) /* 56T */
 #define H_VMALLOC_END	(H_VMALLOC_START + H_VMALLOC_SIZE)
+
+#define H_KERN_IO_START	H_VMALLOC_END
 
 /*
  * Region IDs
@@ -163,6 +161,9 @@ static inline int hash__pte_none(pte_t pte)
 {
 	return (pte_val(pte) & ~H_PTE_NONE_MASK) == 0;
 }
+
+unsigned long pte_get_hash_gslot(unsigned long vpn, unsigned long shift,
+		int ssize, real_pte_t rpte, unsigned int subpg_index);
 
 /* This low level function performs the actual PTE insertion
  * Setting the PTE depends on the MMU type and other factors. It's

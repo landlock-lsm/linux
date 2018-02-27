@@ -18,6 +18,7 @@
 #include <linux/sched.h>
 #include <linux/uidgid.h>
 #include <linux/filter.h>
+#include <linux/landlock.h>
 
 /* If kernel subsystem is allowing eBPF programs to call this function,
  * inside its own verifier_ops->get_func_proto() callback it should return
@@ -178,4 +179,41 @@ const struct bpf_func_proto bpf_get_current_comm_proto = {
 	.ret_type	= RET_INTEGER,
 	.arg1_type	= ARG_PTR_TO_UNINIT_MEM,
 	.arg2_type	= ARG_CONST_SIZE,
+};
+
+BPF_CALL_2(bpf_inode_get_tag, void *, inode, void *, chain)
+{
+	if (WARN_ON(!inode))
+		return 0;
+	if (WARN_ON(!chain))
+		return 0;
+
+	return landlock_get_inode_tag(inode, chain);
+}
+
+const struct bpf_func_proto bpf_inode_get_tag_proto = {
+	.func		= bpf_inode_get_tag,
+	.gpl_only	= false,
+	.ret_type	= RET_INTEGER,
+	.arg1_type	= ARG_PTR_TO_INODE,
+	.arg2_type	= ARG_PTR_TO_LL_CHAIN,
+};
+
+BPF_CALL_3(bpf_landlock_set_tag, void *, tag_obj, void *, chain, u64, value)
+{
+	if (WARN_ON(!tag_obj))
+		return -EFAULT;
+	if (WARN_ON(!chain))
+		return -EFAULT;
+
+	return landlock_set_object_tag(tag_obj, chain, value);
+}
+
+const struct bpf_func_proto bpf_landlock_set_tag_proto = {
+	.func		= bpf_landlock_set_tag,
+	.gpl_only	= false,
+	.ret_type	= RET_INTEGER,
+	.arg1_type	= ARG_PTR_TO_LL_TAG_OBJ,
+	.arg2_type	= ARG_PTR_TO_LL_CHAIN,
+	.arg3_type	= ARG_ANYTHING,
 };

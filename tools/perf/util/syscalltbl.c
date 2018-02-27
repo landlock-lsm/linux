@@ -15,16 +15,21 @@
 
 #include "syscalltbl.h"
 #include <stdlib.h>
+#include <linux/compiler.h>
 
 #ifdef HAVE_SYSCALL_TABLE
-#include <linux/compiler.h>
 #include <string.h>
+#include "string2.h"
 #include "util.h"
 
 #if defined(__x86_64__)
 #include <asm/syscalls_64.c>
 const int syscalltbl_native_max_id = SYSCALLTBL_x86_64_MAX_ID;
 static const char **syscalltbl_native = syscalltbl_x86_64;
+#elif defined(__s390x__)
+#include <asm/syscalls_64.c>
+const int syscalltbl_native_max_id = SYSCALLTBL_S390_64_MAX_ID;
+static const char **syscalltbl_native = syscalltbl_s390_64;
 #endif
 
 struct syscall {
@@ -105,6 +110,27 @@ int syscalltbl__id(struct syscalltbl *tbl, const char *name)
 	return sc ? sc->id : -1;
 }
 
+int syscalltbl__strglobmatch_next(struct syscalltbl *tbl, const char *syscall_glob, int *idx)
+{
+	int i;
+	struct syscall *syscalls = tbl->syscalls.entries;
+
+	for (i = *idx + 1; i < tbl->syscalls.nr_entries; ++i) {
+		if (strglobmatch(syscalls[i].name, syscall_glob)) {
+			*idx = i;
+			return syscalls[i].id;
+		}
+	}
+
+	return -1;
+}
+
+int syscalltbl__strglobmatch_first(struct syscalltbl *tbl, const char *syscall_glob, int *idx)
+{
+	*idx = -1;
+	return syscalltbl__strglobmatch_next(tbl, syscall_glob, idx);
+}
+
 #else /* HAVE_SYSCALL_TABLE */
 
 #include <libaudit.h>
@@ -130,5 +156,16 @@ const char *syscalltbl__name(const struct syscalltbl *tbl, int id)
 int syscalltbl__id(struct syscalltbl *tbl, const char *name)
 {
 	return audit_name_to_syscall(name, tbl->audit_machine);
+}
+
+int syscalltbl__strglobmatch_next(struct syscalltbl *tbl __maybe_unused,
+				  const char *syscall_glob __maybe_unused, int *idx __maybe_unused)
+{
+	return -1;
+}
+
+int syscalltbl__strglobmatch_first(struct syscalltbl *tbl, const char *syscall_glob, int *idx)
+{
+	return syscalltbl__strglobmatch_next(tbl, syscall_glob, idx);
 }
 #endif /* HAVE_SYSCALL_TABLE */

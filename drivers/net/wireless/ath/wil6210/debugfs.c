@@ -20,7 +20,6 @@
 #include <linux/pci.h>
 #include <linux/rtnetlink.h>
 #include <linux/power_supply.h>
-
 #include "wil6210.h"
 #include "wmi.h"
 #include "txrx.h"
@@ -30,7 +29,6 @@
 static u32 mem_addr;
 static u32 dbg_txdesc_index;
 static u32 dbg_vring_index; /* 24+ for Rx, 0..23 for Tx */
-u32 vring_idle_trsh = 16; /* HW fetches up to 16 descriptors at once */
 
 enum dbg_off_type {
 	doff_u32 = 0,
@@ -244,11 +242,18 @@ static void wil_print_ring(struct seq_file *s, const char *prefix,
 static int wil_mbox_debugfs_show(struct seq_file *s, void *data)
 {
 	struct wil6210_priv *wil = s->private;
+	int ret;
+
+	ret = wil_pm_runtime_get(wil);
+	if (ret < 0)
+		return ret;
 
 	wil_print_ring(s, "tx", wil->csr + HOST_MBOX +
 		       offsetof(struct wil6210_mbox_ctl, tx));
 	wil_print_ring(s, "rx", wil->csr + HOST_MBOX +
 		       offsetof(struct wil6210_mbox_ctl, rx));
+
+	wil_pm_runtime_put(wil);
 
 	return 0;
 }
@@ -267,15 +272,37 @@ static const struct file_operations fops_mbox = {
 
 static int wil_debugfs_iomem_x32_set(void *data, u64 val)
 {
-	writel(val, (void __iomem *)data);
+	struct wil_debugfs_iomem_data *d = (struct
+					    wil_debugfs_iomem_data *)data;
+	struct wil6210_priv *wil = d->wil;
+	int ret;
+
+	ret = wil_pm_runtime_get(wil);
+	if (ret < 0)
+		return ret;
+
+	writel(val, (void __iomem *)d->offset);
 	wmb(); /* make sure write propagated to HW */
+
+	wil_pm_runtime_put(wil);
 
 	return 0;
 }
 
 static int wil_debugfs_iomem_x32_get(void *data, u64 *val)
 {
-	*val = readl((void __iomem *)data);
+	struct wil_debugfs_iomem_data *d = (struct
+					    wil_debugfs_iomem_data *)data;
+	struct wil6210_priv *wil = d->wil;
+	int ret;
+
+	ret = wil_pm_runtime_get(wil);
+	if (ret < 0)
+		return ret;
+
+	*val = readl((void __iomem *)d->offset);
+
+	wil_pm_runtime_put(wil);
 
 	return 0;
 }
@@ -286,10 +313,21 @@ DEFINE_SIMPLE_ATTRIBUTE(fops_iomem_x32, wil_debugfs_iomem_x32_get,
 static struct dentry *wil_debugfs_create_iomem_x32(const char *name,
 						   umode_t mode,
 						   struct dentry *parent,
-						   void *value)
+						   void *value,
+						   struct wil6210_priv *wil)
 {
-	return debugfs_create_file(name, mode, parent, value,
-				   &fops_iomem_x32);
+	struct dentry *file;
+	struct wil_debugfs_iomem_data *data = &wil->dbg_data.data_arr[
+					      wil->dbg_data.iomem_data_count];
+
+	data->wil = wil;
+	data->offset = value;
+
+	file = debugfs_create_file(name, mode, parent, data, &fops_iomem_x32);
+	if (!IS_ERR_OR_NULL(file))
+		wil->dbg_data.iomem_data_count++;
+
+	return file;
 }
 
 static int wil_debugfs_ulong_set(void *data, u64 val)
@@ -348,7 +386,8 @@ static void wil6210_debugfs_init_offset(struct wil6210_priv *wil,
 		case doff_io32:
 			f = wil_debugfs_create_iomem_x32(tbl[i].name,
 							 tbl[i].mode, dbg,
-							 base + tbl[i].off);
+							 base + tbl[i].off,
+							 wil);
 			break;
 		case doff_u8:
 			f = debugfs_create_u8(tbl[i].name, tbl[i].mode, dbg,
@@ -477,12 +516,21 @@ static int wil6210_debugfs_create_ITR_CNT(struct wil6210_priv *wil,
 static int wil_memread_debugfs_show(struct seq_file *s, void *data)
 {
 	struct wil6210_priv *wil = s->private;
-	void __iomem *a = wmi_buffer(wil, cpu_to_le32(mem_addr));
+	void __iomem *a;
+	int ret;
+
+	ret = wil_pm_runtime_get(wil);
+	if (ret < 0)
+		return ret;
+
+	a = wmi_buffer(wil, cpu_to_le32(mem_addr));
 
 	if (a)
 		seq_printf(s, "[0x%08x] = 0x%08x\n", mem_addr, readl(a));
 	else
 		seq_printf(s, "[0x%08x] = INVALID\n", mem_addr);
+
+	wil_pm_runtime_put(wil);
 
 	return 0;
 }
@@ -504,10 +552,12 @@ static ssize_t wil_read_file_ioblob(struct file *file, char __user *user_buf,
 {
 	enum { max_count = 4096 };
 	struct wil_blob_wrapper *wil_blob = file->private_data;
+	struct wil6210_priv *wil = wil_blob->wil;
 	loff_t pos = *ppos;
 	size_t available = wil_blob->blob.size;
 	void *buf;
 	size_t ret;
+	int rc;
 
 	if (test_bit(wil_status_suspending, wil_blob->wil->status) ||
 	    test_bit(wil_status_suspended, wil_blob->wil->status))
@@ -528,10 +578,19 @@ static ssize_t wil_read_file_ioblob(struct file *file, char __user *user_buf,
 	if (!buf)
 		return -ENOMEM;
 
+	rc = wil_pm_runtime_get(wil);
+	if (rc < 0) {
+		kfree(buf);
+		return rc;
+	}
+
 	wil_memcpy_fromio_32(buf, (const void __iomem *)
 			     wil_blob->blob.data + pos, count);
 
 	ret = copy_to_user(user_buf, buf, count);
+
+	wil_pm_runtime_put(wil);
+
 	kfree(buf);
 	if (ret == count)
 		return -EFAULT;
@@ -801,13 +860,15 @@ static ssize_t wil_write_file_txmgmt(struct file *file, const char __user *buf,
 	int rc;
 	void *frame;
 
+	if (!len)
+		return -EINVAL;
+
 	frame = memdup_user(buf, len);
 	if (IS_ERR(frame))
 		return PTR_ERR(frame);
 
 	params.buf = frame;
 	params.len = len;
-	params.chan = wdev->preset_chandef.chan;
 
 	rc = wil_cfg80211_mgmt_tx(wiphy, wdev, &params, NULL);
 
@@ -1013,6 +1074,7 @@ static int wil_bf_debugfs_show(struct seq_file *s, void *data)
 			   "  TSF = 0x%016llx\n"
 			   "  TxMCS = %2d TxTpt = %4d\n"
 			   "  SQI = %4d\n"
+			   "  RSSI = %4d\n"
 			   "  Status = 0x%08x %s\n"
 			   "  Sectors(rx:tx) my %2d:%2d peer %2d:%2d\n"
 			   "  Goodput(rx:tx) %4d:%4d\n"
@@ -1022,6 +1084,7 @@ static int wil_bf_debugfs_show(struct seq_file *s, void *data)
 			   le16_to_cpu(reply.evt.bf_mcs),
 			   le32_to_cpu(reply.evt.tx_tpt),
 			   reply.evt.sqi,
+			   reply.evt.rssi,
 			   status, wil_bfstatus_str(status),
 			   le16_to_cpu(reply.evt.my_rx_sector),
 			   le16_to_cpu(reply.evt.my_tx_sector),
@@ -1043,50 +1106,6 @@ static const struct file_operations fops_bf = {
 	.release	= single_release,
 	.read		= seq_read,
 	.llseek		= seq_lseek,
-};
-
-/*---------SSID------------*/
-static ssize_t wil_read_file_ssid(struct file *file, char __user *user_buf,
-				  size_t count, loff_t *ppos)
-{
-	struct wil6210_priv *wil = file->private_data;
-	struct wireless_dev *wdev = wil_to_wdev(wil);
-
-	return simple_read_from_buffer(user_buf, count, ppos,
-				       wdev->ssid, wdev->ssid_len);
-}
-
-static ssize_t wil_write_file_ssid(struct file *file, const char __user *buf,
-				   size_t count, loff_t *ppos)
-{
-	struct wil6210_priv *wil = file->private_data;
-	struct wireless_dev *wdev = wil_to_wdev(wil);
-	struct net_device *ndev = wil_to_ndev(wil);
-
-	if (*ppos != 0) {
-		wil_err(wil, "Unable to set SSID substring from [%d]\n",
-			(int)*ppos);
-		return -EINVAL;
-	}
-
-	if (count > sizeof(wdev->ssid)) {
-		wil_err(wil, "SSID too long, len = %d\n", (int)count);
-		return -EINVAL;
-	}
-	if (netif_running(ndev)) {
-		wil_err(wil, "Unable to change SSID on running interface\n");
-		return -EINVAL;
-	}
-
-	wdev->ssid_len = count;
-	return simple_write_to_buffer(wdev->ssid, wdev->ssid_len, ppos,
-				      buf, count);
-}
-
-static const struct file_operations fops_ssid = {
-	.read = wil_read_file_ssid,
-	.write = wil_write_file_ssid,
-	.open  = simple_open,
 };
 
 /*---------temp------------*/
@@ -1621,24 +1640,41 @@ static ssize_t wil_read_suspend_stats(struct file *file,
 				      size_t count, loff_t *ppos)
 {
 	struct wil6210_priv *wil = file->private_data;
-	static char text[400];
-	int n;
+	char *text;
+	int n, ret, text_size = 500;
 
-	n = snprintf(text, sizeof(text),
-		     "Suspend statistics:\n"
+	text = kmalloc(text_size, GFP_KERNEL);
+	if (!text)
+		return -ENOMEM;
+
+	n = snprintf(text, text_size,
+		     "Radio on suspend statistics:\n"
 		     "successful suspends:%ld failed suspends:%ld\n"
 		     "successful resumes:%ld failed resumes:%ld\n"
-		     "rejected by host:%ld rejected by device:%ld\n",
-		     wil->suspend_stats.successful_suspends,
-		     wil->suspend_stats.failed_suspends,
-		     wil->suspend_stats.successful_resumes,
-		     wil->suspend_stats.failed_resumes,
-		     wil->suspend_stats.rejected_by_host,
-		     wil->suspend_stats.rejected_by_device);
+		     "rejected by device:%ld\n"
+		     "Radio off suspend statistics:\n"
+		     "successful suspends:%ld failed suspends:%ld\n"
+		     "successful resumes:%ld failed resumes:%ld\n"
+		     "General statistics:\n"
+		     "rejected by host:%ld\n",
+		     wil->suspend_stats.r_on.successful_suspends,
+		     wil->suspend_stats.r_on.failed_suspends,
+		     wil->suspend_stats.r_on.successful_resumes,
+		     wil->suspend_stats.r_on.failed_resumes,
+		     wil->suspend_stats.rejected_by_device,
+		     wil->suspend_stats.r_off.successful_suspends,
+		     wil->suspend_stats.r_off.failed_suspends,
+		     wil->suspend_stats.r_off.successful_resumes,
+		     wil->suspend_stats.r_off.failed_resumes,
+		     wil->suspend_stats.rejected_by_host);
 
-	n = min_t(int, n, sizeof(text));
+	n = min_t(int, n, text_size);
 
-	return simple_read_from_buffer(user_buf, count, ppos, text, n);
+	ret = simple_read_from_buffer(user_buf, count, ppos, text, n);
+
+	kfree(text);
+
+	return ret;
 }
 
 static const struct file_operations fops_suspend_stats = {
@@ -1681,7 +1717,6 @@ static const struct {
 	{"stations", 0444,		&fops_sta},
 	{"desc",	0444,		&fops_txdesc},
 	{"bf",		0444,		&fops_bf},
-	{"ssid",	0644,		&fops_ssid},
 	{"mem_val",	0644,		&fops_memread},
 	{"reset",	0244,		&fops_reset},
 	{"rxon",	0244,		&fops_rxon},
@@ -1747,6 +1782,7 @@ static const struct dbg_off dbg_wil_off[] = {
 	WIL_FIELD(chip_revision, 0444,	doff_u8),
 	WIL_FIELD(abft_len, 0644,		doff_u8),
 	WIL_FIELD(wakeup_trigger, 0644,		doff_u8),
+	WIL_FIELD(vring_idle_trsh, 0644,	doff_u32),
 	{},
 };
 
@@ -1762,19 +1798,34 @@ static const struct dbg_off dbg_statics[] = {
 	{"desc_index",	0644, (ulong)&dbg_txdesc_index, doff_u32},
 	{"vring_index",	0644, (ulong)&dbg_vring_index, doff_u32},
 	{"mem_addr",	0644, (ulong)&mem_addr, doff_u32},
-	{"vring_idle_trsh", 0644, (ulong)&vring_idle_trsh,
-	 doff_u32},
 	{"led_polarity", 0644, (ulong)&led_polarity, doff_u8},
 	{},
 };
+
+static const int dbg_off_count = 4 * (ARRAY_SIZE(isr_off) - 1) +
+				ARRAY_SIZE(dbg_wil_regs) - 1 +
+				ARRAY_SIZE(pseudo_isr_off) - 1 +
+				ARRAY_SIZE(lgc_itr_cnt_off) - 1 +
+				ARRAY_SIZE(tx_itr_cnt_off) - 1 +
+				ARRAY_SIZE(rx_itr_cnt_off) - 1;
 
 int wil6210_debugfs_init(struct wil6210_priv *wil)
 {
 	struct dentry *dbg = wil->debug = debugfs_create_dir(WIL_NAME,
 			wil_to_wiphy(wil)->debugfsdir);
-
 	if (IS_ERR_OR_NULL(dbg))
 		return -ENODEV;
+
+	wil->dbg_data.data_arr = kcalloc(dbg_off_count,
+					 sizeof(struct wil_debugfs_iomem_data),
+					 GFP_KERNEL);
+	if (!wil->dbg_data.data_arr) {
+		debugfs_remove_recursive(dbg);
+		wil->debug = NULL;
+		return -ENOMEM;
+	}
+
+	wil->dbg_data.iomem_data_count = 0;
 
 	wil_pmc_init(wil);
 
@@ -1797,6 +1848,8 @@ void wil6210_debugfs_remove(struct wil6210_priv *wil)
 {
 	debugfs_remove_recursive(wil->debug);
 	wil->debug = NULL;
+
+	kfree(wil->dbg_data.data_arr);
 
 	/* free pmc memory without sending command to fw, as it will
 	 * be reset on the way down anyway

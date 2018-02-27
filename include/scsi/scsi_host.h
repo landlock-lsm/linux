@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _SCSI_SCSI_HOST_H
 #define _SCSI_SCSI_HOST_H
 
@@ -570,6 +571,8 @@ struct Scsi_Host {
 		struct blk_mq_tag_set	tag_set;
 	};
 
+	struct rcu_head rcu;
+
 	atomic_t host_busy;		   /* commands actually active on low-level */
 	atomic_t host_blocked;
 
@@ -690,12 +693,6 @@ struct Scsi_Host {
 	/* Protection Information */
 	unsigned int prot_capabilities;
 	unsigned char prot_guard_type;
-
-	/*
-	 * q used for scsi_tgt msgs, async events or any other requests that
-	 * need to be processed in userspace
-	 */
-	struct request_queue *uspace_req_q;
 
 	/* legacy crap */
 	unsigned long base;

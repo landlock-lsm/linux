@@ -1,35 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * MUSB OTG driver core code
  *
  * Copyright 2005 Mentor Graphics Corporation
  * Copyright (C) 2005-2006 by Texas Instruments
  * Copyright (C) 2006-2007 Nokia Corporation
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
- *
- * THIS SOFTWARE IS PROVIDED "AS IS" AND ANY EXPRESS OR IMPLIED
- * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.  IN
- * NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
- * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF
- * USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
- * ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
- * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
  */
 
 /*
@@ -485,9 +460,9 @@ void musb_load_testpacket(struct musb *musb)
 /*
  * Handles OTG hnp timeouts, such as b_ase0_brst
  */
-static void musb_otg_timer_func(unsigned long data)
+static void musb_otg_timer_func(struct timer_list *t)
 {
-	struct musb	*musb = (struct musb *)data;
+	struct musb	*musb = from_timer(musb, t, otg_timer);
 	unsigned long	flags;
 
 	spin_lock_irqsave(&musb->lock, flags);
@@ -767,6 +742,7 @@ static irqreturn_t musb_stage0_irq(struct musb *musb, u8 int_usb,
 		case OTG_STATE_B_IDLE:
 			if (!musb->is_active)
 				break;
+			/* fall through */
 		case OTG_STATE_B_PERIPHERAL:
 			musb_g_suspend(musb);
 			musb->is_active = musb->g.b_hnp_enable;
@@ -906,7 +882,7 @@ b_host:
 	 */
 	if (int_usb & MUSB_INTR_RESET) {
 		handled = IRQ_HANDLED;
-		if (devctl & MUSB_DEVCTL_HM) {
+		if (is_host_active(musb)) {
 			/*
 			 * When BABBLE happens what we can depends on which
 			 * platform MUSB is running, because some platforms
@@ -916,9 +892,7 @@ b_host:
 			 * drop the session.
 			 */
 			dev_err(musb->controller, "Babble\n");
-
-			if (is_host_active(musb))
-				musb_recover_from_babble(musb);
+			musb_recover_from_babble(musb);
 		} else {
 			musb_dbg(musb, "BUS RESET as %s",
 				usb_otg_state_string(musb->xceiv->otg->state));
@@ -1156,8 +1130,8 @@ static struct musb_fifo_cfg mode_2_cfg[] = {
 { .hw_ep_num = 1, .style = FIFO_RX,   .maxpacket = 512, },
 { .hw_ep_num = 2, .style = FIFO_TX,   .maxpacket = 512, },
 { .hw_ep_num = 2, .style = FIFO_RX,   .maxpacket = 512, },
-{ .hw_ep_num = 3, .style = FIFO_RXTX, .maxpacket = 256, },
-{ .hw_ep_num = 4, .style = FIFO_RXTX, .maxpacket = 256, },
+{ .hw_ep_num = 3, .style = FIFO_RXTX, .maxpacket = 960, },
+{ .hw_ep_num = 4, .style = FIFO_RXTX, .maxpacket = 1024, },
 };
 
 /* mode 3 - fits in 4KB */
@@ -1713,7 +1687,7 @@ EXPORT_SYMBOL_GPL(musb_mailbox);
 /*-------------------------------------------------------------------------*/
 
 static ssize_t
-musb_mode_show(struct device *dev, struct device_attribute *attr, char *buf)
+mode_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct musb *musb = dev_to_musb(dev);
 	unsigned long flags;
@@ -1727,7 +1701,7 @@ musb_mode_show(struct device *dev, struct device_attribute *attr, char *buf)
 }
 
 static ssize_t
-musb_mode_store(struct device *dev, struct device_attribute *attr,
+mode_store(struct device *dev, struct device_attribute *attr,
 		const char *buf, size_t n)
 {
 	struct musb	*musb = dev_to_musb(dev);
@@ -1747,10 +1721,10 @@ musb_mode_store(struct device *dev, struct device_attribute *attr,
 
 	return (status == 0) ? n : status;
 }
-static DEVICE_ATTR(mode, 0644, musb_mode_show, musb_mode_store);
+static DEVICE_ATTR_RW(mode);
 
 static ssize_t
-musb_vbus_store(struct device *dev, struct device_attribute *attr,
+vbus_store(struct device *dev, struct device_attribute *attr,
 		const char *buf, size_t n)
 {
 	struct musb	*musb = dev_to_musb(dev);
@@ -1774,7 +1748,7 @@ musb_vbus_store(struct device *dev, struct device_attribute *attr,
 }
 
 static ssize_t
-musb_vbus_show(struct device *dev, struct device_attribute *attr, char *buf)
+vbus_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct musb	*musb = dev_to_musb(dev);
 	unsigned long	flags;
@@ -1799,13 +1773,12 @@ musb_vbus_show(struct device *dev, struct device_attribute *attr, char *buf)
 	return sprintf(buf, "Vbus %s, timeout %lu msec\n",
 			vbus ? "on" : "off", val);
 }
-static DEVICE_ATTR(vbus, 0644, musb_vbus_show, musb_vbus_store);
+static DEVICE_ATTR_RW(vbus);
 
 /* Gadget drivers can't know that a host is connected so they might want
  * to start SRP, but users can.  This allows userspace to trigger SRP.
  */
-static ssize_t
-musb_srp_store(struct device *dev, struct device_attribute *attr,
+static ssize_t srp_store(struct device *dev, struct device_attribute *attr,
 		const char *buf, size_t n)
 {
 	struct musb	*musb = dev_to_musb(dev);
@@ -1822,7 +1795,7 @@ musb_srp_store(struct device *dev, struct device_attribute *attr,
 
 	return n;
 }
-static DEVICE_ATTR(srp, 0644, NULL, musb_srp_store);
+static DEVICE_ATTR_WO(srp);
 
 static struct attribute *musb_attributes[] = {
 	&dev_attr_mode.attr,
@@ -1861,22 +1834,22 @@ static void musb_pm_runtime_check_session(struct musb *musb)
 		MUSB_DEVCTL_HR;
 	switch (devctl & ~s) {
 	case MUSB_QUIRK_B_INVALID_VBUS_91:
-		if (musb->quirk_retries--) {
+		if (musb->quirk_retries && !musb->flush_irq_work) {
 			musb_dbg(musb,
 				 "Poll devctl on invalid vbus, assume no session");
 			schedule_delayed_work(&musb->irq_work,
 					      msecs_to_jiffies(1000));
-
+			musb->quirk_retries--;
 			return;
 		}
 		/* fall through */
 	case MUSB_QUIRK_A_DISCONNECT_19:
-		if (musb->quirk_retries--) {
+		if (musb->quirk_retries && !musb->flush_irq_work) {
 			musb_dbg(musb,
 				 "Poll devctl on possible host mode disconnect");
 			schedule_delayed_work(&musb->irq_work,
 					      msecs_to_jiffies(1000));
-
+			musb->quirk_retries--;
 			return;
 		}
 		if (!musb->session)
@@ -2332,7 +2305,7 @@ musb_init_controller(struct device *dev, int nIrq, void __iomem *ctrl)
 	if (status < 0)
 		goto fail3;
 
-	setup_timer(&musb->otg_timer, musb_otg_timer_func, (unsigned long) musb);
+	timer_setup(&musb->otg_timer, musb_otg_timer_func, 0);
 
 	/* attach to the IRQ */
 	if (request_irq(nIrq, musb->isr, IRQF_SHARED, dev_name(dev), musb)) {
@@ -2671,11 +2644,25 @@ static int musb_suspend(struct device *dev)
 {
 	struct musb	*musb = dev_to_musb(dev);
 	unsigned long	flags;
+	int ret;
+
+	ret = pm_runtime_get_sync(dev);
+	if (ret < 0) {
+		pm_runtime_put_noidle(dev);
+		return ret;
+	}
 
 	musb_platform_disable(musb);
 	musb_disable_interrupts(musb);
+
+	musb->flush_irq_work = true;
+	while (flush_delayed_work(&musb->irq_work))
+		;
+	musb->flush_irq_work = false;
+
 	if (!(musb->io.quirks & MUSB_PRESERVE_SESSION))
 		musb_writeb(musb->mregs, MUSB_DEVCTL, 0);
+
 	WARN_ON(!list_empty(&musb->pending_list));
 
 	spin_lock_irqsave(&musb->lock, flags);
@@ -2721,14 +2708,6 @@ static int musb_resume(struct device *dev)
 	if ((devctl & mask) != (musb->context.devctl & mask))
 		musb->port1_status = 0;
 
-	/*
-	 * The USB HUB code expects the device to be in RPM_ACTIVE once it came
-	 * out of suspend
-	 */
-	pm_runtime_disable(dev);
-	pm_runtime_set_active(dev);
-	pm_runtime_enable(dev);
-
 	musb_start(musb);
 
 	spin_lock_irqsave(&musb->lock, flags);
@@ -2737,6 +2716,9 @@ static int musb_resume(struct device *dev)
 		dev_err(musb->controller, "resume work failed with %i\n",
 			error);
 	spin_unlock_irqrestore(&musb->lock, flags);
+
+	pm_runtime_mark_last_busy(dev);
+	pm_runtime_put_autosuspend(dev);
 
 	return 0;
 }

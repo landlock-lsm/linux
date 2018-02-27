@@ -1,7 +1,7 @@
 /*
- * Landlock rule - partial read-only filesystem
+ * Landlock sample 1 - whitelist of read only or read-write file hierarchy
  *
- * Copyright © 2017 Mickaël Salaün <mic@digikod.net>
+ * Copyright © 2017-2018 Mickaël Salaün <mic@digikod.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2, as
@@ -19,82 +19,153 @@
  */
 
 #include <uapi/linux/bpf.h>
-#include <uapi/linux/stat.h> /* S_ISCHR() */
+#include <uapi/linux/landlock.h>
+
 #include "bpf_helpers.h"
+#include "landlock1.h" /* MAP_MARK_* */
 
-/*
- * The function landlock_fs_prog1() is a simple Landlock rule enforced on a set
- * of processes. This rule will be run for each file-system operations and will
- * then forbid any write on a file-descriptor except if this file-descriptor
- * point to a pipe. Hence, it will not be possible to create new files nor to
- * modify a regular file.
- *
- * The argument ctx contains the context of the rule when it is run, which
- * enable to check which action on which file is requested. This context can
- * change for each run of the rule.
- */
-SEC("landlock1")
-static int landlock_fs_prog1(struct landlock_context *ctx)
-{
-	char fmt_error_mode[] = "landlock1: error: get_mode:%lld\n";
-	char fmt_error_access[] = "landlock1: error: access denied\n";
-	long long ret;
+SEC("maps")
+struct bpf_map_def inode_map = {
+	.type = BPF_MAP_TYPE_INODE,
+	.key_size = sizeof(u32),
+	.value_size = sizeof(u64),
+	.max_entries = 20,
+};
 
-	/*
-	 * The argument ctx->arg2 contains bitflags of actions for which the
-	 * rule is run.  The flag LANDLOCK_ACTION_FS_WRITE means that a write
-	 * is requested by one of the userspace processes restricted by this
-	 * rule. The following test allows any actions which does not include a
-	 * write.
-	 */
-	if (!(ctx->arg2 & LANDLOCK_ACTION_FS_WRITE))
-		return 0;
-
-	/*
-	 * The argument ctx->arg1 is a file handle for which the process want
-	 * to access. The function bpf_handle_fs_get_mode() return the mode of
-	 * a file (e.g. S_IFBLK, S_IFDIR, S_IFREG...). If there is an error,
-	 * for example if the argument is not a file handle, then an
-	 * -errno value is returned. Otherwise the caller get the file mode as
-	 *  with stat(2).
-	 */
-	ret = bpf_handle_fs_get_mode((void *)ctx->arg1);
-	if (ret < 0) {
-
-		/*
-		 * The bpf_trace_printk() function enable to write in the
-		 * kernel eBPF debug log, accessible through
-		 * /sys/kernel/debug/tracing/trace_pipe . To be allowed to call
-		 * this function, a Landlock rule must have the
-		 * LANDLOCK_SUBTYPE_ABILITY_DEBUG ability, which is only
-		 * allowed for CAP_SYS_ADMIN.
-		 */
-		bpf_trace_printk(fmt_error_mode, sizeof(fmt_error_mode), ret);
-		return 1;
+SEC("subtype/landlock1")
+static union bpf_prog_subtype _subtype1 = {
+	.landlock_hook = {
+		.type = LANDLOCK_HOOK_FS_WALK,
 	}
+};
 
-	/*
-	 * This check allows the action on the file if it is a directory or a
-	 * pipe. Otherwise, a message is printed to the eBPF log.
-	 */
-	if (S_ISCHR(ret) || S_ISFIFO(ret))
-		return 0;
-	bpf_trace_printk(fmt_error_access, sizeof(fmt_error_access));
-	return 1;
+static __always_inline __u64 update_cookie(__u64 cookie, __u8 lookup,
+		void *inode, void *chain, bool freeze)
+{
+	__u64 map_allow = 0;
+
+	if (cookie == 0) {
+		cookie = bpf_inode_get_tag(inode, chain);
+		if (cookie)
+			return cookie;
+		/* only look for the first match in the map, ignore nested
+		 * paths in this example */
+		map_allow = bpf_inode_map_lookup(&inode_map, inode);
+		if (map_allow)
+			cookie = 1 | map_allow;
+	} else {
+		if (cookie & COOKIE_VALUE_FREEZED)
+			return cookie;
+		map_allow = cookie & _MAP_MARK_MASK;
+		cookie &= ~_MAP_MARK_MASK;
+		switch (lookup) {
+		case LANDLOCK_CTX_FS_WALK_INODE_LOOKUP_DOTDOT:
+			cookie--;
+			break;
+		case LANDLOCK_CTX_FS_WALK_INODE_LOOKUP_DOT:
+			break;
+		default:
+			/* ignore _MAP_MARK_MASK overflow in this example */
+			cookie++;
+			break;
+		}
+		if (cookie >= 1)
+			cookie |= map_allow;
+	}
+	/* do not modify the cookie for each fs_pick */
+	if (freeze && cookie)
+		cookie |= COOKIE_VALUE_FREEZED;
+	return cookie;
 }
 
 /*
- * This subtype enable to set the ABI, which ensure that the eBPF context and
- * program behavior will be compatible with this Landlock rule.
+ * The function fs_walk() is a simple Landlock program enforced on a set of
+ * processes. This program will be run for each walk through a file path.
+ *
+ * The argument ctx contains the context of the program when it is run, which
+ * enable to evaluate the file path.  This context can change for each run of
+ * the program.
  */
-SEC("subtype")
-static const union bpf_prog_subtype _subtype = {
-	.landlock_rule = {
-		.abi = 1,
-		.event = LANDLOCK_SUBTYPE_EVENT_FS,
-		.ability = LANDLOCK_SUBTYPE_ABILITY_DEBUG,
+SEC("landlock1")
+int fs_walk(struct landlock_ctx_fs_walk *ctx)
+{
+	ctx->cookie = update_cookie(ctx->cookie, ctx->inode_lookup,
+			(void *)ctx->inode, (void *)ctx->chain, false);
+	return LANDLOCK_RET_ALLOW;
+}
+
+SEC("subtype/landlock2")
+static union bpf_prog_subtype _subtype2 = {
+	.landlock_hook = {
+		.type = LANDLOCK_HOOK_FS_PICK,
+		.options = LANDLOCK_OPTION_PREVIOUS,
+		.previous = 1, /* landlock1 */
+		.triggers = LANDLOCK_TRIGGER_FS_PICK_CHDIR |
+			    LANDLOCK_TRIGGER_FS_PICK_GETATTR |
+			    LANDLOCK_TRIGGER_FS_PICK_READDIR |
+			    LANDLOCK_TRIGGER_FS_PICK_TRANSFER |
+			    LANDLOCK_TRIGGER_FS_PICK_OPEN,
 	}
 };
+
+SEC("landlock2")
+int fs_pick_ro(struct landlock_ctx_fs_pick *ctx)
+{
+	ctx->cookie = update_cookie(ctx->cookie, ctx->inode_lookup,
+			(void *)ctx->inode, (void *)ctx->chain, true);
+	if (ctx->cookie & MAP_MARK_READ)
+		return LANDLOCK_RET_ALLOW;
+	return LANDLOCK_RET_DENY;
+}
+
+SEC("subtype/landlock3")
+static union bpf_prog_subtype _subtype3 = {
+	.landlock_hook = {
+		.type = LANDLOCK_HOOK_FS_PICK,
+		.options = LANDLOCK_OPTION_PREVIOUS,
+		.previous = 2, /* landlock2 */
+		.triggers = LANDLOCK_TRIGGER_FS_PICK_APPEND |
+			    LANDLOCK_TRIGGER_FS_PICK_CREATE |
+			    LANDLOCK_TRIGGER_FS_PICK_LINK |
+			    LANDLOCK_TRIGGER_FS_PICK_LINKTO |
+			    LANDLOCK_TRIGGER_FS_PICK_LOCK |
+			    LANDLOCK_TRIGGER_FS_PICK_MOUNTON |
+			    LANDLOCK_TRIGGER_FS_PICK_RENAME |
+			    LANDLOCK_TRIGGER_FS_PICK_RENAMETO |
+			    LANDLOCK_TRIGGER_FS_PICK_RMDIR |
+			    LANDLOCK_TRIGGER_FS_PICK_SETATTR |
+			    LANDLOCK_TRIGGER_FS_PICK_UNLINK |
+			    LANDLOCK_TRIGGER_FS_PICK_WRITE,
+	}
+};
+
+SEC("landlock3")
+int fs_pick_rw(struct landlock_ctx_fs_pick *ctx)
+{
+	ctx->cookie = update_cookie(ctx->cookie, ctx->inode_lookup,
+			(void *)ctx->inode, (void *)ctx->chain, true);
+	if (ctx->cookie & MAP_MARK_WRITE)
+		return LANDLOCK_RET_ALLOW;
+	return LANDLOCK_RET_DENY;
+}
+
+SEC("subtype/landlock4")
+static union bpf_prog_subtype _subtype4 = {
+	.landlock_hook = {
+		.type = LANDLOCK_HOOK_FS_GET,
+		.options = LANDLOCK_OPTION_PREVIOUS,
+		.previous = 3, /* landlock3 */
+	}
+};
+
+SEC("landlock4")
+int fs_get(struct landlock_ctx_fs_get *ctx)
+{
+	/* save the cookie in the tag for relative path lookup */
+	bpf_landlock_set_tag((void *)ctx->tag_object, (void *)ctx->chain,
+			ctx->cookie & ~COOKIE_VALUE_FREEZED);
+	return LANDLOCK_RET_ALLOW;
+}
 
 SEC("license")
 static const char _license[] = "GPL";

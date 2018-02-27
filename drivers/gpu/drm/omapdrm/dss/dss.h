@@ -1,6 +1,4 @@
 /*
- * linux/drivers/video/omap2/dss/dss.h
- *
  * Copyright (C) 2009 Nokia Corporation
  * Author: Tomi Valkeinen <tomi.valkeinen@nokia.com>
  *
@@ -26,6 +24,9 @@
 #include <linux/interrupt.h>
 
 #include "omapdss.h"
+
+#define MAX_DSS_LCD_MANAGERS	3
+#define MAX_NUM_DSI		2
 
 #ifdef pr_fmt
 #undef pr_fmt
@@ -71,6 +72,14 @@
 #define FLD_GET(val, start, end) (((val) & FLD_MASK(start, end)) >> (end))
 #define FLD_MOD(orig, val, start, end) \
 	(((orig) & ~FLD_MASK(start, end)) | FLD_VAL(val, start, end))
+
+enum dss_model {
+	DSS_MODEL_OMAP2,
+	DSS_MODEL_OMAP3,
+	DSS_MODEL_OMAP4,
+	DSS_MODEL_OMAP5,
+	DSS_MODEL_DRA7,
+};
 
 enum dss_io_pad_mode {
 	DSS_IO_PAD_MODE_RESET,
@@ -174,6 +183,9 @@ struct dss_pll_hw {
 	bool has_freqsel;
 	bool has_selfreqdco;
 	bool has_refsel;
+
+	/* DRA7 errata i886: use high N & M to avoid jitter */
+	bool errata_i886;
 };
 
 struct dss_pll {
@@ -190,6 +202,11 @@ struct dss_pll {
 	const struct dss_pll_ops *ops;
 
 	struct dss_pll_clock_info cinfo;
+};
+
+/* Defines a generic omap register field */
+struct dss_reg_field {
+	u8 start, end;
 };
 
 struct dispc_clock_info {
@@ -219,10 +236,11 @@ struct seq_file;
 struct platform_device;
 
 /* core */
-int dss_dsi_enable_pads(int dsi_id, unsigned lane_mask);
-void dss_dsi_disable_pads(int dsi_id, unsigned lane_mask);
-int dss_set_min_bus_tput(struct device *dev, unsigned long tput);
-int dss_debugfs_create_file(const char *name, void (*write)(struct seq_file *));
+static inline int dss_set_min_bus_tput(struct device *dev, unsigned long tput)
+{
+	/* To be implemented when the OMAP platform will provide this feature */
+	return 0;
+}
 
 static inline bool dss_mgr_is_lcd(enum omap_channel id)
 {
@@ -234,27 +252,31 @@ static inline bool dss_mgr_is_lcd(enum omap_channel id)
 }
 
 /* DSS */
-int dss_init_platform_driver(void) __init;
-void dss_uninit_platform_driver(void);
+#if defined(CONFIG_OMAP2_DSS_DEBUGFS)
+int dss_debugfs_create_file(const char *name, void (*write)(struct seq_file *));
+#else
+static inline int dss_debugfs_create_file(const char *name,
+					  void (*write)(struct seq_file *))
+{
+	return 0;
+}
+#endif /* CONFIG_OMAP2_DSS_DEBUGFS */
 
 int dss_runtime_get(void);
 void dss_runtime_put(void);
 
 unsigned long dss_get_dispc_clk_rate(void);
+unsigned long dss_get_max_fck_rate(void);
+enum omap_dss_output_id dss_get_supported_outputs(enum omap_channel channel);
 int dss_dpi_select_source(int port, enum omap_channel channel);
 void dss_select_hdmi_venc_clk_source(enum dss_hdmi_venc_clk_source_select);
 enum dss_hdmi_venc_clk_source_select dss_get_hdmi_venc_clk_source(void);
 const char *dss_get_clk_source_name(enum dss_clk_source clk_src);
-void dss_dump_clocks(struct seq_file *s);
 
 /* DSS VIDEO PLL */
 struct dss_pll *dss_video_pll_init(struct platform_device *pdev, int id,
 	struct regulator *regulator);
 void dss_video_pll_uninit(struct dss_pll *pll);
-
-#if defined(CONFIG_OMAP2_DSS_DEBUGFS)
-void dss_debug_dump_clocks(struct seq_file *s);
-#endif
 
 void dss_ctrl_pll_enable(enum dss_pll_id pll_id, bool enable);
 
@@ -301,9 +323,6 @@ static inline void sdi_uninit_port(struct device_node *port)
 struct dentry;
 struct file_operations;
 
-int dsi_init_platform_driver(void) __init;
-void dsi_uninit_platform_driver(void);
-
 void dsi_dump_clocks(struct seq_file *s);
 
 void dsi_irq_handler(void);
@@ -312,11 +331,12 @@ void dsi_irq_handler(void);
 
 /* DPI */
 #ifdef CONFIG_OMAP2_DSS_DPI
-int dpi_init_port(struct platform_device *pdev, struct device_node *port);
+int dpi_init_port(struct platform_device *pdev, struct device_node *port,
+		  enum dss_model dss_model);
 void dpi_uninit_port(struct device_node *port);
 #else
 static inline int dpi_init_port(struct platform_device *pdev,
-		struct device_node *port)
+		struct device_node *port, enum dss_model dss_model)
 {
 	return 0;
 }
@@ -326,8 +346,6 @@ static inline void dpi_uninit_port(struct device_node *port)
 #endif
 
 /* DISPC */
-int dispc_init_platform_driver(void) __init;
-void dispc_uninit_platform_driver(void);
 void dispc_dump_clocks(struct seq_file *s);
 
 int dispc_runtime_get(void);
@@ -371,18 +389,6 @@ void dispc_wb_set_channel_in(enum dss_writeback_channel channel);
 int dispc_wb_setup(const struct omap_dss_writeback_info *wi,
 		bool mem_to_mem, const struct videomode *vm);
 
-/* VENC */
-int venc_init_platform_driver(void) __init;
-void venc_uninit_platform_driver(void);
-
-/* HDMI */
-int hdmi4_init_platform_driver(void) __init;
-void hdmi4_uninit_platform_driver(void);
-
-int hdmi5_init_platform_driver(void) __init;
-void hdmi5_uninit_platform_driver(void);
-
-
 #ifdef CONFIG_OMAP2_DSS_COLLECT_IRQ_STATS
 static inline void dss_collect_irq_stats(u32 irqstatus, unsigned *irq_arr)
 {
@@ -425,5 +431,20 @@ int dss_pll_write_config_type_a(struct dss_pll *pll,
 int dss_pll_write_config_type_b(struct dss_pll *pll,
 		const struct dss_pll_clock_info *cinfo);
 int dss_pll_wait_reset_done(struct dss_pll *pll);
+
+extern struct platform_driver omap_dsshw_driver;
+extern struct platform_driver omap_dispchw_driver;
+#ifdef CONFIG_OMAP2_DSS_DSI
+extern struct platform_driver omap_dsihw_driver;
+#endif
+#ifdef CONFIG_OMAP2_DSS_VENC
+extern struct platform_driver omap_venchw_driver;
+#endif
+#ifdef CONFIG_OMAP4_DSS_HDMI
+extern struct platform_driver omapdss_hdmi4hw_driver;
+#endif
+#ifdef CONFIG_OMAP5_DSS_HDMI
+extern struct platform_driver omapdss_hdmi5hw_driver;
+#endif
 
 #endif

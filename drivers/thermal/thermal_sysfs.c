@@ -317,7 +317,7 @@ emul_temp_store(struct device *dev, struct device_attribute *attr,
 
 	return ret ? ret : count;
 }
-static DEVICE_ATTR(emul_temp, S_IWUSR, NULL, emul_temp_store);
+static DEVICE_ATTR_WO(emul_temp);
 #endif
 
 static ssize_t
@@ -396,16 +396,15 @@ create_s32_tzp_attr(offset);
  * All the attributes created for tzp (create_s32_tzp_attr) also are always
  * present on the sysfs interface.
  */
-static DEVICE_ATTR(type, 0444, type_show, NULL);
-static DEVICE_ATTR(temp, 0444, temp_show, NULL);
-static DEVICE_ATTR(policy, S_IRUGO | S_IWUSR, policy_show, policy_store);
-static DEVICE_ATTR(available_policies, S_IRUGO, available_policies_show, NULL);
-static DEVICE_ATTR(sustainable_power, S_IWUSR | S_IRUGO, sustainable_power_show,
-		   sustainable_power_store);
+static DEVICE_ATTR_RO(type);
+static DEVICE_ATTR_RO(temp);
+static DEVICE_ATTR_RW(policy);
+static DEVICE_ATTR_RO(available_policies);
+static DEVICE_ATTR_RW(sustainable_power);
 
 /* These thermal zone device attributes are created based on conditions */
-static DEVICE_ATTR(mode, 0644, mode_show, mode_store);
-static DEVICE_ATTR(passive, S_IRUGO | S_IWUSR, passive_show, passive_store);
+static DEVICE_ATTR_RW(mode);
+static DEVICE_ATTR_RW(passive);
 
 /* These attributes are unconditionally added to a thermal zone */
 static struct attribute *thermal_zone_dev_attrs[] = {
@@ -605,6 +604,24 @@ static int create_trip_attrs(struct thermal_zone_device *tz, int mask)
 	return 0;
 }
 
+/**
+ * destroy_trip_attrs() - destroy attributes for trip points
+ * @tz:		the thermal zone device
+ *
+ * helper function to free resources allocated by create_trip_attrs()
+ */
+static void destroy_trip_attrs(struct thermal_zone_device *tz)
+{
+	if (!tz)
+		return;
+
+	kfree(tz->trip_type_attrs);
+	kfree(tz->trip_temp_attrs);
+	if (tz->ops->get_trip_hyst)
+		kfree(tz->trip_hyst_attrs);
+	kfree(tz->trips_attribute_group.attrs);
+}
+
 int thermal_zone_create_device_groups(struct thermal_zone_device *tz,
 				      int mask)
 {
@@ -635,6 +652,17 @@ int thermal_zone_create_device_groups(struct thermal_zone_device *tz,
 	tz->device.groups = groups;
 
 	return 0;
+}
+
+void thermal_zone_destroy_device_groups(struct thermal_zone_device *tz)
+{
+	if (!tz)
+		return;
+
+	if (tz->trips)
+		destroy_trip_attrs(tz);
+
+	kfree(tz->device.groups);
 }
 
 /* sys I/F for cooling device */

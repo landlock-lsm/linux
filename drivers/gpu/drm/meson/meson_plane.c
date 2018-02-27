@@ -61,10 +61,10 @@ static int meson_plane_atomic_check(struct drm_plane *plane,
 	clip.x2 = crtc_state->mode.hdisplay;
 	clip.y2 = crtc_state->mode.vdisplay;
 
-	return drm_plane_helper_check_state(state, &clip,
-					    DRM_PLANE_HELPER_NO_SCALING,
-					    DRM_PLANE_HELPER_NO_SCALING,
-					    true, true);
+	return drm_atomic_helper_check_plane_state(state, crtc_state, &clip,
+						   DRM_PLANE_HELPER_NO_SCALING,
+						   DRM_PLANE_HELPER_NO_SCALING,
+						   true, true);
 }
 
 /* Takes a fixed 16.16 number and converts it to integer. */
@@ -223,6 +223,7 @@ int meson_plane_create(struct meson_drm *priv)
 				 &meson_plane_funcs,
 				 supported_drm_formats,
 				 ARRAY_SIZE(supported_drm_formats),
+				 NULL,
 				 DRM_PLANE_TYPE_PRIMARY, "meson_primary_plane");
 
 	drm_plane_helper_add(plane, &meson_plane_helper_funcs);

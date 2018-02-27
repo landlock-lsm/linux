@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2017, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -184,6 +184,7 @@ acpi_ds_create_buffer_field(union acpi_parse_object *op,
 		/* Execute flag should always be set when this function is entered */
 
 		if (!(walk_state->parse_flags & ACPI_PARSE_EXECUTE)) {
+			ACPI_ERROR((AE_INFO, "Parse execute mode is not set"));
 			return_ACPI_STATUS(AE_AML_INTERNAL);
 		}
 
@@ -208,7 +209,8 @@ acpi_ds_create_buffer_field(union acpi_parse_object *op,
 					ACPI_IMODE_LOAD_PASS1, flags,
 					walk_state, &node);
 		if (ACPI_FAILURE(status)) {
-			ACPI_ERROR_NAMESPACE(arg->common.value.string, status);
+			ACPI_ERROR_NAMESPACE(walk_state->scope_info,
+					     arg->common.value.string, status);
 			return_ACPI_STATUS(status);
 		}
 	}
@@ -382,7 +384,9 @@ acpi_ds_get_field_names(struct acpi_create_field_info *info,
 							walk_state,
 							&info->connection_node);
 				if (ACPI_FAILURE(status)) {
-					ACPI_ERROR_NAMESPACE(child->common.
+					ACPI_ERROR_NAMESPACE(walk_state->
+							     scope_info,
+							     child->common.
 							     value.name,
 							     status);
 					return_ACPI_STATUS(status);
@@ -401,7 +405,8 @@ acpi_ds_get_field_names(struct acpi_create_field_info *info,
 						ACPI_NS_DONT_OPEN_SCOPE,
 						walk_state, &info->field_node);
 			if (ACPI_FAILURE(status)) {
-				ACPI_ERROR_NAMESPACE((char *)&arg->named.name,
+				ACPI_ERROR_NAMESPACE(walk_state->scope_info,
+						     (char *)&arg->named.name,
 						     status);
 				return_ACPI_STATUS(status);
 			} else {
@@ -497,7 +502,8 @@ acpi_ds_create_field(union acpi_parse_object *op,
 							&region_node);
 #endif
 		if (ACPI_FAILURE(status)) {
-			ACPI_ERROR_NAMESPACE(arg->common.value.name, status);
+			ACPI_ERROR_NAMESPACE(walk_state->scope_info,
+					     arg->common.value.name, status);
 			return_ACPI_STATUS(status);
 		}
 	}
@@ -556,6 +562,7 @@ acpi_ds_init_field_objects(union acpi_parse_object *op,
 			return_ACPI_STATUS(AE_OK);
 		}
 
+		ACPI_ERROR((AE_INFO, "Parse deferred mode is not set"));
 		return_ACPI_STATUS(AE_AML_INTERNAL);
 	}
 
@@ -616,7 +623,8 @@ acpi_ds_init_field_objects(union acpi_parse_object *op,
 						ACPI_IMODE_LOAD_PASS1, flags,
 						walk_state, &node);
 			if (ACPI_FAILURE(status)) {
-				ACPI_ERROR_NAMESPACE((char *)&arg->named.name,
+				ACPI_ERROR_NAMESPACE(walk_state->scope_info,
+						     (char *)&arg->named.name,
 						     status);
 				if (status != AE_ALREADY_EXISTS) {
 					return_ACPI_STATUS(status);
@@ -679,7 +687,8 @@ acpi_ds_create_bank_field(union acpi_parse_object *op,
 							&region_node);
 #endif
 		if (ACPI_FAILURE(status)) {
-			ACPI_ERROR_NAMESPACE(arg->common.value.name, status);
+			ACPI_ERROR_NAMESPACE(walk_state->scope_info,
+					     arg->common.value.name, status);
 			return_ACPI_STATUS(status);
 		}
 	}
@@ -693,7 +702,8 @@ acpi_ds_create_bank_field(union acpi_parse_object *op,
 			   ACPI_NS_SEARCH_PARENT, walk_state,
 			   &info.register_node);
 	if (ACPI_FAILURE(status)) {
-		ACPI_ERROR_NAMESPACE(arg->common.value.string, status);
+		ACPI_ERROR_NAMESPACE(walk_state->scope_info,
+				     arg->common.value.string, status);
 		return_ACPI_STATUS(status);
 	}
 
@@ -763,7 +773,8 @@ acpi_ds_create_index_field(union acpi_parse_object *op,
 			   ACPI_NS_SEARCH_PARENT, walk_state,
 			   &info.register_node);
 	if (ACPI_FAILURE(status)) {
-		ACPI_ERROR_NAMESPACE(arg->common.value.string, status);
+		ACPI_ERROR_NAMESPACE(walk_state->scope_info,
+				     arg->common.value.string, status);
 		return_ACPI_STATUS(status);
 	}
 
@@ -776,7 +787,8 @@ acpi_ds_create_index_field(union acpi_parse_object *op,
 			   ACPI_NS_SEARCH_PARENT, walk_state,
 			   &info.data_register_node);
 	if (ACPI_FAILURE(status)) {
-		ACPI_ERROR_NAMESPACE(arg->common.value.string, status);
+		ACPI_ERROR_NAMESPACE(walk_state->scope_info,
+				     arg->common.value.string, status);
 		return_ACPI_STATUS(status);
 	}
 

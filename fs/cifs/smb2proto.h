@@ -125,13 +125,16 @@ extern int SMB2_open(const unsigned int xid, struct cifs_open_parms *oparms,
 		     struct smb2_err_rsp **err_buf);
 extern int SMB2_ioctl(const unsigned int xid, struct cifs_tcon *tcon,
 		     u64 persistent_fid, u64 volatile_fid, u32 opcode,
-		     bool is_fsctl, bool use_ipc,
-		     char *in_data, u32 indatalen,
+		     bool is_fsctl, char *in_data, u32 indatalen,
 		     char **out_data, u32 *plen /* returned data len */);
 extern int SMB2_close(const unsigned int xid, struct cifs_tcon *tcon,
 		      u64 persistent_file_id, u64 volatile_file_id);
 extern int SMB2_flush(const unsigned int xid, struct cifs_tcon *tcon,
 		      u64 persistent_file_id, u64 volatile_file_id);
+extern int SMB2_query_eas(const unsigned int xid, struct cifs_tcon *tcon,
+			  u64 persistent_file_id, u64 volatile_file_id,
+			  int ea_buf_size,
+			  struct smb2_file_full_ea_info *data);
 extern int SMB2_query_info(const unsigned int xid, struct cifs_tcon *tcon,
 			   u64 persistent_file_id, u64 volatile_file_id,
 			   struct smb2_file_all_info *data);
@@ -169,6 +172,9 @@ extern int SMB2_set_info(const unsigned int xid, struct cifs_tcon *tcon,
 extern int SMB2_set_acl(const unsigned int xid, struct cifs_tcon *tcon,
 			u64 persistent_fid, u64 volatile_fid,
 			struct cifs_ntsd *pnntsd, int pacllen, int aclflag);
+extern int SMB2_set_ea(const unsigned int xid, struct cifs_tcon *tcon,
+		       u64 persistent_fid, u64 volatile_fid,
+		       struct smb2_file_full_ea_info *buf, int len);
 extern int SMB2_set_compression(const unsigned int xid, struct cifs_tcon *tcon,
 				u64 persistent_fid, u64 volatile_fid);
 extern int SMB2_oplock_break(const unsigned int xid, struct cifs_tcon *tcon,

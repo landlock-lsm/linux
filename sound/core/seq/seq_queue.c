@@ -184,22 +184,26 @@ void __exit snd_seq_queues_delete(void)
 static void queue_use(struct snd_seq_queue *queue, int client, int use);
 
 /* allocate a new queue -
- * return queue index value or negative value for error
+ * return pointer to new queue or ERR_PTR(-errno) for error
+ * The new queue's use_lock is set to 1. It is the caller's responsibility to
+ * call snd_use_lock_free(&q->use_lock).
  */
-int snd_seq_queue_alloc(int client, int locked, unsigned int info_flags)
+struct snd_seq_queue *snd_seq_queue_alloc(int client, int locked, unsigned int info_flags)
 {
 	struct snd_seq_queue *q;
 
 	q = queue_new(client, locked);
 	if (q == NULL)
-		return -ENOMEM;
+		return ERR_PTR(-ENOMEM);
 	q->info_flags = info_flags;
 	queue_use(q, client, 1);
+	snd_use_lock_use(&q->use_lock);
 	if (queue_list_add(q) < 0) {
+		snd_use_lock_free(&q->use_lock);
 		queue_delete(q);
-		return -ENOMEM;
+		return ERR_PTR(-ENOMEM);
 	}
-	return q->queue;
+	return q;
 }
 
 /* delete a queue - queue must be owned by the client */
@@ -493,9 +497,7 @@ int snd_seq_queue_timer_set_tempo(int queueid, int client,
 		return -EPERM;
 	}
 
-	result = snd_seq_timer_set_tempo(q->timer, info->tempo);
-	if (result >= 0)
-		result = snd_seq_timer_set_ppq(q->timer, info->ppq);
+	result = snd_seq_timer_set_tempo_ppq(q->timer, info->tempo, info->ppq);
 	if (result >= 0 && info->skew_base > 0)
 		result = snd_seq_timer_set_skew(q->timer, info->skew_value,
 						info->skew_base);

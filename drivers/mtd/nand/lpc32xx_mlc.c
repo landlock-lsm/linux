@@ -27,7 +27,7 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/mtd/mtd.h>
-#include <linux/mtd/nand.h>
+#include <linux/mtd/rawnand.h>
 #include <linux/mtd/partitions.h>
 #include <linux/clk.h>
 #include <linux/err.h>
@@ -461,7 +461,7 @@ static int lpc32xx_read_page(struct mtd_info *mtd, struct nand_chip *chip,
 	}
 
 	/* Writing Command and Address */
-	chip->cmdfunc(mtd, NAND_CMD_READ0, 0, page);
+	nand_read_page_op(chip, page, 0, NULL, 0);
 
 	/* For all sub-pages */
 	for (i = 0; i < host->mlcsubpages; i++) {
@@ -522,6 +522,8 @@ static int lpc32xx_write_page_lowlevel(struct mtd_info *mtd,
 		memcpy(dma_buf, buf, mtd->writesize);
 	}
 
+	nand_prog_page_begin_op(chip, page, 0, NULL, 0);
+
 	for (i = 0; i < host->mlcsubpages; i++) {
 		/* Start Encode */
 		writeb(0x00, MLC_ECC_ENC_REG(host->io_base));
@@ -550,7 +552,8 @@ static int lpc32xx_write_page_lowlevel(struct mtd_info *mtd,
 		/* Wait for Controller Ready */
 		lpc32xx_waitfunc_controller(mtd, chip);
 	}
-	return 0;
+
+	return nand_prog_page_end_op(chip);
 }
 
 static int lpc32xx_read_oob(struct mtd_info *mtd, struct nand_chip *chip,
@@ -705,7 +708,9 @@ static int lpc32xx_nand_probe(struct platform_device *pdev)
 		res = -ENOENT;
 		goto err_exit1;
 	}
-	clk_prepare_enable(host->clk);
+	res = clk_prepare_enable(host->clk);
+	if (res)
+		goto err_put_clk;
 
 	nand_chip->cmd_ctrl = lpc32xx_nand_cmd_ctrl;
 	nand_chip->dev_ready = lpc32xx_nand_device_ready;
@@ -812,6 +817,7 @@ err_exit3:
 		dma_release_channel(host->dma_chan);
 err_exit2:
 	clk_disable_unprepare(host->clk);
+err_put_clk:
 	clk_put(host->clk);
 err_exit1:
 	lpc32xx_wp_enable(host);
@@ -846,9 +852,12 @@ static int lpc32xx_nand_remove(struct platform_device *pdev)
 static int lpc32xx_nand_resume(struct platform_device *pdev)
 {
 	struct lpc32xx_nand_host *host = platform_get_drvdata(pdev);
+	int ret;
 
 	/* Re-enable NAND clock */
-	clk_prepare_enable(host->clk);
+	ret = clk_prepare_enable(host->clk);
+	if (ret)
+		return ret;
 
 	/* Fresh init of NAND controller */
 	lpc32xx_nand_setup(host);

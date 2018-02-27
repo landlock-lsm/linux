@@ -93,6 +93,8 @@ static void iwl_read_radio_regs(struct iwl_fw_runtime *fwrt,
 	unsigned long flags;
 	int i;
 
+	IWL_DEBUG_INFO(fwrt, "WRT radio registers dump\n");
+
 	if (!iwl_trans_grab_nic_access(fwrt->trans, &flags))
 		return;
 
@@ -232,6 +234,8 @@ static void iwl_fw_dump_fifos(struct iwl_fw_runtime *fwrt,
 	u32 fifo_len;
 	unsigned long flags;
 	int i, j;
+
+	IWL_DEBUG_INFO(fwrt, "WRT FIFO dump\n");
 
 	if (!iwl_trans_grab_nic_access(fwrt->trans, &flags))
 		return;
@@ -476,6 +480,8 @@ static void iwl_dump_prph(struct iwl_trans *trans,
 	unsigned long flags;
 	u32 i;
 
+	IWL_DEBUG_INFO(trans, "WRT PRPH dump\n");
+
 	if (!iwl_trans_grab_nic_access(trans, &flags))
 		return;
 
@@ -545,17 +551,21 @@ void iwl_fw_error_dump(struct iwl_fw_runtime *fwrt)
 	struct iwl_fw_error_dump_data *dump_data;
 	struct iwl_fw_error_dump_info *dump_info;
 	struct iwl_fw_error_dump_mem *dump_mem;
+	struct iwl_fw_error_dump_smem_cfg *dump_smem_cfg;
 	struct iwl_fw_error_dump_trigger_desc *dump_trig;
 	struct iwl_fw_dump_ptrs *fw_error_dump;
 	struct scatterlist *sg_dump_data;
 	u32 sram_len, sram_ofs;
 	const struct iwl_fw_dbg_mem_seg_tlv *fw_dbg_mem = fwrt->fw->dbg_mem_tlv;
+	struct iwl_fwrt_shared_mem_cfg *mem_cfg = &fwrt->smem_cfg;
 	u32 file_len, fifo_data_len = 0, prph_len = 0, radio_len = 0;
 	u32 smem_len = fwrt->fw->n_dbg_mem_tlv ? 0 : fwrt->trans->cfg->smem_len;
 	u32 sram2_len = fwrt->fw->n_dbg_mem_tlv ?
 				0 : fwrt->trans->cfg->dccm2_len;
 	bool monitor_dump_only = false;
 	int i;
+
+	IWL_DEBUG_INFO(fwrt, "WRT dump start\n");
 
 	/* there's no point in fw dump if the bus is dead */
 	if (test_bit(STATUS_TRANS_DEAD, &fwrt->trans->status)) {
@@ -585,8 +595,6 @@ void iwl_fw_error_dump(struct iwl_fw_runtime *fwrt)
 
 	/* reading RXF/TXF sizes */
 	if (test_bit(STATUS_FW_ERROR, &fwrt->trans->status)) {
-		struct iwl_fwrt_shared_mem_cfg *mem_cfg = &fwrt->smem_cfg;
-
 		fifo_data_len = 0;
 
 		/* Count RXF2 size */
@@ -675,7 +683,8 @@ void iwl_fw_error_dump(struct iwl_fw_runtime *fwrt)
 	}
 
 	file_len = sizeof(*dump_file) +
-		   sizeof(*dump_data) * 2 +
+		   sizeof(*dump_data) * 3 +
+		   sizeof(*dump_smem_cfg) +
 		   fifo_data_len +
 		   prph_len +
 		   radio_len +
@@ -706,8 +715,8 @@ void iwl_fw_error_dump(struct iwl_fw_runtime *fwrt)
 
 	/* If we only want a monitor dump, reset the file length */
 	if (monitor_dump_only) {
-		file_len = sizeof(*dump_file) + sizeof(*dump_data) +
-			   sizeof(*dump_info);
+		file_len = sizeof(*dump_file) + sizeof(*dump_data) * 2 +
+			   sizeof(*dump_info) + sizeof(*dump_smem_cfg);
 	}
 
 	if (fwrt->dump.desc)
@@ -744,6 +753,33 @@ void iwl_fw_error_dump(struct iwl_fw_runtime *fwrt)
 		sizeof(dump_info->bus_human_readable));
 
 	dump_data = iwl_fw_error_next_data(dump_data);
+
+	/* Dump shared memory configuration */
+	dump_data->type = cpu_to_le32(IWL_FW_ERROR_DUMP_MEM_CFG);
+	dump_data->len = cpu_to_le32(sizeof(*dump_smem_cfg));
+	dump_smem_cfg = (void *)dump_data->data;
+	dump_smem_cfg->num_lmacs = cpu_to_le32(mem_cfg->num_lmacs);
+	dump_smem_cfg->num_txfifo_entries =
+		cpu_to_le32(mem_cfg->num_txfifo_entries);
+	for (i = 0; i < MAX_NUM_LMAC; i++) {
+		int j;
+
+		for (j = 0; j < TX_FIFO_MAX_NUM; j++)
+			dump_smem_cfg->lmac[i].txfifo_size[j] =
+				cpu_to_le32(mem_cfg->lmac[i].txfifo_size[j]);
+		dump_smem_cfg->lmac[i].rxfifo1_size =
+			cpu_to_le32(mem_cfg->lmac[i].rxfifo1_size);
+	}
+	dump_smem_cfg->rxfifo2_size = cpu_to_le32(mem_cfg->rxfifo2_size);
+	dump_smem_cfg->internal_txfifo_addr =
+		cpu_to_le32(mem_cfg->internal_txfifo_addr);
+	for (i = 0; i < TX_FIFO_INTERNAL_MAX_NUM; i++) {
+		dump_smem_cfg->internal_txfifo_size[i] =
+			cpu_to_le32(mem_cfg->internal_txfifo_size[i]);
+	}
+
+	dump_data = iwl_fw_error_next_data(dump_data);
+
 	/* We only dump the FIFOs if the FW is in error state */
 	if (test_bit(STATUS_FW_ERROR, &fwrt->trans->status)) {
 		iwl_fw_dump_fifos(fwrt, &dump_data);
@@ -788,6 +824,9 @@ void iwl_fw_error_dump(struct iwl_fw_runtime *fwrt)
 		dump_mem->type = fw_dbg_mem[i].data_type;
 		dump_mem->offset = cpu_to_le32(ofs);
 
+		IWL_DEBUG_INFO(fwrt, "WRT memory dump. Type=%u\n",
+			       dump_mem->type);
+
 		switch (dump_mem->type & cpu_to_le32(FW_DBG_MEM_TYPE_MASK)) {
 		case cpu_to_le32(FW_DBG_MEM_TYPE_REGULAR):
 			iwl_trans_read_mem_bytes(fwrt->trans, ofs,
@@ -813,6 +852,7 @@ void iwl_fw_error_dump(struct iwl_fw_runtime *fwrt)
 	}
 
 	if (smem_len) {
+		IWL_DEBUG_INFO(fwrt, "WRT SMEM dump\n");
 		dump_data->type = cpu_to_le32(IWL_FW_ERROR_DUMP_MEM);
 		dump_data->len = cpu_to_le32(smem_len + sizeof(*dump_mem));
 		dump_mem = (void *)dump_data->data;
@@ -825,6 +865,7 @@ void iwl_fw_error_dump(struct iwl_fw_runtime *fwrt)
 	}
 
 	if (sram2_len) {
+		IWL_DEBUG_INFO(fwrt, "WRT SRAM dump\n");
 		dump_data->type = cpu_to_le32(IWL_FW_ERROR_DUMP_MEM);
 		dump_data->len = cpu_to_le32(sram2_len + sizeof(*dump_mem));
 		dump_mem = (void *)dump_data->data;
@@ -840,6 +881,7 @@ void iwl_fw_error_dump(struct iwl_fw_runtime *fwrt)
 	if (!fwrt->trans->cfg->gen2 &&
 	    fwrt->fw->img[fwrt->cur_fw_img].paging_mem_size &&
 	    fwrt->fw_paging_db[0].fw_paging_block) {
+		IWL_DEBUG_INFO(fwrt, "WRT paging dump\n");
 		for (i = 1; i < fwrt->num_of_paging_blk + 1; i++) {
 			struct iwl_fw_error_dump_paging *paging;
 			struct page *pages =
@@ -902,6 +944,7 @@ out:
 	iwl_fw_free_dump_desc(fwrt);
 	fwrt->dump.trig = NULL;
 	clear_bit(IWL_FWRT_STATUS_DUMPING, &fwrt->status);
+	IWL_DEBUG_INFO(fwrt, "WRT dump done\n");
 }
 IWL_EXPORT_SYMBOL(iwl_fw_error_dump);
 
@@ -921,7 +964,20 @@ int iwl_fw_dbg_collect_desc(struct iwl_fw_runtime *fwrt,
 	if (trigger)
 		delay = msecs_to_jiffies(le32_to_cpu(trigger->stop_delay));
 
-	if (WARN(fwrt->trans->state == IWL_TRANS_NO_FW,
+	/*
+	 * If the loading of the FW completed successfully, the next step is to
+	 * get the SMEM config data. Thus, if fwrt->smem_cfg.num_lmacs is non
+	 * zero, the FW was already loaded successully. If the state is "NO_FW"
+	 * in such a case - WARN and exit, since FW may be dead. Otherwise, we
+	 * can try to collect the data, since FW might just not be fully
+	 * loaded (no "ALIVE" yet), and the debug data is accessible.
+	 *
+	 * Corner case: got the FW alive but crashed before getting the SMEM
+	 *	config. In such a case, due to HW access problems, we might
+	 *	collect garbage.
+	 */
+	if (WARN((fwrt->trans->state == IWL_TRANS_NO_FW) &&
+		 fwrt->smem_cfg.num_lmacs,
 		 "Can't collect dbg data when FW isn't alive\n"))
 		return -EIO;
 
@@ -1058,7 +1114,7 @@ void iwl_fw_error_dump_wk(struct work_struct *work)
 
 	if (fwrt->trans->cfg->device_family == IWL_DEVICE_FAMILY_7000) {
 		/* stop recording */
-		iwl_set_bits_prph(fwrt->trans, MON_BUFF_SAMPLE_CTL, 0x100);
+		iwl_fw_dbg_stop_recording(fwrt);
 
 		iwl_fw_error_dump(fwrt);
 
@@ -1076,10 +1132,7 @@ void iwl_fw_error_dump_wk(struct work_struct *work)
 		u32 in_sample = iwl_read_prph(fwrt->trans, DBGC_IN_SAMPLE);
 		u32 out_ctrl = iwl_read_prph(fwrt->trans, DBGC_OUT_CTRL);
 
-		/* stop recording */
-		iwl_write_prph(fwrt->trans, DBGC_IN_SAMPLE, 0);
-		udelay(100);
-		iwl_write_prph(fwrt->trans, DBGC_OUT_CTRL, 0);
+		iwl_fw_dbg_stop_recording(fwrt);
 		/* wait before we collect the data till the DBGC stop */
 		udelay(500);
 

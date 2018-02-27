@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/types.h>
 #include <linux/errno.h>
 #include <linux/kmod.h>
@@ -336,7 +337,7 @@ static inline void __tty_ldisc_unlock(struct tty_struct *tty)
 	ldsem_up_write(&tty->ldisc_sem);
 }
 
-static int tty_ldisc_lock(struct tty_struct *tty, unsigned long timeout)
+int tty_ldisc_lock(struct tty_struct *tty, unsigned long timeout)
 {
 	int ret;
 
@@ -347,7 +348,7 @@ static int tty_ldisc_lock(struct tty_struct *tty, unsigned long timeout)
 	return 0;
 }
 
-static void tty_ldisc_unlock(struct tty_struct *tty)
+void tty_ldisc_unlock(struct tty_struct *tty)
 {
 	clear_bit(TTY_LDISC_HALTED, &tty->flags);
 	__tty_ldisc_unlock(tty);
@@ -694,10 +695,8 @@ int tty_ldisc_reinit(struct tty_struct *tty, int disc)
 	tty_set_termios_ldisc(tty, disc);
 	retval = tty_ldisc_open(tty, tty->ldisc);
 	if (retval) {
-		if (!WARN_ON(disc == N_TTY)) {
-			tty_ldisc_put(tty->ldisc);
-			tty->ldisc = NULL;
-		}
+		tty_ldisc_put(tty->ldisc);
+		tty->ldisc = NULL;
 	}
 	return retval;
 }
@@ -736,8 +735,8 @@ void tty_ldisc_hangup(struct tty_struct *tty, bool reinit)
 		tty_ldisc_deref(ld);
 	}
 
-	wake_up_interruptible_poll(&tty->write_wait, POLLOUT);
-	wake_up_interruptible_poll(&tty->read_wait, POLLIN);
+	wake_up_interruptible_poll(&tty->write_wait, EPOLLOUT);
+	wake_up_interruptible_poll(&tty->read_wait, EPOLLIN);
 
 	/*
 	 * Shutdown the current line discipline, and reset it to
@@ -752,8 +751,9 @@ void tty_ldisc_hangup(struct tty_struct *tty, bool reinit)
 
 	if (tty->ldisc) {
 		if (reinit) {
-			if (tty_ldisc_reinit(tty, tty->termios.c_line) < 0)
-				tty_ldisc_reinit(tty, N_TTY);
+			if (tty_ldisc_reinit(tty, tty->termios.c_line) < 0 &&
+			    tty_ldisc_reinit(tty, N_TTY) < 0)
+				WARN_ON(tty_ldisc_reinit(tty, N_NULL) < 0);
 		} else
 			tty_ldisc_kill(tty);
 	}

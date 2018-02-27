@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * GPL HEADER START
  *
@@ -32,7 +33,7 @@
 
 #define DEBUG_SUBSYSTEM S_LNET
 
-#include "../../../include/linux/libcfs/libcfs.h"
+#include <linux/libcfs/libcfs.h>
 
 #define LNET_MINOR 240
 
@@ -134,7 +135,7 @@ int libcfs_ioctl_getdata(struct libcfs_ioctl_hdr **hdr_pp,
 		return -EINVAL;
 	}
 
-	if (hdr.ioc_len < sizeof(struct libcfs_ioctl_data)) {
+	if (hdr.ioc_len < sizeof(hdr)) {
 		CERROR("libcfs ioctl: user buffer too small for ioctl\n");
 		return -EINVAL;
 	}
@@ -145,7 +146,7 @@ int libcfs_ioctl_getdata(struct libcfs_ioctl_hdr **hdr_pp,
 		return -EINVAL;
 	}
 
-	LIBCFS_ALLOC(*hdr_pp, hdr.ioc_len);
+	*hdr_pp = kvmalloc(hdr.ioc_len, GFP_KERNEL);
 	if (!*hdr_pp)
 		return -ENOMEM;
 
@@ -163,7 +164,7 @@ int libcfs_ioctl_getdata(struct libcfs_ioctl_hdr **hdr_pp,
 	return 0;
 
 free:
-	LIBCFS_FREE(*hdr_pp, hdr.ioc_len);
+	kvfree(*hdr_pp);
 	return err;
 }
 

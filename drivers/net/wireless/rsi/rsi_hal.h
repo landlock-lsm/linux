@@ -101,6 +101,9 @@
 
 #define BBP_INFO_40MHZ 0x6
 
+#define FW_FLASH_OFFSET			0x820
+#define LMAC_VER_OFFSET			(FW_FLASH_OFFSET + 0x200)
+
 struct bl_header {
 	__le32 flags;
 	__le32 image_no;
@@ -121,12 +124,11 @@ struct rsi_mgmt_desc {
 	u8 xtend_desc_size;
 	u8 header_len;
 	__le16 frame_info;
-	u8 rate_info;
-	u8 reserved1;
+	__le16 rate_info;
 	__le16 bbp_info;
 	__le16 seq_ctrl;
 	u8 reserved2;
-	u8 vap_info;
+	u8 sta_id;
 } __packed;
 
 struct rsi_data_desc {
@@ -144,5 +146,7 @@ struct rsi_data_desc {
 } __packed;
 
 int rsi_hal_device_init(struct rsi_hw *adapter);
+int rsi_prepare_beacon(struct rsi_common *common, struct sk_buff *skb);
+int rsi_send_pkt_to_bus(struct rsi_common *common, struct sk_buff *skb);
 
 #endif

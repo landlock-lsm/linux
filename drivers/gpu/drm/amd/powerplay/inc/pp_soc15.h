@@ -23,7 +23,7 @@
 #ifndef PP_SOC15_H
 #define PP_SOC15_H
 
-#include "vega10/soc15ip.h"
+#include "soc15ip.h"
 
 inline static uint32_t soc15_get_register_offset(
 		uint32_t hw_id,
@@ -41,6 +41,8 @@ inline static uint32_t soc15_get_register_offset(
 		reg = MP1_BASE.instance[inst].segment[segment] + offset;
 	else if (hw_id == DF_HWID)
 		reg = DF_BASE.instance[inst].segment[segment] + offset;
+	else if (hw_id == GC_HWID)
+		reg = GC_BASE.instance[inst].segment[segment] + offset;
 
 	return reg;
 }

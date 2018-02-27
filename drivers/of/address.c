@@ -1,4 +1,4 @@
-
+// SPDX-License-Identifier: GPL-2.0
 #define pr_fmt(fmt)	"OF: " fmt
 
 #include <linux/device.h>
@@ -96,7 +96,7 @@ static unsigned int of_bus_default_get_flags(const __be32 *addr)
 	return IORESOURCE_MEM;
 }
 
-#ifdef CONFIG_OF_ADDRESS_PCI
+#ifdef CONFIG_PCI
 /*
  * PCI bus specific translator
  */
@@ -171,9 +171,7 @@ static int of_bus_pci_translate(__be32 *addr, u64 offset, int na)
 {
 	return of_bus_default_translate(addr + 1, offset, na - 1);
 }
-#endif /* CONFIG_OF_ADDRESS_PCI */
 
-#ifdef CONFIG_PCI
 const __be32 *of_get_pci_address(struct device_node *dev, int bar_no, u64 *size,
 			unsigned int *flags)
 {
@@ -232,8 +230,8 @@ int of_pci_address_to_resource(struct device_node *dev, int bar,
 }
 EXPORT_SYMBOL_GPL(of_pci_address_to_resource);
 
-int of_pci_range_parser_init(struct of_pci_range_parser *parser,
-				struct device_node *node)
+static int parser_init(struct of_pci_range_parser *parser,
+			struct device_node *node, const char *name)
 {
 	const int na = 3, ns = 2;
 	int rlen;
@@ -242,7 +240,7 @@ int of_pci_range_parser_init(struct of_pci_range_parser *parser,
 	parser->pna = of_n_addr_cells(node);
 	parser->np = parser->pna + na + ns;
 
-	parser->range = of_get_property(node, "ranges", &rlen);
+	parser->range = of_get_property(node, name, &rlen);
 	if (parser->range == NULL)
 		return -ENOENT;
 
@@ -250,7 +248,20 @@ int of_pci_range_parser_init(struct of_pci_range_parser *parser,
 
 	return 0;
 }
+
+int of_pci_range_parser_init(struct of_pci_range_parser *parser,
+				struct device_node *node)
+{
+	return parser_init(parser, node, "ranges");
+}
 EXPORT_SYMBOL_GPL(of_pci_range_parser_init);
+
+int of_pci_dma_range_parser_init(struct of_pci_range_parser *parser,
+				struct device_node *node)
+{
+	return parser_init(parser, node, "dma-ranges");
+}
+EXPORT_SYMBOL_GPL(of_pci_dma_range_parser_init);
 
 struct of_pci_range *of_pci_range_parser_one(struct of_pci_range_parser *parser,
 						struct of_pci_range *range)
@@ -274,10 +285,9 @@ struct of_pci_range *of_pci_range_parser_one(struct of_pci_range_parser *parser,
 
 	/* Now consume following elements while they are contiguous */
 	while (parser->range + parser->np <= parser->end) {
-		u32 flags, pci_space;
+		u32 flags;
 		u64 pci_addr, cpu_addr, size;
 
-		pci_space = be32_to_cpup(parser->range);
 		flags = of_bus_pci_get_flags(parser->range);
 		pci_addr = of_read_number(parser->range + 1, ns);
 		cpu_addr = of_translate_address(parser->node,
@@ -349,6 +359,7 @@ invalid_range:
 	res->end = (resource_size_t)OF_BAD_ADDR;
 	return err;
 }
+EXPORT_SYMBOL(of_pci_range_to_resource);
 #endif /* CONFIG_PCI */
 
 /*
@@ -414,7 +425,7 @@ static unsigned int of_bus_isa_get_flags(const __be32 *addr)
  */
 
 static struct of_bus of_busses[] = {
-#ifdef CONFIG_OF_ADDRESS_PCI
+#ifdef CONFIG_PCI
 	/* PCI */
 	{
 		.name = "pci",
@@ -425,7 +436,7 @@ static struct of_bus of_busses[] = {
 		.translate = of_bus_pci_translate,
 		.get_flags = of_bus_pci_get_flags,
 	},
-#endif /* CONFIG_OF_ADDRESS_PCI */
+#endif /* CONFIG_PCI */
 	/* ISA */
 	{
 		.name = "isa",
@@ -559,7 +570,7 @@ static u64 __of_translate_address(struct device_node *dev,
 	int na, ns, pna, pns;
 	u64 result = OF_BAD_ADDR;
 
-	pr_debug("** translation for device %s **\n", of_node_full_name(dev));
+	pr_debug("** translation for device %pOF **\n", dev);
 
 	/* Increase refcount at current level */
 	of_node_get(dev);
@@ -573,13 +584,13 @@ static u64 __of_translate_address(struct device_node *dev,
 	/* Count address cells & copy address locally */
 	bus->count_cells(dev, &na, &ns);
 	if (!OF_CHECK_COUNTS(na, ns)) {
-		pr_debug("Bad cell count for %s\n", of_node_full_name(dev));
+		pr_debug("Bad cell count for %pOF\n", dev);
 		goto bail;
 	}
 	memcpy(addr, in_addr, na * 4);
 
-	pr_debug("bus is %s (na=%d, ns=%d) on %s\n",
-	    bus->name, na, ns, of_node_full_name(parent));
+	pr_debug("bus is %s (na=%d, ns=%d) on %pOF\n",
+	    bus->name, na, ns, parent);
 	of_dump_addr("translating address:", addr, na);
 
 	/* Translate */
@@ -600,13 +611,12 @@ static u64 __of_translate_address(struct device_node *dev,
 		pbus = of_match_bus(parent);
 		pbus->count_cells(dev, &pna, &pns);
 		if (!OF_CHECK_COUNTS(pna, pns)) {
-			pr_err("Bad cell count for %s\n",
-			       of_node_full_name(dev));
+			pr_err("Bad cell count for %pOF\n", dev);
 			break;
 		}
 
-		pr_debug("parent bus is %s (na=%d, ns=%d) on %s\n",
-		    pbus->name, pna, pns, of_node_full_name(parent));
+		pr_debug("parent bus is %s (na=%d, ns=%d) on %pOF\n",
+		    pbus->name, pna, pns, parent);
 
 		/* Apply bus translation */
 		if (of_translate_one(dev, bus, pbus, addr, na, ns, pna, rprop))
@@ -855,7 +865,7 @@ int of_dma_get_range(struct device_node *np, u64 *dma_addr, u64 *paddr, u64 *siz
 	}
 
 	if (!ranges) {
-		pr_debug("no dma-ranges found for node(%s)\n", np->full_name);
+		pr_debug("no dma-ranges found for node(%pOF)\n", np);
 		ret = -ENODEV;
 		goto out;
 	}
@@ -872,8 +882,8 @@ int of_dma_get_range(struct device_node *np, u64 *dma_addr, u64 *paddr, u64 *siz
 	dmaaddr = of_read_number(ranges, naddr);
 	*paddr = of_translate_dma_address(np, ranges);
 	if (*paddr == OF_BAD_ADDR) {
-		pr_err("translation of DMA address(%pad) to CPU address failed node(%s)\n",
-		       dma_addr, np->full_name);
+		pr_err("translation of DMA address(%pad) to CPU address failed node(%pOF)\n",
+		       dma_addr, np);
 		ret = -EINVAL;
 		goto out;
 	}

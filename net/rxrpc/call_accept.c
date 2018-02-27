@@ -94,7 +94,7 @@ static int rxrpc_service_prealloc_one(struct rxrpc_sock *rx,
 	/* Now it gets complicated, because calls get registered with the
 	 * socket here, particularly if a user ID is preassigned by the user.
 	 */
-	call = rxrpc_alloc_call(gfp);
+	call = rxrpc_alloc_call(rx, gfp);
 	if (!call)
 		return -ENOMEM;
 	call->flags |= (1 << RXRPC_CALL_IS_SERVICE);
@@ -223,6 +223,7 @@ void rxrpc_discard_prealloc(struct rxrpc_sock *rx)
 	tail = b->call_backlog_tail;
 	while (CIRC_CNT(head, tail, size) > 0) {
 		struct rxrpc_call *call = b->call_backlog[tail];
+		call->socket = rx;
 		if (rx->discard_new_call) {
 			_debug("discard %lx", call->user_call_ID);
 			rx->discard_new_call(call, call->user_call_ID);
@@ -276,7 +277,7 @@ static struct rxrpc_call *rxrpc_alloc_incoming_call(struct rxrpc_sock *rx,
 		 * anticipation - and to save on stack space.
 		 */
 		xpeer = b->peer_backlog[peer_tail];
-		if (rxrpc_extract_addr_from_skb(&xpeer->srx, skb) < 0)
+		if (rxrpc_extract_addr_from_skb(local, &xpeer->srx, skb) < 0)
 			return NULL;
 
 		peer = rxrpc_lookup_incoming_peer(local, xpeer);

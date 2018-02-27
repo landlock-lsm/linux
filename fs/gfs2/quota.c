@@ -452,7 +452,7 @@ static int qd_fish(struct gfs2_sbd *sdp, struct gfs2_quota_data **qdp)
 
 	*qdp = NULL;
 
-	if (sdp->sd_vfs->s_flags & MS_RDONLY)
+	if (sb_rdonly(sdp->sd_vfs))
 		return 0;
 
 	spin_lock(&qd_lock);
@@ -730,7 +730,7 @@ static int gfs2_write_buf_to_page(struct gfs2_inode *ip, unsigned long index,
 		if (PageUptodate(page))
 			set_buffer_uptodate(bh);
 		if (!buffer_uptodate(bh)) {
-			ll_rw_block(REQ_OP_READ, REQ_META, 1, &bh);
+			ll_rw_block(REQ_OP_READ, REQ_META | REQ_PRIO, 1, &bh);
 			wait_on_buffer(bh);
 			if (!buffer_uptodate(bh))
 				goto unlock_out;
@@ -955,7 +955,8 @@ out:
 		gfs2_glock_dq_uninit(&ghs[qx]);
 	inode_unlock(&ip->i_inode);
 	kfree(ghs);
-	gfs2_log_flush(ip->i_gl->gl_name.ln_sbd, ip->i_gl, NORMAL_FLUSH);
+	gfs2_log_flush(ip->i_gl->gl_name.ln_sbd, ip->i_gl,
+		       GFS2_LOG_HEAD_FLUSH_NORMAL | GFS2_LFC_DO_SYNC);
 	return error;
 }
 
@@ -1474,8 +1475,11 @@ static void quotad_error(struct gfs2_sbd *sdp, const char *msg, int error)
 {
 	if (error == 0 || error == -EROFS)
 		return;
-	if (!test_bit(SDF_SHUTDOWN, &sdp->sd_flags))
+	if (!test_bit(SDF_SHUTDOWN, &sdp->sd_flags)) {
 		fs_err(sdp, "gfs2_quotad: %s error %d\n", msg, error);
+		sdp->sd_log_error = error;
+		wake_up(&sdp->sd_logd_waitq);
+	}
 }
 
 static void quotad_check_timeo(struct gfs2_sbd *sdp, const char *msg,

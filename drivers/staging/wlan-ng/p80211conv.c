@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MPL-1.1)
 /* src/p80211/p80211conv.c
  *
  * Ether/802.11 conversions and packet buffer routines
@@ -213,6 +214,7 @@ int skb_ether_to_p80211(struct wlandevice *wlandev, u32 ethconv,
 			netdev_warn(wlandev->netdev,
 				    "Host en-WEP failed, dropping frame (%d).\n",
 				    foo);
+			kfree(p80211_wep->data);
 			return 2;
 		}
 		fc |= cpu_to_le16(WLAN_SET_FC_ISWEP(1));

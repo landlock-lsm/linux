@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * GPL HEADER START
  *
@@ -36,7 +37,7 @@
 
 #define DEBUG_SUBSYSTEM S_LNET
 
-#include "../../include/linux/lnet/lib-lnet.h"
+#include <linux/lnet/lib-lnet.h>
 
 /**
  * Create and attach a match entry to the match list of \a portal. The new
@@ -89,7 +90,7 @@ LNetMEAttach(unsigned int portal,
 	if (!mtable) /* can't match portal type */
 		return -EPERM;
 
-	me = lnet_me_alloc();
+	me = kzalloc(sizeof(*me), GFP_NOFS);
 	if (!me)
 		return -ENOMEM;
 
@@ -156,7 +157,7 @@ LNetMEInsert(struct lnet_handle_me current_meh,
 	if (pos == LNET_INS_LOCAL)
 		return -EPERM;
 
-	new_me = lnet_me_alloc();
+	new_me = kzalloc(sizeof(*new_me), GFP_NOFS);
 	if (!new_me)
 		return -ENOMEM;
 
@@ -166,7 +167,7 @@ LNetMEInsert(struct lnet_handle_me current_meh,
 
 	current_me = lnet_handle2me(&current_meh);
 	if (!current_me) {
-		lnet_me_free(new_me);
+		kfree(new_me);
 
 		lnet_res_unlock(cpt);
 		return -ENOENT;
@@ -177,7 +178,7 @@ LNetMEInsert(struct lnet_handle_me current_meh,
 	ptl = the_lnet.ln_portals[current_me->me_portal];
 	if (lnet_ptl_is_unique(ptl)) {
 		/* nosense to insertion on unique portal */
-		lnet_me_free(new_me);
+		kfree(new_me);
 		lnet_res_unlock(cpt);
 		return -EPERM;
 	}
@@ -269,5 +270,5 @@ lnet_me_unlink(struct lnet_me *me)
 	}
 
 	lnet_res_lh_invalidate(&me->me_lh);
-	lnet_me_free(me);
+	kfree(me);
 }

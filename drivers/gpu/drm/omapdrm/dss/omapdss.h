@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016 Texas Instruments
+ * Copyright (C) 2016 Texas Instruments Incorporated - http://www.ti.com/
  * Author: Tomi Valkeinen <tomi.valkeinen@ti.com>
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -25,6 +25,7 @@
 #include <video/videomode.h>
 #include <linux/platform_data/omapdss.h>
 #include <uapi/drm/drm_mode.h>
+#include <drm/drm_crtc.h>
 
 #define DISPC_IRQ_FRAMEDONE		(1 << 0)
 #define DISPC_IRQ_VSYNC			(1 << 1)
@@ -241,13 +242,6 @@ struct omap_dss_dsi_config {
 	enum omap_dss_dsi_trans_mode trans_mode;
 };
 
-/* Hardcoded videomodes for tv. Venc only uses these to
- * identify the mode, and does not actually use the configs
- * itself. However, the configs should be something that
- * a normal monitor can also show */
-extern const struct videomode omap_dss_pal_vm;
-extern const struct videomode omap_dss_ntsc_vm;
-
 struct omap_dss_cpr_coefs {
 	s16 rr, rg, rb;
 	s16 gr, gg, gb;
@@ -401,7 +395,16 @@ struct omapdss_hdmi_ops {
 			    struct videomode *vm);
 
 	int (*read_edid)(struct omap_dss_device *dssdev, u8 *buf, int len);
+	void (*lost_hotplug)(struct omap_dss_device *dssdev);
 	bool (*detect)(struct omap_dss_device *dssdev);
+
+	int (*register_hpd_cb)(struct omap_dss_device *dssdev,
+			       void (*cb)(void *cb_data,
+					  enum drm_connector_status status),
+			       void *cb_data);
+	void (*unregister_hpd_cb)(struct omap_dss_device *dssdev);
+	void (*enable_hpd)(struct omap_dss_device *dssdev);
+	void (*disable_hpd)(struct omap_dss_device *dssdev);
 
 	int (*set_hdmi_mode)(struct omap_dss_device *dssdev, bool hdmi_mode);
 	int (*set_infoframe)(struct omap_dss_device *dssdev,
@@ -560,6 +563,8 @@ struct omap_dss_driver {
 			    struct videomode *vm);
 	void (*get_timings)(struct omap_dss_device *dssdev,
 			    struct videomode *vm);
+	void (*get_size)(struct omap_dss_device *dssdev,
+			 unsigned int *width, unsigned int *height);
 
 	int (*set_wss)(struct omap_dss_device *dssdev, u32 wss);
 	u32 (*get_wss)(struct omap_dss_device *dssdev);
@@ -567,16 +572,20 @@ struct omap_dss_driver {
 	int (*read_edid)(struct omap_dss_device *dssdev, u8 *buf, int len);
 	bool (*detect)(struct omap_dss_device *dssdev);
 
+	int (*register_hpd_cb)(struct omap_dss_device *dssdev,
+			       void (*cb)(void *cb_data,
+					  enum drm_connector_status status),
+			       void *cb_data);
+	void (*unregister_hpd_cb)(struct omap_dss_device *dssdev);
+	void (*enable_hpd)(struct omap_dss_device *dssdev);
+	void (*disable_hpd)(struct omap_dss_device *dssdev);
+
 	int (*set_hdmi_mode)(struct omap_dss_device *dssdev, bool hdmi_mode);
 	int (*set_hdmi_infoframe)(struct omap_dss_device *dssdev,
 		const struct hdmi_avi_infoframe *avi);
 };
 
-enum omapdss_version omapdss_get_version(void);
 bool omapdss_is_initialized(void);
-
-int omap_dss_register_driver(struct omap_dss_driver *);
-void omap_dss_unregister_driver(struct omap_dss_driver *);
 
 int omapdss_register_display(struct omap_dss_device *dssdev);
 void omapdss_unregister_display(struct omap_dss_device *dssdev);
@@ -585,9 +594,6 @@ struct omap_dss_device *omap_dss_get_device(struct omap_dss_device *dssdev);
 void omap_dss_put_device(struct omap_dss_device *dssdev);
 #define for_each_dss_dev(d) while ((d = omap_dss_get_next_device(d)) != NULL)
 struct omap_dss_device *omap_dss_get_next_device(struct omap_dss_device *from);
-struct omap_dss_device *omap_dss_find_device(void *data,
-		int (*match)(struct omap_dss_device *dssdev, void *data));
-
 
 int omap_dss_get_num_overlay_managers(void);
 
@@ -684,6 +690,8 @@ struct dispc_ops {
 
 	int (*get_num_ovls)(void);
 	int (*get_num_mgrs)(void);
+
+	u32 (*get_memory_bandwidth_limit)(void);
 
 	void (*mgr_enable)(enum omap_channel channel, bool enable);
 	bool (*mgr_is_enabled)(enum omap_channel channel);

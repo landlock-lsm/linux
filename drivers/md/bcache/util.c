@@ -74,24 +74,44 @@ STRTO_H(strtouint, unsigned int)
 STRTO_H(strtoll, long long)
 STRTO_H(strtoull, unsigned long long)
 
+/**
+ * bch_hprint() - formats @v to human readable string for sysfs.
+ *
+ * @v - signed 64 bit integer
+ * @buf - the (at least 8 byte) buffer to format the result into.
+ *
+ * Returns the number of bytes used by format.
+ */
 ssize_t bch_hprint(char *buf, int64_t v)
 {
 	static const char units[] = "?kMGTPEZY";
-	char dec[4] = "";
-	int u, t = 0;
+	int u = 0, t;
 
-	for (u = 0; v >= 1024 || v <= -1024; u++) {
-		t = v & ~(~0 << 10);
-		v >>= 10;
-	}
+	uint64_t q;
 
-	if (!u)
-		return sprintf(buf, "%llu", v);
+	if (v < 0)
+		q = -v;
+	else
+		q = v;
 
-	if (v < 100 && v > -100)
-		snprintf(dec, sizeof(dec), ".%i", t / 100);
+	/* For as long as the number is more than 3 digits, but at least
+	 * once, shift right / divide by 1024.  Keep the remainder for
+	 * a digit after the decimal point.
+	 */
+	do {
+		u++;
 
-	return sprintf(buf, "%lli%s%c", v, dec, units[u]);
+		t = q & ~(~0 << 10);
+		q >>= 10;
+	} while (q >= 1000);
+
+	if (v < 0)
+		/* '-', up to 3 digits, '.', 1 digit, 1 character, null;
+		 * yields 8 bytes.
+		 */
+		return sprintf(buf, "-%llu.%i%c", q, t * 10 / 1024, units[u]);
+	else
+		return sprintf(buf, "%llu.%i%c", q, t * 10 / 1024, units[u]);
 }
 
 ssize_t bch_snprint_string_list(char *buf, size_t size, const char * const list[],
@@ -212,8 +232,14 @@ uint64_t bch_next_delay(struct bch_ratelimit *d, uint64_t done)
 
 	d->next += div_u64(done * NSEC_PER_SEC, d->rate);
 
-	if (time_before64(now + NSEC_PER_SEC, d->next))
-		d->next = now + NSEC_PER_SEC;
+	/* Bound the time.  Don't let us fall further than 2 seconds behind
+	 * (this prevents unnecessary backlog that would make it impossible
+	 * to catch up).  If we're ahead of the desired writeback rate,
+	 * don't let us sleep more than 2.5 seconds (so we can notice/respond
+	 * if the control system tells us to speed up!).
+	 */
+	if (time_before64(now + NSEC_PER_SEC * 5LLU / 2LLU, d->next))
+		d->next = now + NSEC_PER_SEC * 5LLU / 2LLU;
 
 	if (time_after64(now - NSEC_PER_SEC * 2, d->next))
 		d->next = now - NSEC_PER_SEC * 2;
@@ -223,6 +249,13 @@ uint64_t bch_next_delay(struct bch_ratelimit *d, uint64_t done)
 		: 0;
 }
 
+/*
+ * Generally it isn't good to access .bi_io_vec and .bi_vcnt directly,
+ * the preferred way is bio_add_page, but in this case, bch_bio_map()
+ * supposes that the bvec table is empty, so it is safe to access
+ * .bi_vcnt & .bi_io_vec in this way even after multipage bvec is
+ * supported.
+ */
 void bch_bio_map(struct bio *bio, void *base)
 {
 	size_t size = bio->bi_iter.bi_size;
@@ -248,6 +281,33 @@ start:		bv->bv_len	= min_t(size_t, PAGE_SIZE - bv->bv_offset,
 
 		size -= bv->bv_len;
 	}
+}
+
+/**
+ * bch_bio_alloc_pages - allocates a single page for each bvec in a bio
+ * @bio: bio to allocate pages for
+ * @gfp_mask: flags for allocation
+ *
+ * Allocates pages up to @bio->bi_vcnt.
+ *
+ * Returns 0 on success, -ENOMEM on failure. On failure, any allocated pages are
+ * freed.
+ */
+int bch_bio_alloc_pages(struct bio *bio, gfp_t gfp_mask)
+{
+	int i;
+	struct bio_vec *bv;
+
+	bio_for_each_segment_all(bv, bio, i) {
+		bv->bv_page = alloc_page(gfp_mask);
+		if (!bv->bv_page) {
+			while (--bv >= bio->bi_io_vec)
+				__free_page(bv->bv_page);
+			return -ENOMEM;
+		}
+	}
+
+	return 0;
 }
 
 /*

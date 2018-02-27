@@ -211,7 +211,6 @@ btrfs_alloc_dummy_block_group(struct btrfs_fs_info *fs_info,
 	cache->key.objectid = 0;
 	cache->key.offset = length;
 	cache->key.type = BTRFS_BLOCK_GROUP_ITEM_KEY;
-	cache->sectorsize = fs_info->sectorsize;
 	cache->full_stripe_len = fs_info->sectorsize;
 	cache->fs_info = fs_info;
 
@@ -278,6 +277,9 @@ int btrfs_run_sanity_tests(void)
 				goto out;
 		}
 	}
+	ret = btrfs_test_extent_map();
+	if (ret)
+		goto out;
 out:
 	btrfs_destroy_test_fs();
 	return ret;

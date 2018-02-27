@@ -1,8 +1,7 @@
 #!/bin/bash
 #
 # Run a series of 14 tests under KVM.  These are not particularly
-# well-selected or well-tuned, but are the current set.  Run from the
-# top level of the source tree.
+# well-selected or well-tuned, but are the current set.
 #
 # Edit the definitions below to set the locations of the various directories,
 # as well as the test duration.
@@ -30,9 +29,11 @@
 scriptname=$0
 args="$*"
 
-T=/tmp/kvm.sh.$$
+T=${TMPDIR-/tmp}/kvm.sh.$$
 trap 'rm -rf $T' 0
 mkdir $T
+
+cd `dirname $scriptname`/../../../../../
 
 dur=$((30*60))
 dryrun=""
@@ -41,6 +42,7 @@ PATH=${KVM}/bin:$PATH; export PATH
 TORTURE_DEFCONFIG=defconfig
 TORTURE_BOOT_IMAGE=""
 TORTURE_INITRD="$KVM/initrd"; export TORTURE_INITRD
+TORTURE_KCONFIG_ARG=""
 TORTURE_KMAKE_ARG=""
 TORTURE_SHUTDOWN_GRACE=180
 TORTURE_SUITE=rcu
@@ -65,10 +67,11 @@ usage () {
 	echo "       --duration minutes"
 	echo "       --interactive"
 	echo "       --jitter N [ maxsleep (us) [ maxspin (us) ] ]"
+	echo "       --kconfig Kconfig-options"
 	echo "       --kmake-arg kernel-make-arguments"
 	echo "       --mac nn:nn:nn:nn:nn:nn"
 	echo "       --no-initrd"
-	echo "       --qemu-args qemu-system-..."
+	echo "       --qemu-args qemu-arguments"
 	echo "       --qemu-cmd qemu-system-..."
 	echo "       --results absolute-pathname"
 	echo "       --torture rcu"
@@ -129,6 +132,11 @@ do
 		jitter="$2"
 		shift
 		;;
+	--kconfig)
+		checkarg --kconfig "(Kconfig options)" $# "$2" '^CONFIG_[A-Z0-9_]\+=\([ynm]\|[0-9]\+\)\( CONFIG_[A-Z0-9_]\+=\([ynm]\|[0-9]\+\)\)*$' '^error$'
+		TORTURE_KCONFIG_ARG="$2"
+		shift
+		;;
 	--kmake-arg)
 		checkarg --kmake-arg "(kernel make arguments)" $# "$2" '.*' '^error$'
 		TORTURE_KMAKE_ARG="$2"
@@ -143,7 +151,7 @@ do
 		TORTURE_INITRD=""; export TORTURE_INITRD
 		;;
 	--qemu-args|--qemu-arg)
-		checkarg --qemu-args "-qemu args" $# "$2" '^-' '^error'
+		checkarg --qemu-args "(qemu arguments)" $# "$2" '^-' '^error'
 		TORTURE_QEMU_ARG="$2"
 		shift
 		;;
@@ -205,6 +213,7 @@ do
 	then
 		cpu_count=`configNR_CPUS.sh $CONFIGFRAG/$CF1`
 		cpu_count=`configfrag_boot_cpus "$TORTURE_BOOTARGS" "$CONFIGFRAG/$CF1" "$cpu_count"`
+		cpu_count=`configfrag_boot_maxcpus "$TORTURE_BOOTARGS" "$CONFIGFRAG/$CF1" "$cpu_count"`
 		for ((cur_rep=0;cur_rep<$config_reps;cur_rep++))
 		do
 			echo $CF1 $cpu_count >> $T/cfgcpu
@@ -214,7 +223,7 @@ do
 		exit 1
 	fi
 done
-sort -k2nr $T/cfgcpu > $T/cfgcpu.sort
+sort -k2nr $T/cfgcpu -T="$T" > $T/cfgcpu.sort
 
 # Use a greedy bin-packing algorithm, sorting the list accordingly.
 awk < $T/cfgcpu.sort > $T/cfgcpu.pack -v ncpus=$cpus '
@@ -230,7 +239,6 @@ BEGIN {
 }
 
 END {
-	alldone = 0;
 	batch = 0;
 	nc = -1;
 
@@ -275,6 +283,7 @@ TORTURE_BOOT_IMAGE="$TORTURE_BOOT_IMAGE"; export TORTURE_BOOT_IMAGE
 TORTURE_BUILDONLY="$TORTURE_BUILDONLY"; export TORTURE_BUILDONLY
 TORTURE_DEFCONFIG="$TORTURE_DEFCONFIG"; export TORTURE_DEFCONFIG
 TORTURE_INITRD="$TORTURE_INITRD"; export TORTURE_INITRD
+TORTURE_KCONFIG_ARG="$TORTURE_KCONFIG_ARG"; export TORTURE_KCONFIG_ARG
 TORTURE_KMAKE_ARG="$TORTURE_KMAKE_ARG"; export TORTURE_KMAKE_ARG
 TORTURE_QEMU_CMD="$TORTURE_QEMU_CMD"; export TORTURE_QEMU_CMD
 TORTURE_QEMU_INTERACTIVE="$TORTURE_QEMU_INTERACTIVE"; export TORTURE_QEMU_INTERACTIVE
@@ -322,8 +331,8 @@ awk < $T/cfgcpu.pack \
 # Dump out the scripting required to run one test batch.
 function dump(first, pastlast, batchnum)
 {
-	print "echo ----Start batch " batchnum ": `date`";
-	print "echo ----Start batch " batchnum ": `date` >> " rd "/log";
+	print "echo ----Start batch " batchnum ": `date` | tee -a " rd "log";
+	print "needqemurun="
 	jn=1
 	for (j = first; j < pastlast; j++) {
 		builddir=KVM "/b" jn
@@ -339,30 +348,27 @@ function dump(first, pastlast, batchnum)
 			ovf = "-ovf";
 		else
 			ovf = "";
-		print "echo ", cfr[jn], cpusr[jn] ovf ": Starting build. `date`";
-		print "echo ", cfr[jn], cpusr[jn] ovf ": Starting build. `date` >> " rd "/log";
+		print "echo ", cfr[jn], cpusr[jn] ovf ": Starting build. `date` | tee -a " rd "log";
 		print "rm -f " builddir ".*";
 		print "touch " builddir ".wait";
 		print "mkdir " builddir " > /dev/null 2>&1 || :";
 		print "mkdir " rd cfr[jn] " || :";
 		print "kvm-test-1-run.sh " CONFIGDIR cf[j], builddir, rd cfr[jn], dur " \"" TORTURE_QEMU_ARG "\" \"" TORTURE_BOOTARGS "\" > " rd cfr[jn]  "/kvm-test-1-run.sh.out 2>&1 &"
-		print "echo ", cfr[jn], cpusr[jn] ovf ": Waiting for build to complete. `date`";
-		print "echo ", cfr[jn], cpusr[jn] ovf ": Waiting for build to complete. `date` >> " rd "/log";
+		print "echo ", cfr[jn], cpusr[jn] ovf ": Waiting for build to complete. `date` | tee -a " rd "log";
 		print "while test -f " builddir ".wait"
 		print "do"
 		print "\tsleep 1"
 		print "done"
-		print "echo ", cfr[jn], cpusr[jn] ovf ": Build complete. `date`";
-		print "echo ", cfr[jn], cpusr[jn] ovf ": Build complete. `date` >> " rd "/log";
+		print "echo ", cfr[jn], cpusr[jn] ovf ": Build complete. `date` | tee -a " rd "log";
 		jn++;
 	}
 	for (j = 1; j < jn; j++) {
 		builddir=KVM "/b" j
 		print "rm -f " builddir ".ready"
-		print "if test -z \"$TORTURE_BUILDONLY\""
+		print "if test -f \"" rd cfr[j] "/builtkernel\""
 		print "then"
-		print "\techo ----", cfr[j], cpusr[j] ovf ": Starting kernel. `date`";
-		print "\techo ----", cfr[j], cpusr[j] ovf ": Starting kernel. `date` >> " rd "/log";
+		print "\techo ----", cfr[j], cpusr[j] ovf ": Kernel present. `date` | tee -a " rd "log";
+		print "\tneedqemurun=1"
 		print "fi"
 	}
 	njitter = 0;
@@ -375,22 +381,26 @@ function dump(first, pastlast, batchnum)
 		njitter = ja[1];
 	if (TORTURE_BUILDONLY && njitter != 0) {
 		njitter = 0;
-		print "echo Build-only run, so suppressing jitter >> " rd "/log"
+		print "echo Build-only run, so suppressing jitter | tee -a " rd "log"
 	}
-	for (j = 0; j < njitter; j++)
-		print "jitter.sh " j " " dur " " ja[2] " " ja[3] "&"
-	print "wait"
-	print "if test -z \"$TORTURE_BUILDONLY\""
+	if (TORTURE_BUILDONLY) {
+		print "needqemurun="
+	}
+	print "if test -n \"$needqemurun\""
 	print "then"
-	print "\techo ---- All kernel runs complete. `date`";
-	print "\techo ---- All kernel runs complete. `date` >> " rd "/log";
+	print "\techo ---- Starting kernels. `date` | tee -a " rd "log";
+	for (j = 0; j < njitter; j++)
+		print "\tjitter.sh " j " " dur " " ja[2] " " ja[3] "&"
+	print "\twait"
+	print "\techo ---- All kernel runs complete. `date` | tee -a " rd "log";
+	print "else"
+	print "\twait"
+	print "\techo ---- No kernel runs. `date` | tee -a " rd "log";
 	print "fi"
 	for (j = 1; j < jn; j++) {
 		builddir=KVM "/b" j
-		print "echo ----", cfr[j], cpusr[j] ovf ": Build/run results:";
-		print "echo ----", cfr[j], cpusr[j] ovf ": Build/run results: >> " rd "/log";
-		print "cat " rd cfr[j]  "/kvm-test-1-run.sh.out";
-		print "cat " rd cfr[j]  "/kvm-test-1-run.sh.out >> " rd "/log";
+		print "echo ----", cfr[j], cpusr[j] ovf ": Build/run results: | tee -a " rd "log";
+		print "cat " rd cfr[j]  "/kvm-test-1-run.sh.out | tee -a " rd "log";
 	}
 }
 

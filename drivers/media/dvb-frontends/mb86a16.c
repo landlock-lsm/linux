@@ -24,7 +24,7 @@
 #include <linux/moduleparam.h>
 #include <linux/slab.h>
 
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 #include "mb86a16.h"
 #include "mb86a16_priv.h"
 
@@ -415,27 +415,21 @@ static int signal_det(struct mb86a16_state *state,
 		      int smrt,
 		      unsigned char *SIG)
 {
-
-	int ret ;
-	int smrtd ;
-	int wait_sym ;
-
-	u32 wait_t;
-	unsigned char S[3] ;
-	int i ;
+	int ret;
+	int smrtd;
+	unsigned char S[3];
+	int i;
 
 	if (*SIG > 45) {
 		if (CNTM_set(state, 2, 1, 2) < 0) {
 			dprintk(verbose, MB86A16_ERROR, 1, "CNTM set Error");
 			return -1;
 		}
-		wait_sym = 40000;
 	} else {
 		if (CNTM_set(state, 3, 1, 2) < 0) {
 			dprintk(verbose, MB86A16_ERROR, 1, "CNTM set Error");
 			return -1;
 		}
-		wait_sym = 80000;
 	}
 	for (i = 0; i < 3; i++) {
 		if (i == 0)
@@ -447,22 +441,17 @@ static int signal_det(struct mb86a16_state *state,
 		smrt_info_get(state, smrtd);
 		smrt_set(state, smrtd);
 		srst(state);
-		wait_t = (wait_sym + 99 * smrtd / 100) / smrtd;
-		if (wait_t == 0)
-			wait_t = 1;
 		msleep_interruptible(10);
 		if (mb86a16_read(state, 0x37, &(S[i])) != 2) {
 			dprintk(verbose, MB86A16_ERROR, 1, "I2C transfer error");
 			return -EREMOTEIO;
 		}
 	}
-	if ((S[1] > S[0] * 112 / 100) &&
-	    (S[1] > S[2] * 112 / 100)) {
-
+	if ((S[1] > S[0] * 112 / 100) && (S[1] > S[2] * 112 / 100))
 		ret = 1;
-	} else {
+	else
 		ret = 0;
-	}
+
 	*SIG = S[1];
 
 	if (CNTM_set(state, 0, 1, 2) < 0) {
@@ -646,6 +635,7 @@ static int sync_chk(struct mb86a16_state *state,
 	return sync;
 err:
 	dprintk(verbose, MB86A16_ERROR, 1, "I2C transfer error");
+	*VIRM = 0;
 	return -EREMOTEIO;
 
 }
@@ -1687,15 +1677,15 @@ static int mb86a16_read_ber(struct dvb_frontend *fe, u32 *ber)
 			 * the deinterleaver output.
 			 * monitored BER is expressed as a 20 bit output in total
 			 */
-			ber_rst = ber_mon >> 3;
+			ber_rst = (ber_mon >> 3) & 0x03;
 			*ber = (((ber_msb << 8) | ber_mid) << 8) | ber_lsb;
 			if (ber_rst == 0)
 				timer =  12500000;
-			if (ber_rst == 1)
+			else if (ber_rst == 1)
 				timer =  25000000;
-			if (ber_rst == 2)
+			else if (ber_rst == 2)
 				timer =  50000000;
-			if (ber_rst == 3)
+			else /* ber_rst == 3 */
 				timer = 100000000;
 
 			*ber /= timer;
@@ -1707,11 +1697,11 @@ static int mb86a16_read_ber(struct dvb_frontend *fe, u32 *ber)
 			 * QPSK demodulator output.
 			 * monitored BER is expressed as a 24 bit output in total
 			 */
-			ber_tim = ber_mon >> 1;
+			ber_tim = (ber_mon >> 1) & 0x01;
 			*ber = (((ber_msb << 8) | ber_mid) << 8) | ber_lsb;
 			if (ber_tim == 0)
 				timer = 16;
-			if (ber_tim == 1)
+			else /* ber_tim == 1 */
 				timer = 24;
 
 			*ber /= 2 ^ timer;

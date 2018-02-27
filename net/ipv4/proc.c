@@ -83,7 +83,6 @@ static int sockstat_seq_open(struct inode *inode, struct file *file)
 }
 
 static const struct file_operations sockstat_seq_fops = {
-	.owner	 = THIS_MODULE,
 	.open	 = sockstat_seq_open,
 	.read	 = seq_read,
 	.llseek	 = seq_lseek,
@@ -206,11 +205,12 @@ static const struct snmp_mib snmp4_net_list[] = {
 	SNMP_MIB_ITEM("DelayedACKLost", LINUX_MIB_DELAYEDACKLOST),
 	SNMP_MIB_ITEM("ListenOverflows", LINUX_MIB_LISTENOVERFLOWS),
 	SNMP_MIB_ITEM("ListenDrops", LINUX_MIB_LISTENDROPS),
+	SNMP_MIB_ITEM("TCPHPHits", LINUX_MIB_TCPHPHITS),
 	SNMP_MIB_ITEM("TCPPureAcks", LINUX_MIB_TCPPUREACKS),
+	SNMP_MIB_ITEM("TCPHPAcks", LINUX_MIB_TCPHPACKS),
 	SNMP_MIB_ITEM("TCPRenoRecovery", LINUX_MIB_TCPRENORECOVERY),
 	SNMP_MIB_ITEM("TCPSackRecovery", LINUX_MIB_TCPSACKRECOVERY),
 	SNMP_MIB_ITEM("TCPSACKReneging", LINUX_MIB_TCPSACKRENEGING),
-	SNMP_MIB_ITEM("TCPFACKReorder", LINUX_MIB_TCPFACKREORDER),
 	SNMP_MIB_ITEM("TCPSACKReorder", LINUX_MIB_TCPSACKREORDER),
 	SNMP_MIB_ITEM("TCPRenoReorder", LINUX_MIB_TCPRENOREORDER),
 	SNMP_MIB_ITEM("TCPTSReorder", LINUX_MIB_TCPTSREORDER),
@@ -466,7 +466,6 @@ static int snmp_seq_open(struct inode *inode, struct file *file)
 }
 
 static const struct file_operations snmp_seq_fops = {
-	.owner	 = THIS_MODULE,
 	.open	 = snmp_seq_open,
 	.read	 = seq_read,
 	.llseek	 = seq_lseek,
@@ -514,7 +513,6 @@ static int netstat_seq_open(struct inode *inode, struct file *file)
 }
 
 static const struct file_operations netstat_seq_fops = {
-	.owner	 = THIS_MODULE,
 	.open	 = netstat_seq_open,
 	.read	 = seq_read,
 	.llseek	 = seq_lseek,
@@ -551,6 +549,7 @@ static __net_exit void ip_proc_exit_net(struct net *net)
 static __net_initdata struct pernet_operations ip_proc_ops = {
 	.init = ip_proc_init_net,
 	.exit = ip_proc_exit_net,
+	.async = true,
 };
 
 int __init ip_misc_proc_init(void)

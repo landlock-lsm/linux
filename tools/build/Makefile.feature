@@ -56,6 +56,7 @@ FEATURE_TESTS_BASIC :=                  \
         libunwind-arm                   \
         libunwind-aarch64               \
         pthread-attr-setaffinity-np     \
+        pthread-barrier     		\
         stackprotector-all              \
         timerfd                         \
         libdw-dwarf-unwind              \
@@ -64,7 +65,9 @@ FEATURE_TESTS_BASIC :=                  \
         get_cpuid                       \
         bpf                             \
         sched_getcpu			\
-        sdt
+        sdt				\
+        setns				\
+        libopencsd
 
 # FEATURE_TESTS_BASIC + FEATURE_TESTS_EXTRA is the complete list
 # of all feature tests

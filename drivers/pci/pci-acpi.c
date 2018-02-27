@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * File:	pci-acpi.c
  * Purpose:	Provide PCI support in ACPI
@@ -542,7 +543,7 @@ static int acpi_pci_set_power_state(struct pci_dev *dev, pci_power_t state)
 	}
 
 	if (!error)
-		dev_dbg(&dev->dev, "power state changed by ACPI to %s\n",
+		pci_dbg(dev, "power state changed by ACPI to %s\n",
 			 acpi_power_state_string(state_conv[state]));
 
 	return error;
@@ -573,7 +574,7 @@ static int acpi_pci_propagate_wakeup(struct pci_bus *bus, bool enable)
 {
 	while (bus->parent) {
 		if (acpi_pm_device_can_wakeup(&bus->self->dev))
-			return acpi_pm_set_device_wakeup(&bus->self->dev, enable);
+			return acpi_pm_set_bridge_wakeup(&bus->self->dev, enable);
 
 		bus = bus->parent;
 	}
@@ -581,7 +582,7 @@ static int acpi_pci_propagate_wakeup(struct pci_bus *bus, bool enable)
 	/* We have reached the root bus. */
 	if (bus->bridge) {
 		if (acpi_pm_device_can_wakeup(bus->bridge))
-			return acpi_pm_set_device_wakeup(bus->bridge, enable);
+			return acpi_pm_set_bridge_wakeup(bus->bridge, enable);
 	}
 	return 0;
 }
@@ -624,7 +625,7 @@ void acpi_pci_add_bus(struct pci_bus *bus)
 	union acpi_object *obj;
 	struct pci_host_bridge *bridge;
 
-	if (acpi_pci_disabled || !bus->bridge)
+	if (acpi_pci_disabled || !bus->bridge || !ACPI_HANDLE(bus->bridge))
 		return;
 
 	acpi_pci_slot_enumerate(bus);

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * NETLINK      Generic Netlink Family
  *
@@ -1034,6 +1035,7 @@ static void __net_exit genl_pernet_exit(struct net *net)
 static struct pernet_operations genl_pernet_ops = {
 	.init = genl_pernet_init,
 	.exit = genl_pernet_exit,
+	.async = true,
 };
 
 static int __init genl_init(void)
@@ -1080,6 +1082,7 @@ static int genlmsg_mcast(struct sk_buff *skb, u32 portid, unsigned long group,
 {
 	struct sk_buff *tmp;
 	struct net *net, *prev = NULL;
+	bool delivered = false;
 	int err;
 
 	for_each_net_rcu(net) {
@@ -1091,14 +1094,21 @@ static int genlmsg_mcast(struct sk_buff *skb, u32 portid, unsigned long group,
 			}
 			err = nlmsg_multicast(prev->genl_sock, tmp,
 					      portid, group, flags);
-			if (err)
+			if (!err)
+				delivered = true;
+			else if (err != -ESRCH)
 				goto error;
 		}
 
 		prev = net;
 	}
 
-	return nlmsg_multicast(prev->genl_sock, skb, portid, group, flags);
+	err = nlmsg_multicast(prev->genl_sock, skb, portid, group, flags);
+	if (!err)
+		delivered = true;
+	else if (err != -ESRCH)
+		goto error;
+	return delivered ? 0 : -ESRCH;
  error:
 	kfree_skb(skb);
 	return err;

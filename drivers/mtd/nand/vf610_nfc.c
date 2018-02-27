@@ -31,10 +31,9 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/mtd/mtd.h>
-#include <linux/mtd/nand.h>
+#include <linux/mtd/rawnand.h>
 #include <linux/mtd/partitions.h>
 #include <linux/of_device.h>
-#include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 
@@ -561,7 +560,7 @@ static int vf610_nfc_read_page(struct mtd_info *mtd, struct nand_chip *chip,
 	int eccsize = chip->ecc.size;
 	int stat;
 
-	vf610_nfc_read_buf(mtd, buf, eccsize);
+	nand_read_page_op(chip, page, 0, buf, eccsize);
 	if (oob_required)
 		vf610_nfc_read_buf(mtd, chip->oob_poi, mtd->oobsize);
 
@@ -581,7 +580,7 @@ static int vf610_nfc_write_page(struct mtd_info *mtd, struct nand_chip *chip,
 {
 	struct vf610_nfc *nfc = mtd_to_nfc(mtd);
 
-	vf610_nfc_write_buf(mtd, buf, mtd->writesize);
+	nand_prog_page_begin_op(chip, page, 0, buf, mtd->writesize);
 	if (oob_required)
 		vf610_nfc_write_buf(mtd, chip->oob_poi, mtd->oobsize);
 
@@ -589,7 +588,7 @@ static int vf610_nfc_write_page(struct mtd_info *mtd, struct nand_chip *chip,
 	nfc->use_hw_ecc = true;
 	nfc->write_sz = mtd->writesize + mtd->oobsize;
 
-	return 0;
+	return nand_prog_page_end_op(chip);
 }
 
 static const struct of_device_id vf610_nfc_dt_ids[] = {
@@ -814,12 +813,14 @@ static int vf610_nfc_suspend(struct device *dev)
 
 static int vf610_nfc_resume(struct device *dev)
 {
+	int err;
+
 	struct mtd_info *mtd = dev_get_drvdata(dev);
 	struct vf610_nfc *nfc = mtd_to_nfc(mtd);
 
-	pinctrl_pm_select_default_state(dev);
-
-	clk_prepare_enable(nfc->clk);
+	err = clk_prepare_enable(nfc->clk);
+	if (err)
+		return err;
 
 	vf610_nfc_preinit_controller(nfc);
 	vf610_nfc_init_controller(nfc);

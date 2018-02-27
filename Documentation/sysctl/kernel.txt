@@ -34,6 +34,7 @@ show up in /proc/sys/kernel:
 - hostname
 - hotplug
 - hardlockup_all_cpu_backtrace
+- hardlockup_panic
 - hung_task_panic
 - hung_task_check_count
 - hung_task_timeout_secs
@@ -61,6 +62,7 @@ show up in /proc/sys/kernel:
 - perf_cpu_time_max_percent
 - perf_event_paranoid
 - perf_event_max_stack
+- perf_event_mlock_kb
 - perf_event_max_contexts_per_stack
 - pid_max
 - powersave-nap               [ PPC only ]
@@ -74,6 +76,7 @@ show up in /proc/sys/kernel:
 - reboot-cmd                  [ SPARC only ]
 - rtsig-max
 - rtsig-nr
+- seccomp/                    ==> Documentation/userspace-api/seccomp_filter.rst
 - sem
 - sem_next_id		      [ sysv ipc ]
 - sg-big-buff                 [ generic SCSI device (sg) ]
@@ -311,6 +314,19 @@ will be initiated.
 1: on detection capture more debug information.
 ==============================================================
 
+hardlockup_panic:
+
+This parameter can be used to control whether the kernel panics
+when a hard lockup is detected.
+
+   0 - don't panic on hard lockup
+   1 - panic on hard lockup
+
+See Documentation/lockup-watchdogs.txt for more information.  This can
+also be set using the nmi_watchdog kernel parameter.
+
+==============================================================
+
 hotplug:
 
 Path for the hotplug policy agent.
@@ -375,7 +391,8 @@ kptr_restrict:
 This toggle indicates whether restrictions are placed on
 exposing kernel addresses via /proc and other interfaces.
 
-When kptr_restrict is set to (0), the default, there are no restrictions.
+When kptr_restrict is set to 0 (the default) the address is hashed before
+printing. (This is the equivalent to %p.)
 
 When kptr_restrict is set to (1), kernel pointers printed using the %pK
 format specifier will be replaced with 0's unless the user has CAP_SYSLOG
@@ -654,7 +671,9 @@ Controls use of the performance events system by unprivileged
 users (without CAP_SYS_ADMIN).  The default value is 2.
 
  -1: Allow use of (almost) all events by all users
->=0: Disallow raw tracepoint access by users without CAP_IOC_LOCK
+     Ignore mlock limit after perf_event_mlock_kb without CAP_IPC_LOCK
+>=0: Disallow ftrace function tracepoint by users without CAP_SYS_ADMIN
+     Disallow raw tracepoint access by users without CAP_SYS_ADMIN
 >=1: Disallow CPU event access by users without CAP_SYS_ADMIN
 >=2: Disallow kernel profiling by users without CAP_SYS_ADMIN
 
@@ -670,6 +689,14 @@ This can only be done when no events are in use that have callchains
 enabled, otherwise writing to this file will return -EBUSY.
 
 The default value is 127.
+
+==============================================================
+
+perf_event_mlock_kb:
+
+Control size of per-cpu ring buffer not counted agains mlock limit.
+
+The default value is 512 + 1 page
 
 ==============================================================
 

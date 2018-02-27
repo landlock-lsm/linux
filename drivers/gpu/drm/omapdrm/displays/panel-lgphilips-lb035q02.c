@@ -1,7 +1,7 @@
 /*
  * LG.Philips LB035Q02 LCD Panel driver
  *
- * Copyright (C) 2013 Texas Instruments
+ * Copyright (C) 2013 Texas Instruments Incorporated - http://www.ti.com/
  * Author: Tomi Valkeinen <tomi.valkeinen@ti.com>
  * Based on a driver by: Steve Sakoman <steve@sakoman.com>
  *
@@ -19,7 +19,7 @@
 
 #include "../dss/omapdss.h"
 
-static struct videomode lb035q02_vm = {
+static const struct videomode lb035q02_vm = {
 	.hactive = 320,
 	.vactive = 240,
 

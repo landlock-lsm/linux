@@ -1,9 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_SECCOMP_H
 #define _LINUX_SECCOMP_H
 
 #include <uapi/linux/seccomp.h>
 
-#define SECCOMP_FILTER_FLAG_MASK	(SECCOMP_FILTER_FLAG_TSYNC)
+#define SECCOMP_FILTER_FLAG_MASK	(SECCOMP_FILTER_FLAG_TSYNC | \
+					 SECCOMP_FILTER_FLAG_LOG)
 
 #ifdef CONFIG_SECCOMP
 
@@ -19,7 +21,7 @@ struct seccomp_filter;
  *         system calls available to a process.
  * @filter: must always point to a valid seccomp-filter or NULL as it is
  *          accessed without locking during system call entry.
- * @landlock_events: contains an array of Landlock rules.
+ * @landlock_prog_set: contains a set of Landlock programs.
  *
  *          @filter must only be accessed from the context of current as there
  *          is no read locking.
@@ -28,7 +30,7 @@ struct seccomp {
 	int mode;
 	struct seccomp_filter *filter;
 #if defined(CONFIG_SECCOMP_FILTER) && defined(CONFIG_SECURITY_LANDLOCK)
-	struct landlock_events *landlock_events;
+	struct landlock_prog_set *landlock_prog_set;
 #endif /* CONFIG_SECCOMP_FILTER && CONFIG_SECURITY_LANDLOCK */
 };
 
@@ -98,9 +100,17 @@ static inline void get_seccomp_filter(struct task_struct *tsk)
 #if defined(CONFIG_SECCOMP_FILTER) && defined(CONFIG_CHECKPOINT_RESTORE)
 extern long seccomp_get_filter(struct task_struct *task,
 			       unsigned long filter_off, void __user *data);
+extern long seccomp_get_metadata(struct task_struct *task,
+				 unsigned long filter_off, void __user *data);
 #else
 static inline long seccomp_get_filter(struct task_struct *task,
 				      unsigned long n, void __user *data)
+{
+	return -EINVAL;
+}
+static inline long seccomp_get_metadata(struct task_struct *task,
+					unsigned long filter_off,
+					void __user *data)
 {
 	return -EINVAL;
 }

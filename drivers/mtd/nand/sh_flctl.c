@@ -38,7 +38,7 @@
 #include <linux/string.h>
 
 #include <linux/mtd/mtd.h>
-#include <linux/mtd/nand.h>
+#include <linux/mtd/rawnand.h>
 #include <linux/mtd/partitions.h>
 #include <linux/mtd/sh_flctl.h>
 
@@ -411,7 +411,7 @@ static int flctl_dma_fifo0_transfer(struct sh_flctl *flctl, unsigned long *buf,
 
 	dma_addr = dma_map_single(chan->device->dev, buf, len, dir);
 
-	if (dma_addr)
+	if (!dma_mapping_error(chan->device->dev, dma_addr))
 		desc = dmaengine_prep_slave_single(chan, dma_addr, len,
 			tr_dir, DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
 
@@ -614,7 +614,7 @@ static void set_cmd_regs(struct mtd_info *mtd, uint32_t cmd, uint32_t flcmcdr_va
 static int flctl_read_page_hwecc(struct mtd_info *mtd, struct nand_chip *chip,
 				uint8_t *buf, int oob_required, int page)
 {
-	chip->read_buf(mtd, buf, mtd->writesize);
+	nand_read_page_op(chip, page, 0, buf, mtd->writesize);
 	if (oob_required)
 		chip->read_buf(mtd, chip->oob_poi, mtd->oobsize);
 	return 0;
@@ -624,9 +624,9 @@ static int flctl_write_page_hwecc(struct mtd_info *mtd, struct nand_chip *chip,
 				  const uint8_t *buf, int oob_required,
 				  int page)
 {
-	chip->write_buf(mtd, buf, mtd->writesize);
+	nand_prog_page_begin_op(chip, page, 0, buf, mtd->writesize);
 	chip->write_buf(mtd, chip->oob_poi, mtd->oobsize);
-	return 0;
+	return nand_prog_page_end_op(chip);
 }
 
 static void execmd_read_page_sector(struct mtd_info *mtd, int page_addr)
@@ -1094,14 +1094,11 @@ MODULE_DEVICE_TABLE(of, of_flctl_match);
 
 static struct sh_flctl_platform_data *flctl_parse_dt(struct device *dev)
 {
-	const struct of_device_id *match;
-	struct flctl_soc_config *config;
+	const struct flctl_soc_config *config;
 	struct sh_flctl_platform_data *pdata;
 
-	match = of_match_device(of_flctl_match, dev);
-	if (match)
-		config = (struct flctl_soc_config *)match->data;
-	else {
+	config = of_device_get_match_data(dev);
+	if (!config) {
 		dev_err(dev, "%s: no OF configuration attached\n", __func__);
 		return NULL;
 	}
@@ -1141,8 +1138,8 @@ static int flctl_probe(struct platform_device *pdev)
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0) {
-		dev_err(&pdev->dev, "failed to get flste irq data\n");
-		return -ENXIO;
+		dev_err(&pdev->dev, "failed to get flste irq data: %d\n", irq);
+		return irq;
 	}
 
 	ret = devm_request_irq(&pdev->dev, irq, flctl_handle_flste, IRQF_SHARED,

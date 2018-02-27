@@ -1,4 +1,6 @@
-TARGETS =  bpf
+# SPDX-License-Identifier: GPL-2.0
+TARGETS = android
+TARGETS += bpf
 TARGETS += breakpoints
 TARGETS += capabilities
 TARGETS += cpufreq
@@ -53,6 +55,10 @@ override LDFLAGS =
 override MAKEFLAGS =
 endif
 
+ifneq ($(KBUILD_SRC),)
+override LDFLAGS =
+endif
+
 BUILD := $(O)
 ifndef BUILD
   BUILD := $(KBUILD_OUTPUT)
@@ -63,32 +69,32 @@ endif
 
 export BUILD
 all:
-	for TARGET in $(TARGETS); do		\
+	@for TARGET in $(TARGETS); do		\
 		BUILD_TARGET=$$BUILD/$$TARGET;	\
 		mkdir $$BUILD_TARGET  -p;	\
 		make OUTPUT=$$BUILD_TARGET -C $$TARGET;\
 	done;
 
 run_tests: all
-	for TARGET in $(TARGETS); do \
+	@for TARGET in $(TARGETS); do \
 		BUILD_TARGET=$$BUILD/$$TARGET;	\
 		make OUTPUT=$$BUILD_TARGET -C $$TARGET run_tests;\
 	done;
 
 hotplug:
-	for TARGET in $(TARGETS_HOTPLUG); do \
+	@for TARGET in $(TARGETS_HOTPLUG); do \
 		BUILD_TARGET=$$BUILD/$$TARGET;	\
 		make OUTPUT=$$BUILD_TARGET -C $$TARGET;\
 	done;
 
 run_hotplug: hotplug
-	for TARGET in $(TARGETS_HOTPLUG); do \
+	@for TARGET in $(TARGETS_HOTPLUG); do \
 		BUILD_TARGET=$$BUILD/$$TARGET;	\
 		make OUTPUT=$$BUILD_TARGET -C $$TARGET run_full_test;\
 	done;
 
 clean_hotplug:
-	for TARGET in $(TARGETS_HOTPLUG); do \
+	@for TARGET in $(TARGETS_HOTPLUG); do \
 		BUILD_TARGET=$$BUILD/$$TARGET;	\
 		make OUTPUT=$$BUILD_TARGET -C $$TARGET clean;\
 	done;
@@ -104,15 +110,22 @@ install:
 ifdef INSTALL_PATH
 	@# Ask all targets to install their files
 	mkdir -p $(INSTALL_PATH)
-	for TARGET in $(TARGETS); do \
+	@for TARGET in $(TARGETS); do \
 		BUILD_TARGET=$$BUILD/$$TARGET;	\
 		make OUTPUT=$$BUILD_TARGET -C $$TARGET INSTALL_PATH=$(INSTALL_PATH)/$$TARGET install; \
 	done;
 
 	@# Ask all targets to emit their test scripts
 	echo "#!/bin/sh" > $(ALL_SCRIPT)
-	echo "cd \$$(dirname \$$0)" >> $(ALL_SCRIPT)
+	echo "BASE_DIR=\$$(realpath \$$(dirname \$$0))" >> $(ALL_SCRIPT)
+	echo "cd \$$BASE_DIR" >> $(ALL_SCRIPT)
 	echo "ROOT=\$$PWD" >> $(ALL_SCRIPT)
+	echo "if [ \"\$$1\" = \"--summary\" ]; then" >> $(ALL_SCRIPT)
+	echo "  OUTPUT=\$$BASE_DIR/output.log" >> $(ALL_SCRIPT)
+	echo "  cat /dev/null > \$$OUTPUT" >> $(ALL_SCRIPT)
+	echo "else" >> $(ALL_SCRIPT)
+	echo "  OUTPUT=/dev/stdout" >> $(ALL_SCRIPT)
+	echo "fi" >> $(ALL_SCRIPT)
 
 	for TARGET in $(TARGETS); do \
 		BUILD_TARGET=$$BUILD/$$TARGET;	\
@@ -129,7 +142,7 @@ else
 endif
 
 clean:
-	for TARGET in $(TARGETS); do \
+	@for TARGET in $(TARGETS); do \
 		BUILD_TARGET=$$BUILD/$$TARGET;	\
 		make OUTPUT=$$BUILD_TARGET -C $$TARGET clean;\
 	done;

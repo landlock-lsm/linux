@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _NET_NF_TABLES_H
 #define _NET_NF_TABLES_H
 
@@ -8,6 +9,7 @@
 #include <linux/netfilter/x_tables.h>
 #include <linux/netfilter/nf_tables.h>
 #include <linux/u64_stats_sync.h>
+#include <net/netfilter/nf_flow_table.h>
 #include <net/netlink.h>
 
 #define NFT_JUMP_STACK_SIZE	16
@@ -53,21 +55,13 @@ static inline void nft_set_pktinfo(struct nft_pktinfo *pkt,
 	pkt->xt.state = state;
 }
 
-static inline void nft_set_pktinfo_proto_unspec(struct nft_pktinfo *pkt,
-						struct sk_buff *skb)
+static inline void nft_set_pktinfo_unspec(struct nft_pktinfo *pkt,
+					  struct sk_buff *skb)
 {
 	pkt->tprot_set = false;
 	pkt->tprot = 0;
 	pkt->xt.thoff = 0;
 	pkt->xt.fragoff = 0;
-}
-
-static inline void nft_set_pktinfo_unspec(struct nft_pktinfo *pkt,
-					  struct sk_buff *skb,
-					  const struct nf_hook_state *state)
-{
-	nft_set_pktinfo(pkt, skb, state);
-	nft_set_pktinfo_proto_unspec(pkt, skb);
 }
 
 /**
@@ -149,22 +143,22 @@ static inline void nft_data_debug(const struct nft_data *data)
  *	struct nft_ctx - nf_tables rule/set context
  *
  *	@net: net namespace
- * 	@afi: address family info
  * 	@table: the table the chain is contained in
  * 	@chain: the chain the rule is contained in
  *	@nla: netlink attributes
  *	@portid: netlink portID of the original message
  *	@seq: netlink sequence number
+ *	@family: protocol family
  *	@report: notify via unicast netlink message
  */
 struct nft_ctx {
 	struct net			*net;
-	struct nft_af_info		*afi;
 	struct nft_table		*table;
 	struct nft_chain		*chain;
 	const struct nlattr * const 	*nla;
 	u32				portid;
 	u32				seq;
+	u8				family;
 	bool				report;
 };
 
@@ -311,6 +305,7 @@ struct nft_expr;
  *	@flush: deactivate element in the next generation
  *	@remove: remove element from set
  *	@walk: iterate over all set elemeennts
+ *	@get: get set elements
  *	@privsize: function to return size of set private data
  *	@init: initialize private data of new set instance
  *	@destroy: destroy private data of set instance
@@ -350,6 +345,10 @@ struct nft_set_ops {
 	void				(*walk)(const struct nft_ctx *ctx,
 						struct nft_set *set,
 						struct nft_set_iter *iter);
+	void *				(*get)(const struct net *net,
+					       const struct nft_set *set,
+					       const struct nft_set_elem *elem,
+					       unsigned int flags);
 
 	unsigned int			(*privsize)(const struct nlattr * const nla[],
 						    const struct nft_set_desc *desc);
@@ -375,6 +374,7 @@ void nft_unregister_set(struct nft_set_type *type);
  *	@list: table set list node
  *	@bindings: list of set bindings
  * 	@name: name of the set
+ *	@handle: unique handle of the set
  * 	@ktype: key type (numeric type defined by userspace, not used in the kernel)
  * 	@dtype: data type (verdict or numeric type defined by userspace)
  * 	@objtype: object type (see NFT_OBJECT_* definitions)
@@ -396,7 +396,8 @@ void nft_unregister_set(struct nft_set_type *type);
 struct nft_set {
 	struct list_head		list;
 	struct list_head		bindings;
-	char				name[NFT_SET_MAXNAMELEN];
+	char				*name;
+	u64				handle;
 	u32				ktype;
 	u32				dtype;
 	u32				objtype;
@@ -417,6 +418,11 @@ struct nft_set {
 	unsigned char			data[]
 		__attribute__((aligned(__alignof__(u64))));
 };
+
+static inline bool nft_set_is_anonymous(const struct nft_set *set)
+{
+	return set->flags & NFT_SET_ANONYMOUS;
+}
 
 static inline void *nft_set_priv(const struct nft_set *set)
 {
@@ -859,7 +865,7 @@ struct nft_chain {
 	u16				level;
 	u8				flags:6,
 					genmask:2;
-	char				name[NFT_CHAIN_MAXNAMELEN];
+	char				*name;
 };
 
 enum nft_chain_type {
@@ -877,7 +883,7 @@ enum nft_chain_type {
  * 	@family: address family
  * 	@owner: module owner
  * 	@hook_mask: mask of valid hooks
- * 	@hooks: hookfn overrides
+ * 	@hooks: array of hook functions
  */
 struct nf_chain_type {
 	const char			*name;
@@ -899,8 +905,6 @@ struct nft_stats {
 	struct u64_stats_sync	syncp;
 };
 
-#define NFT_HOOK_OPS_MAX		2
-
 /**
  *	struct nft_base_chain - nf_tables base chain
  *
@@ -912,7 +916,7 @@ struct nft_stats {
  *	@dev_name: device name that this base chain is attached to (if any)
  */
 struct nft_base_chain {
-	struct nf_hook_ops		ops[NFT_HOOK_OPS_MAX];
+	struct nf_hook_ops		ops;
 	const struct nf_chain_type	*type;
 	u8				policy;
 	u8				flags;
@@ -942,10 +946,13 @@ unsigned int nft_do_chain(struct nft_pktinfo *pkt, void *priv);
  *	@chains: chains in the table
  *	@sets: sets in the table
  *	@objects: stateful objects in the table
+ *	@flowtables: flow tables in the table
  *	@hgenerator: handle generator state
+ *	@handle: table handle
  *	@use: number of chain references to this table
  *	@flags: table flag (see enum nft_table_flags)
  *	@genmask: generation mask
+ *	@afinfo: address family info
  *	@name: name of the table
  */
 struct nft_table {
@@ -953,45 +960,15 @@ struct nft_table {
 	struct list_head		chains;
 	struct list_head		sets;
 	struct list_head		objects;
+	struct list_head		flowtables;
 	u64				hgenerator;
+	u64				handle;
 	u32				use;
-	u16				flags:14,
+	u16				family:6,
+					flags:8,
 					genmask:2;
-	char				name[NFT_TABLE_MAXNAMELEN];
+	char				*name;
 };
-
-enum nft_af_flags {
-	NFT_AF_NEEDS_DEV	= (1 << 0),
-};
-
-/**
- *	struct nft_af_info - nf_tables address family info
- *
- *	@list: used internally
- *	@family: address family
- *	@nhooks: number of hooks in this family
- *	@owner: module owner
- *	@tables: used internally
- *	@flags: family flags
- *	@nops: number of hook ops in this family
- *	@hook_ops_init: initialization function for chain hook ops
- *	@hooks: hookfn overrides for packet validation
- */
-struct nft_af_info {
-	struct list_head		list;
-	int				family;
-	unsigned int			nhooks;
-	struct module			*owner;
-	struct list_head		tables;
-	u32				flags;
-	unsigned int			nops;
-	void				(*hook_ops_init)(struct nf_hook_ops *,
-							 unsigned int);
-	nf_hookfn			*hooks[NF_MAX_HOOKS];
-};
-
-int nft_register_afinfo(struct net *, struct nft_af_info *);
-void nft_unregister_afinfo(struct net *, struct nft_af_info *);
 
 int nft_register_chain_type(const struct nf_chain_type *);
 void nft_unregister_chain_type(const struct nf_chain_type *);
@@ -1007,21 +984,22 @@ int nft_verdict_dump(struct sk_buff *skb, int type,
  *
  *	@list: table stateful object list node
  *	@table: table this object belongs to
- *	@type: pointer to object type
- *	@data: pointer to object data
  *	@name: name of this stateful object
  *	@genmask: generation mask
  *	@use: number of references to this stateful object
+ *	@handle: unique object handle
+ *	@ops: object operations
  * 	@data: object data, layout depends on type
  */
 struct nft_object {
 	struct list_head		list;
-	char				name[NFT_OBJ_MAXNAMELEN];
+	char				*name;
 	struct nft_table		*table;
 	u32				genmask:2,
 					use:30;
+	u64				handle;
 	/* runtime data below here */
-	const struct nft_object_type	*type ____cacheline_aligned;
+	const struct nft_object_ops	*ops ____cacheline_aligned;
 	unsigned char			data[]
 		__attribute__((aligned(__alignof__(u64))));
 };
@@ -1044,27 +1022,39 @@ void nft_obj_notify(struct net *net, struct nft_table *table,
 /**
  *	struct nft_object_type - stateful object type
  *
- *	@eval: stateful object evaluation function
+ *	@select_ops: function to select nft_object_ops
+ *	@ops: default ops, used when no select_ops functions is present
  *	@list: list node in list of object types
  *	@type: stateful object numeric type
- *	@size: stateful object size
  *	@owner: module owner
  *	@maxattr: maximum netlink attribute
  *	@policy: netlink attribute policy
+ */
+struct nft_object_type {
+	const struct nft_object_ops	*(*select_ops)(const struct nft_ctx *,
+						       const struct nlattr * const tb[]);
+	const struct nft_object_ops	*ops;
+	struct list_head		list;
+	u32				type;
+	unsigned int                    maxattr;
+	struct module			*owner;
+	const struct nla_policy		*policy;
+};
+
+/**
+ *	struct nft_object_ops - stateful object operations
+ *
+ *	@eval: stateful object evaluation function
+ *	@size: stateful object size
  *	@init: initialize object from netlink attributes
  *	@destroy: release existing stateful object
  *	@dump: netlink dump stateful object
  */
-struct nft_object_type {
+struct nft_object_ops {
 	void				(*eval)(struct nft_object *obj,
 						struct nft_regs *regs,
 						const struct nft_pktinfo *pkt);
-	struct list_head		list;
-	u32				type;
 	unsigned int			size;
-	unsigned int			maxattr;
-	struct module			*owner;
-	const struct nla_policy		*policy;
 	int				(*init)(const struct nft_ctx *ctx,
 						const struct nlattr *const tb[],
 						struct nft_object *obj);
@@ -1072,10 +1062,51 @@ struct nft_object_type {
 	int				(*dump)(struct sk_buff *skb,
 						struct nft_object *obj,
 						bool reset);
+	const struct nft_object_type	*type;
 };
 
 int nft_register_obj(struct nft_object_type *obj_type);
 void nft_unregister_obj(struct nft_object_type *obj_type);
+
+/**
+ *	struct nft_flowtable - nf_tables flow table
+ *
+ *	@list: flow table list node in table list
+ * 	@table: the table the flow table is contained in
+ *	@name: name of this flow table
+ *	@hooknum: hook number
+ *	@priority: hook priority
+ *	@ops_len: number of hooks in array
+ *	@genmask: generation mask
+ *	@use: number of references to this flow table
+ * 	@handle: unique object handle
+ *	@data: rhashtable and garbage collector
+ * 	@ops: array of hooks
+ */
+struct nft_flowtable {
+	struct list_head		list;
+	struct nft_table		*table;
+	char				*name;
+	int				hooknum;
+	int				priority;
+	int				ops_len;
+	u32				genmask:2,
+					use:30;
+	u64				handle;
+	/* runtime data below here */
+	struct nf_hook_ops		*ops ____cacheline_aligned;
+	struct nf_flowtable		data;
+};
+
+struct nft_flowtable *nf_tables_flowtable_lookup(const struct nft_table *table,
+						 const struct nlattr *nla,
+						 u8 genmask);
+void nft_flow_table_iterate(struct net *net,
+			    void (*iter)(struct nf_flowtable *flowtable, void *data),
+			    void *data);
+
+void nft_register_flowtable_type(struct nf_flowtable_type *type);
+void nft_unregister_flowtable_type(struct nf_flowtable_type *type);
 
 /**
  *	struct nft_traceinfo - nft tracing information and state
@@ -1105,12 +1136,6 @@ void nft_trace_init(struct nft_traceinfo *info, const struct nft_pktinfo *pkt,
 		    const struct nft_chain *basechain);
 
 void nft_trace_notify(struct nft_traceinfo *info);
-
-#define nft_dereference(p)					\
-	nfnl_dereference(p, NFNL_SUBSYS_NFTABLES)
-
-#define MODULE_ALIAS_NFT_FAMILY(family)	\
-	MODULE_ALIAS("nft-afinfo-" __stringify(family))
 
 #define MODULE_ALIAS_NFT_CHAIN(family, name) \
 	MODULE_ALIAS("nft-chain-" __stringify(family) "-" name)
@@ -1151,8 +1176,8 @@ static inline u8 nft_genmask_next(const struct net *net)
 
 static inline u8 nft_genmask_cur(const struct net *net)
 {
-	/* Use ACCESS_ONCE() to prevent refetching the value for atomicity */
-	return 1 << ACCESS_ONCE(net->nft.gencursor);
+	/* Use READ_ONCE() to prevent refetching the value for atomicity */
+	return 1 << READ_ONCE(net->nft.gencursor);
 }
 
 #define NFT_GENMASK_ANY		((1 << 0) | (1 << 1))
@@ -1272,7 +1297,7 @@ struct nft_trans_set {
 
 struct nft_trans_chain {
 	bool				update;
-	char				name[NFT_CHAIN_MAXNAMELEN];
+	char				*name;
 	struct nft_stats __percpu	*stats;
 	u8				policy;
 };
@@ -1312,5 +1337,12 @@ struct nft_trans_obj {
 
 #define nft_trans_obj(trans)	\
 	(((struct nft_trans_obj *)trans->data)->obj)
+
+struct nft_trans_flowtable {
+	struct nft_flowtable		*flowtable;
+};
+
+#define nft_trans_flowtable(trans)	\
+	(((struct nft_trans_flowtable *)trans->data)->flowtable)
 
 #endif /* _NET_NF_TABLES_H */

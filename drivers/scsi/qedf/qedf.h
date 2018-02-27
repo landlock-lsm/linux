@@ -129,7 +129,7 @@ struct qedf_ioreq {
 	struct delayed_work timeout_work;
 	struct completion tm_done;
 	struct completion abts_done;
-	struct fcoe_task_context *task;
+	struct e4_fcoe_task_context *task;
 	struct fcoe_task_params *task_params;
 	struct scsi_sgl_task_params *sgl_task_params;
 	int idx;
@@ -300,7 +300,6 @@ struct qedf_ctx {
 #define QEDF_FALLBACK_VLAN	1002
 #define QEDF_DEFAULT_PRIO	3
 	int vlan_id;
-	uint vlan_hw_insert:1;
 	struct qed_dev *cdev;
 	struct qed_dev_fcoe_info dev_info;
 	struct qed_int_info int_info;
@@ -443,7 +442,6 @@ extern void qedf_cmd_mgr_free(struct qedf_cmd_mgr *cmgr);
 extern int qedf_queuecommand(struct Scsi_Host *host,
 	struct scsi_cmnd *sc_cmd);
 extern void qedf_fip_send(struct fcoe_ctlr *fip, struct sk_buff *skb);
-extern void qedf_update_src_mac(struct fc_lport *lport, u8 *addr);
 extern u8 *qedf_get_src_mac(struct fc_lport *lport);
 extern void qedf_fip_recv(struct qedf_ctx *qedf, struct sk_buff *skb);
 extern void qedf_fcoe_send_vlan_req(struct qedf_ctx *qedf);
@@ -467,7 +465,7 @@ extern void qedf_cmd_timer_set(struct qedf_ctx *qedf, struct qedf_ioreq *io_req,
 	unsigned int timer_msec);
 extern int qedf_init_mp_req(struct qedf_ioreq *io_req);
 extern void qedf_init_mp_task(struct qedf_ioreq *io_req,
-	struct fcoe_task_context *task_ctx, struct fcoe_wqe *wqe);
+	struct e4_fcoe_task_context *task_ctx, struct fcoe_wqe *sqe);
 extern u16 qedf_get_sqe_idx(struct qedf_rport *fcport);
 extern void qedf_ring_doorbell(struct qedf_rport *fcport);
 extern void qedf_process_els_compl(struct qedf_ctx *qedf, struct fcoe_cqe *cqe,

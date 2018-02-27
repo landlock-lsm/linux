@@ -213,8 +213,8 @@ static bool max98926_readable_register(struct device *dev, unsigned int reg)
 	}
 };
 
-DECLARE_TLV_DB_SCALE(max98926_spk_tlv, -600, 100, 0);
-DECLARE_TLV_DB_RANGE(max98926_current_tlv,
+static DECLARE_TLV_DB_SCALE(max98926_spk_tlv, -600, 100, 0);
+static DECLARE_TLV_DB_RANGE(max98926_current_tlv,
 	0, 11, TLV_DB_SCALE_ITEM(20, 20, 0),
 	12, 15, TLV_DB_SCALE_ITEM(320, 40, 0),
 );
@@ -459,7 +459,7 @@ static int max98926_dai_hw_params(struct snd_pcm_substream *substream,
 #define MAX98926_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | \
 		SNDRV_PCM_FMTBIT_S24_LE | SNDRV_PCM_FMTBIT_S32_LE)
 
-static struct snd_soc_dai_ops max98926_dai_ops = {
+static const struct snd_soc_dai_ops max98926_dai_ops = {
 	.set_fmt = max98926_dai_set_fmt,
 	.hw_params = max98926_dai_hw_params,
 };
@@ -490,13 +490,13 @@ static int max98926_probe(struct snd_soc_codec *codec)
 	struct max98926_priv *max98926 = snd_soc_codec_get_drvdata(codec);
 
 	max98926->codec = codec;
-	codec->control_data = max98926->regmap;
+
 	/* Hi-Z all the slots */
 	regmap_write(max98926->regmap, MAX98926_DOUT_HIZ_CFG4, 0xF0);
 	return 0;
 }
 
-static struct snd_soc_codec_driver soc_codec_dev_max98926 = {
+static const struct snd_soc_codec_driver soc_codec_dev_max98926 = {
 	.probe	= max98926_probe,
 	.component_driver = {
 		.controls		= max98926_snd_controls,

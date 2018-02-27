@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*!
  *  @file	wilc_wfi_netdevice.h
  *  @brief	Definitions for the network module
@@ -85,29 +86,28 @@ struct wilc_wfi_wep_key {
 };
 
 struct sta_info {
-	u8 au8Sta_AssociatedBss[MAX_NUM_STA][ETH_ALEN];
+	u8 sta_associated_bss[MAX_NUM_STA][ETH_ALEN];
 };
 
 /*Parameters needed for host interface for  remaining on channel*/
-struct wilc_wfi_p2pListenParams {
-	struct ieee80211_channel *pstrListenChan;
-	enum nl80211_channel_type tenuChannelType;
-	u32 u32ListenDuration;
-	u64 u64ListenCookie;
-	u32 u32ListenSessionID;
+struct wilc_wfi_p2p_listen_params {
+	struct ieee80211_channel *listen_ch;
+	u32 listen_duration;
+	u64 listen_cookie;
+	u32 listen_session_id;
 };
 
 struct wilc_priv {
 	struct wireless_dev *wdev;
-	struct cfg80211_scan_request *pstrScanReq;
+	struct cfg80211_scan_request *scan_req;
 
-	struct wilc_wfi_p2pListenParams strRemainOnChanParams;
-	u64 u64tx_cookie;
+	struct wilc_wfi_p2p_listen_params remain_on_ch_params;
+	u64 tx_cookie;
 
-	bool bCfgScanning;
-	u32 u32RcvdChCount;
+	bool cfg_scanning;
+	u32 rcvd_ch_cnt;
 
-	u8 au8AssociatedBss[ETH_ALEN];
+	u8 associated_bss[ETH_ALEN];
 	struct sta_info assoc_stainfo;
 	struct net_device_stats stats;
 	u8 monitor_flag;
@@ -134,9 +134,9 @@ struct wilc_priv {
 	/* mutexes */
 	struct mutex scan_req_lock;
 	/*  */
-	bool gbAutoRateAdjusted;
+	bool auto_rate_adjusted;
 
-	bool bInP2PlistenState;
+	bool p2p_listen_state;
 
 };
 
@@ -227,8 +227,8 @@ int wilc1000_wlan_init(struct net_device *dev, struct wilc_vif *vif);
 void wilc_frmw_to_linux(struct wilc *wilc, u8 *buff, u32 size, u32 pkt_offset);
 void wilc_mac_indicate(struct wilc *wilc, int flag);
 void wilc_netdev_cleanup(struct wilc *wilc);
-int wilc_netdev_init(struct wilc **wilc, struct device *, int io_type, int gpio,
-		     const struct wilc_hif_func *ops);
+int wilc_netdev_init(struct wilc **wilc, struct device *dev, int io_type,
+		     int gpio, const struct wilc_hif_func *ops);
 void wilc1000_wlan_deinit(struct net_device *dev);
 void WILC_WFI_mgmt_rx(struct wilc *wilc, u8 *buff, u32 size);
 int wilc_wlan_get_firmware(struct net_device *dev);

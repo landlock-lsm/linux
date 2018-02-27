@@ -63,8 +63,8 @@
 #include "runtime.h"
 #include "fw/api/commands.h"
 
-static void iwl_parse_shared_mem_a000(struct iwl_fw_runtime *fwrt,
-				      struct iwl_rx_packet *pkt)
+static void iwl_parse_shared_mem_22000(struct iwl_fw_runtime *fwrt,
+				       struct iwl_rx_packet *pkt)
 {
 	struct iwl_shared_mem_cfg *mem_cfg = (void *)pkt->data;
 	int i, lmac;
@@ -113,6 +113,9 @@ static void iwl_parse_shared_mem(struct iwl_fw_runtime *fwrt,
 		BUILD_BUG_ON(sizeof(fwrt->smem_cfg.internal_txfifo_size) !=
 			     sizeof(mem_cfg->internal_txfifo_size));
 
+		fwrt->smem_cfg.internal_txfifo_addr =
+			le32_to_cpu(mem_cfg->internal_txfifo_addr);
+
 		for (i = 0;
 		     i < ARRAY_SIZE(fwrt->smem_cfg.internal_txfifo_size);
 		     i++)
@@ -140,8 +143,8 @@ void iwl_get_shared_mem_conf(struct iwl_fw_runtime *fwrt)
 		return;
 
 	pkt = cmd.resp_pkt;
-	if (fwrt->trans->cfg->device_family == IWL_DEVICE_FAMILY_A000)
-		iwl_parse_shared_mem_a000(fwrt, pkt);
+	if (fwrt->trans->cfg->device_family == IWL_DEVICE_FAMILY_22000)
+		iwl_parse_shared_mem_22000(fwrt, pkt);
 	else
 		iwl_parse_shared_mem(fwrt, pkt);
 

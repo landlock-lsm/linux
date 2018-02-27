@@ -15,8 +15,10 @@
 #include <uapi/linux/tcp.h>
 #include <uapi/linux/filter.h>
 #include <uapi/linux/pkt_cls.h>
+#include <uapi/linux/erspan.h>
 #include <net/ipv6.h>
 #include "bpf_helpers.h"
+#include "bpf_endian.h"
 
 #define _htonl __builtin_bswap32
 #define ERROR(ret) do {\
@@ -73,6 +75,217 @@ int _gre_get_tunnel(struct __sk_buff *skb)
 	}
 
 	bpf_trace_printk(fmt, sizeof(fmt), key.tunnel_id, key.remote_ipv4);
+	return TC_ACT_OK;
+}
+
+SEC("ip6gretap_set_tunnel")
+int _ip6gretap_set_tunnel(struct __sk_buff *skb)
+{
+	struct bpf_tunnel_key key;
+	int ret;
+
+	__builtin_memset(&key, 0x0, sizeof(key));
+	key.remote_ipv6[3] = _htonl(0x11); /* ::11 */
+	key.tunnel_id = 2;
+	key.tunnel_tos = 0;
+	key.tunnel_ttl = 64;
+	key.tunnel_label = 0xabcde;
+
+	ret = bpf_skb_set_tunnel_key(skb, &key, sizeof(key),
+				     BPF_F_TUNINFO_IPV6 | BPF_F_ZERO_CSUM_TX);
+	if (ret < 0) {
+		ERROR(ret);
+		return TC_ACT_SHOT;
+	}
+
+	return TC_ACT_OK;
+}
+
+SEC("ip6gretap_get_tunnel")
+int _ip6gretap_get_tunnel(struct __sk_buff *skb)
+{
+	char fmt[] = "key %d remote ip6 ::%x label %x\n";
+	struct bpf_tunnel_key key;
+	int ret;
+
+	ret = bpf_skb_get_tunnel_key(skb, &key, sizeof(key),
+				     BPF_F_TUNINFO_IPV6);
+	if (ret < 0) {
+		ERROR(ret);
+		return TC_ACT_SHOT;
+	}
+
+	bpf_trace_printk(fmt, sizeof(fmt),
+			 key.tunnel_id, key.remote_ipv6[3], key.tunnel_label);
+
+	return TC_ACT_OK;
+}
+
+SEC("erspan_set_tunnel")
+int _erspan_set_tunnel(struct __sk_buff *skb)
+{
+	struct bpf_tunnel_key key;
+	struct erspan_metadata md;
+	int ret;
+
+	__builtin_memset(&key, 0x0, sizeof(key));
+	key.remote_ipv4 = 0xac100164; /* 172.16.1.100 */
+	key.tunnel_id = 2;
+	key.tunnel_tos = 0;
+	key.tunnel_ttl = 64;
+
+	ret = bpf_skb_set_tunnel_key(skb, &key, sizeof(key), BPF_F_ZERO_CSUM_TX);
+	if (ret < 0) {
+		ERROR(ret);
+		return TC_ACT_SHOT;
+	}
+
+	__builtin_memset(&md, 0, sizeof(md));
+#ifdef ERSPAN_V1
+	md.version = 1;
+	md.u.index = bpf_htonl(123);
+#else
+	u8 direction = 1;
+	u8 hwid = 7;
+
+	md.version = 2;
+	md.u.md2.dir = direction;
+	md.u.md2.hwid = hwid & 0xf;
+	md.u.md2.hwid_upper = (hwid >> 4) & 0x3;
+#endif
+
+	ret = bpf_skb_set_tunnel_opt(skb, &md, sizeof(md));
+	if (ret < 0) {
+		ERROR(ret);
+		return TC_ACT_SHOT;
+	}
+
+	return TC_ACT_OK;
+}
+
+SEC("erspan_get_tunnel")
+int _erspan_get_tunnel(struct __sk_buff *skb)
+{
+	char fmt[] = "key %d remote ip 0x%x erspan version %d\n";
+	struct bpf_tunnel_key key;
+	struct erspan_metadata md;
+	u32 index;
+	int ret;
+
+	ret = bpf_skb_get_tunnel_key(skb, &key, sizeof(key), 0);
+	if (ret < 0) {
+		ERROR(ret);
+		return TC_ACT_SHOT;
+	}
+
+	ret = bpf_skb_get_tunnel_opt(skb, &md, sizeof(md));
+	if (ret < 0) {
+		ERROR(ret);
+		return TC_ACT_SHOT;
+	}
+
+	bpf_trace_printk(fmt, sizeof(fmt),
+			key.tunnel_id, key.remote_ipv4, md.version);
+
+#ifdef ERSPAN_V1
+	char fmt2[] = "\tindex %x\n";
+
+	index = bpf_ntohl(md.u.index);
+	bpf_trace_printk(fmt2, sizeof(fmt2), index);
+#else
+	char fmt2[] = "\tdirection %d hwid %x timestamp %u\n";
+
+	bpf_trace_printk(fmt2, sizeof(fmt2),
+			 md.u.md2.dir,
+			 (md.u.md2.hwid_upper << 4) + md.u.md2.hwid,
+			 bpf_ntohl(md.u.md2.timestamp));
+#endif
+
+	return TC_ACT_OK;
+}
+
+SEC("ip4ip6erspan_set_tunnel")
+int _ip4ip6erspan_set_tunnel(struct __sk_buff *skb)
+{
+	struct bpf_tunnel_key key;
+	struct erspan_metadata md;
+	int ret;
+
+	__builtin_memset(&key, 0x0, sizeof(key));
+	key.remote_ipv6[3] = _htonl(0x11);
+	key.tunnel_id = 2;
+	key.tunnel_tos = 0;
+	key.tunnel_ttl = 64;
+
+	ret = bpf_skb_set_tunnel_key(skb, &key, sizeof(key),
+				     BPF_F_TUNINFO_IPV6);
+	if (ret < 0) {
+		ERROR(ret);
+		return TC_ACT_SHOT;
+	}
+
+	__builtin_memset(&md, 0, sizeof(md));
+
+#ifdef ERSPAN_V1
+	md.u.index = htonl(123);
+	md.version = 1;
+#else
+	u8 direction = 0;
+	u8 hwid = 17;
+
+	md.version = 2;
+	md.u.md2.dir = direction;
+	md.u.md2.hwid = hwid & 0xf;
+	md.u.md2.hwid_upper = (hwid >> 4) & 0x3;
+#endif
+
+	ret = bpf_skb_set_tunnel_opt(skb, &md, sizeof(md));
+	if (ret < 0) {
+		ERROR(ret);
+		return TC_ACT_SHOT;
+	}
+
+	return TC_ACT_OK;
+}
+
+SEC("ip4ip6erspan_get_tunnel")
+int _ip4ip6erspan_get_tunnel(struct __sk_buff *skb)
+{
+	char fmt[] = "ip6erspan get key %d remote ip6 ::%x erspan version %d\n";
+	struct bpf_tunnel_key key;
+	struct erspan_metadata md;
+	u32 index;
+	int ret;
+
+	ret = bpf_skb_get_tunnel_key(skb, &key, sizeof(key), BPF_F_TUNINFO_IPV6);
+	if (ret < 0) {
+		ERROR(ret);
+		return TC_ACT_SHOT;
+	}
+
+	ret = bpf_skb_get_tunnel_opt(skb, &md, sizeof(md));
+	if (ret < 0) {
+		ERROR(ret);
+		return TC_ACT_SHOT;
+	}
+
+	bpf_trace_printk(fmt, sizeof(fmt),
+			key.tunnel_id, key.remote_ipv4, md.version);
+
+#ifdef ERSPAN_V1
+	char fmt2[] = "\tindex %x\n";
+
+	index = bpf_ntohl(md.u.index);
+	bpf_trace_printk(fmt2, sizeof(fmt2), index);
+#else
+	char fmt2[] = "\tdirection %d hwid %x timestamp %u\n";
+
+	bpf_trace_printk(fmt2, sizeof(fmt2),
+			 md.u.md2.dir,
+			 (md.u.md2.hwid_upper << 4) + md.u.md2.hwid,
+			 bpf_ntohl(md.u.md2.timestamp));
+#endif
+
 	return TC_ACT_OK;
 }
 
@@ -377,6 +590,5 @@ int _ip6ip6_get_tunnel(struct __sk_buff *skb)
 			 _htonl(key.remote_ipv6[3]));
 	return TC_ACT_OK;
 }
-
 
 char _license[] SEC("license") = "GPL";

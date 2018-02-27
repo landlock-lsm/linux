@@ -1,7 +1,5 @@
 /*
- * drivers/gpu/drm/omapdrm/omap_fb.c
- *
- * Copyright (C) 2011 Texas Instruments
+ * Copyright (C) 2011 Texas Instruments Incorporated - http://www.ti.com/
  * Author: Rob Clark <rob@ti.com>
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -379,7 +377,7 @@ struct drm_framebuffer *omap_framebuffer_create(struct drm_device *dev,
 	return fb;
 
 error:
-	while (--i > 0)
+	while (--i >= 0)
 		drm_gem_object_unreference_unlocked(bos[i]);
 
 	return fb;

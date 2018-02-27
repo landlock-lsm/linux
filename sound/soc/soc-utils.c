@@ -284,11 +284,11 @@ static const struct snd_pcm_ops dummy_dma_ops = {
 	.ioctl		= snd_pcm_lib_ioctl,
 };
 
-static struct snd_soc_platform_driver dummy_platform = {
+static const struct snd_soc_platform_driver dummy_platform = {
 	.ops = &dummy_dma_ops,
 };
 
-static struct snd_soc_codec_driver dummy_codec;
+static const struct snd_soc_codec_driver dummy_codec;
 
 #define STUB_RATES	SNDRV_PCM_RATE_8000_192000
 #define STUB_FORMATS	(SNDRV_PCM_FMTBIT_S8 | \

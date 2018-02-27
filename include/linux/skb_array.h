@@ -69,7 +69,12 @@ static inline int skb_array_produce_any(struct skb_array *a, struct sk_buff *skb
  */
 static inline bool __skb_array_empty(struct skb_array *a)
 {
-	return !__ptr_ring_peek(&a->ring);
+	return __ptr_ring_empty(&a->ring);
+}
+
+static inline struct sk_buff *__skb_array_peek(struct skb_array *a)
+{
+	return __ptr_ring_peek(&a->ring);
 }
 
 static inline bool skb_array_empty(struct skb_array *a)
@@ -193,7 +198,8 @@ static inline int skb_array_resize(struct skb_array *a, int size, gfp_t gfp)
 }
 
 static inline int skb_array_resize_multiple(struct skb_array **rings,
-					    int nrings, int size, gfp_t gfp)
+					    int nrings, unsigned int size,
+					    gfp_t gfp)
 {
 	BUILD_BUG_ON(offsetof(struct skb_array, ring));
 	return ptr_ring_resize_multiple((struct ptr_ring **)rings,

@@ -2,11 +2,9 @@
 The Linux Kernel API
 ====================
 
-Data Types
-==========
 
-Doubly Linked Lists
--------------------
+List Management Functions
+=========================
 
 .. kernel-doc:: include/linux/list.h
    :internal:
@@ -56,9 +54,24 @@ Bitmap Operations
 -----------------
 
 .. kernel-doc:: lib/bitmap.c
+   :doc: bitmap introduction
+
+.. kernel-doc:: include/linux/bitmap.h
+   :doc: declare bitmap
+
+.. kernel-doc:: include/linux/bitmap.h
+   :doc: bitmap overview
+
+.. kernel-doc:: include/linux/bitmap.h
+   :doc: bitmap bitops
+
+.. kernel-doc:: lib/bitmap.c
    :export:
 
 .. kernel-doc:: lib/bitmap.c
+   :internal:
+
+.. kernel-doc:: include/linux/bitmap.h
    :internal:
 
 Command-line Parsing
@@ -70,13 +83,16 @@ Command-line Parsing
 CRC Functions
 -------------
 
+.. kernel-doc:: lib/crc4.c
+   :export:
+
 .. kernel-doc:: lib/crc7.c
    :export:
 
-.. kernel-doc:: lib/crc16.c
+.. kernel-doc:: lib/crc8.c
    :export:
 
-.. kernel-doc:: lib/crc-itu-t.c
+.. kernel-doc:: lib/crc16.c
    :export:
 
 .. kernel-doc:: lib/crc32.c
@@ -84,16 +100,46 @@ CRC Functions
 .. kernel-doc:: lib/crc-ccitt.c
    :export:
 
-idr/ida Functions
------------------
+.. kernel-doc:: lib/crc-itu-t.c
+   :export:
 
-.. kernel-doc:: include/linux/idr.h
-   :doc: idr sync
+Math Functions in Linux
+=======================
 
-.. kernel-doc:: lib/idr.c
-   :doc: IDA description
+Base 2 log and power Functions
+------------------------------
 
-.. kernel-doc:: lib/idr.c
+.. kernel-doc:: include/linux/log2.h
+   :internal:
+
+Division Functions
+------------------
+
+.. kernel-doc:: include/asm-generic/div64.h
+   :functions: do_div
+
+.. kernel-doc:: include/linux/math64.h
+   :internal:
+
+.. kernel-doc:: lib/div64.c
+   :functions: div_s64_rem div64_u64_rem div64_u64 div64_s64
+
+.. kernel-doc:: lib/gcd.c
+   :export:
+
+Sorting
+-------
+
+.. kernel-doc:: lib/sort.c
+   :export:
+
+.. kernel-doc:: lib/list_sort.c
+   :export:
+
+UUID/GUID
+---------
+
+.. kernel-doc:: lib/uuid.c
    :export:
 
 Memory Management in Linux
@@ -344,3 +390,38 @@ codecs, and devices with strict requirements for interface clocking.
 
 .. kernel-doc:: include/linux/clk.h
    :internal:
+
+Synchronization Primitives
+==========================
+
+Read-Copy Update (RCU)
+----------------------
+
+.. kernel-doc:: include/linux/rcupdate.h
+
+.. kernel-doc:: include/linux/rcupdate_wait.h
+
+.. kernel-doc:: include/linux/rcutree.h
+
+.. kernel-doc:: kernel/rcu/tree.c
+
+.. kernel-doc:: kernel/rcu/tree_plugin.h
+
+.. kernel-doc:: kernel/rcu/tree_exp.h
+
+.. kernel-doc:: kernel/rcu/update.c
+
+.. kernel-doc:: include/linux/srcu.h
+
+.. kernel-doc:: kernel/rcu/srcutree.c
+
+.. kernel-doc:: include/linux/rculist_bl.h
+
+.. kernel-doc:: include/linux/rculist.h
+
+.. kernel-doc:: include/linux/rculist_nulls.h
+
+.. kernel-doc:: include/linux/rcu_sync.h
+
+.. kernel-doc:: kernel/rcu/sync.c
+

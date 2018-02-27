@@ -28,6 +28,7 @@ enum dm_queue_mode {
 	DM_TYPE_REQUEST_BASED	 = 2,
 	DM_TYPE_MQ_REQUEST_BASED = 3,
 	DM_TYPE_DAX_BIO_BASED	 = 4,
+	DM_TYPE_NVME_BIO_BASED	 = 5,
 };
 
 typedef enum { STATUSTYPE_INFO, STATUSTYPE_TABLE } status_type_t;
@@ -134,8 +135,6 @@ typedef long (*dm_dax_direct_access_fn) (struct dm_target *ti, pgoff_t pgoff,
 		long nr_pages, void **kaddr, pfn_t *pfn);
 typedef size_t (*dm_dax_copy_from_iter_fn)(struct dm_target *ti, pgoff_t pgoff,
 		void *addr, size_t bytes, struct iov_iter *i);
-typedef void (*dm_dax_flush_fn)(struct dm_target *ti, pgoff_t pgoff, void *addr,
-		size_t size);
 #define PAGE_SECTORS (PAGE_SIZE / 512)
 
 void dm_error(const char *message);
@@ -186,7 +185,6 @@ struct target_type {
 	dm_io_hints_fn io_hints;
 	dm_dax_direct_access_fn direct_access;
 	dm_dax_copy_from_iter_fn dax_copy_from_iter;
-	dm_dax_flush_fn dax_flush;
 
 	/* For internal device-mapper use. */
 	struct list_head list;
@@ -222,14 +220,6 @@ struct target_type {
  */
 #define DM_TARGET_WILDCARD		0x00000008
 #define dm_target_is_wildcard(type)	((type)->features & DM_TARGET_WILDCARD)
-
-/*
- * Some targets need to be sent the same WRITE bio severals times so
- * that they can send copies of it to different devices.  This function
- * examines any supplied bio and returns the number of copies of it the
- * target requires.
- */
-typedef unsigned (*dm_num_write_bios_fn) (struct dm_target *ti, struct bio *bio);
 
 /*
  * A target implements own bio data integrity.
@@ -294,13 +284,6 @@ struct dm_target {
 	 */
 	unsigned per_io_data_size;
 
-	/*
-	 * If defined, this function is called to find out how many
-	 * duplicate bios should be sent to the target when writing
-	 * data.
-	 */
-	dm_num_write_bios_fn num_write_bios;
-
 	/* target specific data */
 	void *private;
 
@@ -332,35 +315,9 @@ struct dm_target_callbacks {
 	int (*congested_fn) (struct dm_target_callbacks *, int);
 };
 
-/*
- * For bio-based dm.
- * One of these is allocated for each bio.
- * This structure shouldn't be touched directly by target drivers.
- * It is here so that we can inline dm_per_bio_data and
- * dm_bio_from_per_bio_data
- */
-struct dm_target_io {
-	struct dm_io *io;
-	struct dm_target *ti;
-	unsigned target_bio_nr;
-	unsigned *len_ptr;
-	struct bio clone;
-};
-
-static inline void *dm_per_bio_data(struct bio *bio, size_t data_size)
-{
-	return (char *)bio - offsetof(struct dm_target_io, clone) - data_size;
-}
-
-static inline struct bio *dm_bio_from_per_bio_data(void *data, size_t data_size)
-{
-	return (struct bio *)((char *)data + data_size + offsetof(struct dm_target_io, clone));
-}
-
-static inline unsigned dm_bio_get_target_bio_nr(const struct bio *bio)
-{
-	return container_of(bio, struct dm_target_io, clone)->target_bio_nr;
-}
+void *dm_per_bio_data(struct bio *bio, size_t data_size);
+struct bio *dm_bio_from_per_bio_data(void *data, size_t data_size);
+unsigned dm_bio_get_target_bio_nr(const struct bio *bio);
 
 int dm_register_target(struct target_type *t);
 void dm_unregister_target(struct target_type *t);
@@ -387,7 +344,7 @@ struct dm_arg {
  * Validate the next argument, either returning it as *value or, if invalid,
  * returning -EINVAL and setting *error.
  */
-int dm_read_arg(struct dm_arg *arg, struct dm_arg_set *arg_set,
+int dm_read_arg(const struct dm_arg *arg, struct dm_arg_set *arg_set,
 		unsigned *value, char **error);
 
 /*
@@ -395,7 +352,7 @@ int dm_read_arg(struct dm_arg *arg, struct dm_arg_set *arg_set,
  * arg->min and arg->max further arguments. Either return the size as
  * *num_args or, if invalid, return -EINVAL and set *error.
  */
-int dm_read_arg_group(struct dm_arg *arg, struct dm_arg_set *arg_set,
+int dm_read_arg_group(const struct dm_arg *arg, struct dm_arg_set *arg_set,
 		      unsigned *num_args, char **error);
 
 /*
@@ -503,6 +460,11 @@ void dm_table_set_type(struct dm_table *t, enum dm_queue_mode type);
 int dm_table_complete(struct dm_table *t);
 
 /*
+ * Destroy the table when finished.
+ */
+void dm_table_destroy(struct dm_table *t);
+
+/*
  * Target may require that it is never sent I/O larger than len.
  */
 int __must_check dm_set_target_max_io_len(struct dm_target *ti, sector_t len);
@@ -549,46 +511,29 @@ void *dm_vcalloc(unsigned long nmemb, unsigned long elem_size);
  *---------------------------------------------------------------*/
 #define DM_NAME "device-mapper"
 
-#ifdef CONFIG_PRINTK
-extern struct ratelimit_state dm_ratelimit_state;
-
-#define dm_ratelimit()	__ratelimit(&dm_ratelimit_state)
-#else
-#define dm_ratelimit()	0
-#endif
+#define DM_RATELIMIT(pr_func, fmt, ...)					\
+do {									\
+	static DEFINE_RATELIMIT_STATE(rs, DEFAULT_RATELIMIT_INTERVAL,	\
+				      DEFAULT_RATELIMIT_BURST);		\
+									\
+	if (__ratelimit(&rs))						\
+		pr_func(DM_FMT(fmt), ##__VA_ARGS__);			\
+} while (0)
 
 #define DM_FMT(fmt) DM_NAME ": " DM_MSG_PREFIX ": " fmt "\n"
 
 #define DMCRIT(fmt, ...) pr_crit(DM_FMT(fmt), ##__VA_ARGS__)
 
 #define DMERR(fmt, ...) pr_err(DM_FMT(fmt), ##__VA_ARGS__)
-#define DMERR_LIMIT(fmt, ...)						\
-do {									\
-	if (dm_ratelimit())						\
-		DMERR(fmt, ##__VA_ARGS__);				\
-} while (0)
-
+#define DMERR_LIMIT(fmt, ...) DM_RATELIMIT(pr_err, fmt, ##__VA_ARGS__)
 #define DMWARN(fmt, ...) pr_warn(DM_FMT(fmt), ##__VA_ARGS__)
-#define DMWARN_LIMIT(fmt, ...)						\
-do {									\
-	if (dm_ratelimit())						\
-		DMWARN(fmt, ##__VA_ARGS__);				\
-} while (0)
-
+#define DMWARN_LIMIT(fmt, ...) DM_RATELIMIT(pr_warn, fmt, ##__VA_ARGS__)
 #define DMINFO(fmt, ...) pr_info(DM_FMT(fmt), ##__VA_ARGS__)
-#define DMINFO_LIMIT(fmt, ...)						\
-do {									\
-	if (dm_ratelimit())						\
-		DMINFO(fmt, ##__VA_ARGS__);				\
-} while (0)
+#define DMINFO_LIMIT(fmt, ...) DM_RATELIMIT(pr_info, fmt, ##__VA_ARGS__)
 
 #ifdef CONFIG_DM_DEBUG
 #define DMDEBUG(fmt, ...) printk(KERN_DEBUG DM_FMT(fmt), ##__VA_ARGS__)
-#define DMDEBUG_LIMIT(fmt, ...)						\
-do {									\
-	if (dm_ratelimit())						\
-		DMDEBUG(fmt, ##__VA_ARGS__);				\
-} while (0)
+#define DMDEBUG_LIMIT(fmt, ...) DM_RATELIMIT(pr_debug, fmt, ##__VA_ARGS__)
 #else
 #define DMDEBUG(fmt, ...) no_printk(fmt, ##__VA_ARGS__)
 #define DMDEBUG_LIMIT(fmt, ...) no_printk(fmt, ##__VA_ARGS__)
@@ -605,6 +550,7 @@ do {									\
 #define DM_ENDIO_DONE		0
 #define DM_ENDIO_INCOMPLETE	1
 #define DM_ENDIO_REQUEUE	2
+#define DM_ENDIO_DELAY_REQUEUE	3
 
 /*
  * Definitions of return values from target map function.
@@ -612,7 +558,7 @@ do {									\
 #define DM_MAPIO_SUBMITTED	0
 #define DM_MAPIO_REMAPPED	1
 #define DM_MAPIO_REQUEUE	DM_ENDIO_REQUEUE
-#define DM_MAPIO_DELAY_REQUEUE	3
+#define DM_MAPIO_DELAY_REQUEUE	DM_ENDIO_DELAY_REQUEUE
 #define DM_MAPIO_KILL		4
 
 #define dm_sector_div64(x, y)( \

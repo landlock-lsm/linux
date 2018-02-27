@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2017, Intel Corp.
+ * Copyright (C) 2000 - 2018, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -376,13 +376,6 @@ struct acpi_resource_generic_register {
 	u8 access_size;
 	u64 address;
 };
-
-/* Generic Address Space Access Sizes */
-#define ACPI_ACCESS_SIZE_UNDEFINED		0
-#define ACPI_ACCESS_SIZE_BYTE			1
-#define ACPI_ACCESS_SIZE_WORD			2
-#define ACPI_ACCESS_SIZE_DWORD			3
-#define ACPI_ACCESS_SIZE_QWORD			4
 
 struct acpi_resource_gpio {
 	u8 revision_id;

@@ -42,6 +42,7 @@
 #define OPAL_I2C_STOP_ERR	-24
 #define OPAL_XIVE_PROVISIONING	-31
 #define OPAL_XIVE_FREE_ACTIVE	-32
+#define OPAL_TIMEOUT		-33
 
 /* API Tokens (in r0) */
 #define OPAL_INVALID_CALL		       -1
@@ -187,10 +188,23 @@
 #define OPAL_XIVE_DUMP				142
 #define OPAL_XIVE_RESERVED3			143
 #define OPAL_XIVE_RESERVED4			144
+#define OPAL_SIGNAL_SYSTEM_RESET		145
 #define OPAL_NPU_INIT_CONTEXT			146
 #define OPAL_NPU_DESTROY_CONTEXT		147
 #define OPAL_NPU_MAP_LPAR			148
-#define OPAL_LAST				148
+#define OPAL_IMC_COUNTERS_INIT			149
+#define OPAL_IMC_COUNTERS_START			150
+#define OPAL_IMC_COUNTERS_STOP			151
+#define OPAL_GET_POWERCAP			152
+#define OPAL_SET_POWERCAP			153
+#define OPAL_GET_POWER_SHIFT_RATIO		154
+#define OPAL_SET_POWER_SHIFT_RATIO		155
+#define OPAL_SENSOR_GROUP_CLEAR			156
+#define OPAL_PCI_SET_P2P			157
+#define OPAL_NPU_SPA_SETUP			159
+#define OPAL_NPU_SPA_CLEAR_CACHE		160
+#define OPAL_NPU_TL_SET				161
+#define OPAL_LAST				161
 
 /* Device tree flags */
 
@@ -885,6 +899,8 @@ enum {
 	 */
 	OPAL_REINIT_CPUS_MMU_HASH	= (1 << 2),
 	OPAL_REINIT_CPUS_MMU_RADIX	= (1 << 3),
+
+	OPAL_REINIT_CPUS_TM_SUSPEND_DISABLED = (1 << 4),
 };
 
 typedef struct oppanel_line {
@@ -1060,6 +1076,7 @@ enum {
 /* Flags for OPAL_XIVE_GET/SET_VP_INFO */
 enum {
 	OPAL_XIVE_VP_ENABLED		= 0x00000001,
+	OPAL_XIVE_VP_SINGLE_ESCALATION	= 0x00000002,
 };
 
 /* "Any chip" replacement for chip ID for allocation functions */
@@ -1083,6 +1100,18 @@ enum {
 	XIVE_DUMP_VP		= 4,
 	XIVE_DUMP_EMU_STATE	= 5,
 };
+
+/* "type" argument options for OPAL_IMC_COUNTERS_* calls */
+enum {
+	OPAL_IMC_COUNTERS_NEST = 1,
+	OPAL_IMC_COUNTERS_CORE = 2,
+};
+
+
+/* PCI p2p descriptor */
+#define OPAL_PCI_P2P_ENABLE		0x1
+#define OPAL_PCI_P2P_LOAD		0x2
+#define OPAL_PCI_P2P_STORE		0x4
 
 #endif /* __ASSEMBLY__ */
 

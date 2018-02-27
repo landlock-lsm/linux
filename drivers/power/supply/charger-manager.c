@@ -578,7 +578,7 @@ static int check_charging_duration(struct charger_manager *cm)
 	} else if (is_ext_pwr_online(cm) && !cm->charger_enabled) {
 		duration = curr - cm->charging_end_time;
 
-		if (duration > desc->charging_max_duration_ms &&
+		if (duration > desc->discharging_max_duration_ms &&
 				is_ext_pwr_online(cm)) {
 			dev_info(cm->dev, "Discharging duration exceed %ums\n",
 				 desc->discharging_max_duration_ms);
@@ -1632,8 +1632,7 @@ static int charger_manager_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	cm = devm_kzalloc(&pdev->dev,
-			sizeof(struct charger_manager),	GFP_KERNEL);
+	cm = devm_kzalloc(&pdev->dev, sizeof(*cm), GFP_KERNEL);
 	if (!cm)
 		return -ENOMEM;
 
@@ -1645,12 +1644,14 @@ static int charger_manager_probe(struct platform_device *pdev)
 	/* Initialize alarm timer */
 	if (alarmtimer_get_rtcdev()) {
 		cm_timer = devm_kzalloc(cm->dev, sizeof(*cm_timer), GFP_KERNEL);
+		if (!cm_timer)
+			return -ENOMEM;
 		alarm_init(cm_timer, ALARM_BOOTTIME, cm_timer_func);
 	}
 
 	/*
-	 * The following two do not need to be errors.
-	 * Users may intentionally ignore those two features.
+	 * Some of the following do not need to be errors.
+	 * Users may intentionally ignore those features.
 	 */
 	if (desc->fullbatt_uV == 0) {
 		dev_info(&pdev->dev, "Ignoring full-battery voltage threshold as it is not supplied\n");
