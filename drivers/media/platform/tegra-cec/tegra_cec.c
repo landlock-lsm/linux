@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Tegra CEC implementation
  *
@@ -8,18 +9,6 @@
  * Conversion to the CEC framework and to the mainline kernel:
  *
  * Copyright 2016-2017 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/module.h>
@@ -172,16 +161,13 @@ static irqreturn_t tegra_cec_irq_handler(int irq, void *data)
 		}
 	}
 
-	if (status & (TEGRA_CEC_INT_STAT_RX_REGISTER_OVERRUN |
-		      TEGRA_CEC_INT_STAT_RX_BUS_ANOMALY_DETECTED |
-		      TEGRA_CEC_INT_STAT_RX_START_BIT_DETECTED |
-		      TEGRA_CEC_INT_STAT_RX_BUS_ERROR_DETECTED)) {
+	if (status & TEGRA_CEC_INT_STAT_RX_START_BIT_DETECTED) {
 		cec_write(cec, TEGRA_CEC_INT_STAT,
-			  (TEGRA_CEC_INT_STAT_RX_REGISTER_OVERRUN |
-			   TEGRA_CEC_INT_STAT_RX_BUS_ANOMALY_DETECTED |
-			   TEGRA_CEC_INT_STAT_RX_START_BIT_DETECTED |
-			   TEGRA_CEC_INT_STAT_RX_BUS_ERROR_DETECTED));
-	} else if (status & TEGRA_CEC_INT_STAT_RX_REGISTER_FULL) {
+			  TEGRA_CEC_INT_STAT_RX_START_BIT_DETECTED);
+		cec->rx_done = false;
+		cec->rx_buf_cnt = 0;
+	}
+	if (status & TEGRA_CEC_INT_STAT_RX_REGISTER_FULL) {
 		u32 v;
 
 		cec_write(cec, TEGRA_CEC_INT_STAT,
@@ -255,7 +241,7 @@ static int tegra_cec_adap_enable(struct cec_adapter *adap, bool enable)
 		  TEGRA_CEC_INT_MASK_TX_BUS_ANOMALY_DETECTED |
 		  TEGRA_CEC_INT_MASK_TX_FRAME_TRANSMITTED |
 		  TEGRA_CEC_INT_MASK_RX_REGISTER_FULL |
-		  TEGRA_CEC_INT_MASK_RX_REGISTER_OVERRUN);
+		  TEGRA_CEC_INT_MASK_RX_START_BIT_DETECTED);
 
 	cec_write(cec, TEGRA_CEC_HW_CONTROL, TEGRA_CEC_HWCTRL_TX_RX_MODE);
 	return 0;
@@ -330,21 +316,15 @@ static const struct cec_adap_ops tegra_cec_ops = {
 
 static int tegra_cec_probe(struct platform_device *pdev)
 {
-	struct platform_device *hdmi_dev;
-	struct device_node *np;
+	struct device *hdmi_dev;
 	struct tegra_cec *cec;
 	struct resource *res;
 	int ret = 0;
 
-	np = of_parse_phandle(pdev->dev.of_node, "hdmi-phandle", 0);
+	hdmi_dev = cec_notifier_parse_hdmi_phandle(&pdev->dev);
 
-	if (!np) {
-		dev_err(&pdev->dev, "Failed to find hdmi node in device tree\n");
-		return -ENODEV;
-	}
-	hdmi_dev = of_find_device_by_node(np);
-	if (hdmi_dev == NULL)
-		return -EPROBE_DEFER;
+	if (IS_ERR(hdmi_dev))
+		return PTR_ERR(hdmi_dev);
 
 	cec = devm_kzalloc(&pdev->dev, sizeof(struct tegra_cec), GFP_KERNEL);
 
@@ -403,7 +383,7 @@ static int tegra_cec_probe(struct platform_device *pdev)
 		goto clk_error;
 	}
 
-	cec->notifier = cec_notifier_get(&hdmi_dev->dev);
+	cec->notifier = cec_notifier_get(hdmi_dev);
 	if (!cec->notifier) {
 		ret = -ENOMEM;
 		goto clk_error;

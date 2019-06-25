@@ -1,8 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * oxfw_pcm.c - a part of driver for OXFW970/971 based devices
  *
  * Copyright (c) Clemens Ladisch <clemens@ladisch.de>
- * Licensed under the terms of the GNU General Public License, version 2.
  */
 
 #include "oxfw.h"
@@ -389,7 +389,6 @@ int snd_oxfw_create_pcm(struct snd_oxfw *oxfw)
 		.pointer   = pcm_capture_pointer,
 		.ack       = pcm_capture_ack,
 		.page      = snd_pcm_lib_get_vmalloc_page,
-		.mmap      = snd_pcm_lib_mmap_vmalloc,
 	};
 	static const struct snd_pcm_ops playback_ops = {
 		.open      = pcm_open,
@@ -402,7 +401,6 @@ int snd_oxfw_create_pcm(struct snd_oxfw *oxfw)
 		.pointer   = pcm_playback_pointer,
 		.ack       = pcm_playback_ack,
 		.page      = snd_pcm_lib_get_vmalloc_page,
-		.mmap      = snd_pcm_lib_mmap_vmalloc,
 	};
 	struct snd_pcm *pcm;
 	unsigned int cap = 0;

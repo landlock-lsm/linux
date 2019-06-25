@@ -21,9 +21,11 @@ Required properties:
 	- "altr,16550-FIFO128"
 	- "fsl,16550-FIFO64"
 	- "fsl,ns16550"
+	- "intel,xscale-uart"
 	- "ti,da830-uart"
 	- "aspeed,ast2400-vuart"
 	- "aspeed,ast2500-vuart"
+	- "nuvoton,npcm750-uart"
 	- "serial" if the port type is unknown.
 - reg : offset and length of the register set for the device.
 - interrupts : should contain uart interrupt.
@@ -50,6 +52,7 @@ Optional properties:
 - tx-threshold: Specify the TX FIFO low water indication for parts with
   programmable TX FIFO thresholds.
 - resets : phandle + reset specifier pairs
+- overrun-throttle-ms : how long to pause uart rx when input overrun is encountered.
 
 Note:
 * fsl,ns16550:

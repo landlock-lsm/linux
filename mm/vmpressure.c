@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Linux VM pressure
  *
@@ -6,10 +7,6 @@
  *
  * Based on ideas from Andrew Morton, David Rientjes, KOSAKI Motohiro,
  * Leonid Moiseichuk, Mel Gorman, Minchan Kim and Pekka Enberg.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
  */
 
 #include <linux/cgroup.h>
@@ -342,26 +339,6 @@ void vmpressure_prio(gfp_t gfp, struct mem_cgroup *memcg, int prio)
 	vmpressure(gfp, memcg, true, vmpressure_win, 0);
 }
 
-static enum vmpressure_levels str_to_level(const char *arg)
-{
-	enum vmpressure_levels level;
-
-	for (level = 0; level < VMPRESSURE_NUM_LEVELS; level++)
-		if (!strcmp(vmpressure_str_levels[level], arg))
-			return level;
-	return -1;
-}
-
-static enum vmpressure_modes str_to_mode(const char *arg)
-{
-	enum vmpressure_modes mode;
-
-	for (mode = 0; mode < VMPRESSURE_NUM_MODES; mode++)
-		if (!strcmp(vmpressure_str_modes[mode], arg))
-			return mode;
-	return -1;
-}
-
 #define MAX_VMPRESSURE_ARGS_LEN	(strlen("critical") + strlen("hierarchy") + 2)
 
 /**
@@ -390,27 +367,26 @@ int vmpressure_register_event(struct mem_cgroup *memcg,
 	char *token;
 	int ret = 0;
 
-	spec_orig = spec = kzalloc(MAX_VMPRESSURE_ARGS_LEN + 1, GFP_KERNEL);
+	spec_orig = spec = kstrndup(args, MAX_VMPRESSURE_ARGS_LEN, GFP_KERNEL);
 	if (!spec) {
 		ret = -ENOMEM;
 		goto out;
 	}
-	strncpy(spec, args, MAX_VMPRESSURE_ARGS_LEN);
 
 	/* Find required level */
 	token = strsep(&spec, ",");
-	level = str_to_level(token);
-	if (level == -1) {
-		ret = -EINVAL;
+	level = match_string(vmpressure_str_levels, VMPRESSURE_NUM_LEVELS, token);
+	if (level < 0) {
+		ret = level;
 		goto out;
 	}
 
 	/* Find optional mode */
 	token = strsep(&spec, ",");
 	if (token) {
-		mode = str_to_mode(token);
-		if (mode == -1) {
-			ret = -EINVAL;
+		mode = match_string(vmpressure_str_modes, VMPRESSURE_NUM_MODES, token);
+		if (mode < 0) {
+			ret = mode;
 			goto out;
 		}
 	}

@@ -48,12 +48,14 @@ struct brcmf_proto {
 	void (*del_if)(struct brcmf_if *ifp);
 	void (*reset_if)(struct brcmf_if *ifp);
 	int (*init_done)(struct brcmf_pub *drvr);
+	void (*debugfs_create)(struct brcmf_pub *drvr);
 	void *pd;
 };
 
 
 int brcmf_proto_attach(struct brcmf_pub *drvr);
-void brcmf_proto_detach(struct brcmf_pub *drvr);
+void brcmf_proto_detach_pre_delif(struct brcmf_pub *drvr);
+void brcmf_proto_detach_post_delif(struct brcmf_pub *drvr);
 
 static inline int brcmf_proto_hdrpull(struct brcmf_pub *drvr, bool do_fws,
 				      struct sk_buff *skb,
@@ -154,6 +156,12 @@ brcmf_proto_init_done(struct brcmf_pub *drvr)
 	if (!drvr->proto->init_done)
 		return 0;
 	return drvr->proto->init_done(drvr);
+}
+
+static inline void
+brcmf_proto_debugfs_create(struct brcmf_pub *drvr)
+{
+	drvr->proto->debugfs_create(drvr);
 }
 
 #endif /* BRCMFMAC_PROTO_H */

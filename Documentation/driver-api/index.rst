@@ -17,9 +17,12 @@ available subsections can be seen below.
    basics
    infrastructure
    pm/index
+   clk
    device-io
+   device_connection
    dma-buf
    device_link
+   component
    message-based
    sound
    frame-buffer
@@ -27,13 +30,16 @@ available subsections can be seen below.
    iio/index
    input
    usb/index
-   pci
+   firewire
+   pci/index
    spi
    i2c
+   i3c/index
    hsi
    edac
    scsi
    libata
+   target
    mtdnand
    miscellaneous
    w1
@@ -44,11 +50,14 @@ available subsections can be seen below.
    uio-howto
    firmware/index
    pinctl
-   gpio
+   gpio/index
    misc_devices
    dmaengine/index
    slimbus
    soundwire/index
+   fpga/index
+   acpi/index
+   generic-counter
 
 .. only::  subproject and html
 

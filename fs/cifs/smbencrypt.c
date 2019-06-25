@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
    Unix SMB/Netbios implementation.
    Version 1.9.
@@ -8,19 +9,6 @@
    Copyright (C) Andrew Bartlett <abartlet@samba.org> 2002-2003
    Modified by Steve French (sfrench@us.ibm.com) 2002-2003
 
-   This program is free software; you can redistribute it and/or modify
-   it under the terms of the GNU General Public License as published by
-   the Free Software Foundation; either version 2 of the License, or
-   (at your option) any later version.
-
-   This program is distributed in the hope that it will be useful,
-   but WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-   GNU General Public License for more details.
-
-   You should have received a copy of the GNU General Public License
-   along with this program; if not, write to the Free Software
-   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 */
 
 #include <linux/crypto.h>
@@ -121,25 +109,12 @@ int
 mdfour(unsigned char *md4_hash, unsigned char *link_str, int link_len)
 {
 	int rc;
-	unsigned int size;
-	struct crypto_shash *md4;
-	struct sdesc *sdescmd4;
+	struct crypto_shash *md4 = NULL;
+	struct sdesc *sdescmd4 = NULL;
 
-	md4 = crypto_alloc_shash("md4", 0, 0);
-	if (IS_ERR(md4)) {
-		rc = PTR_ERR(md4);
-		cifs_dbg(VFS, "%s: Crypto md4 allocation error %d\n",
-			 __func__, rc);
-		return rc;
-	}
-	size = sizeof(struct shash_desc) + crypto_shash_descsize(md4);
-	sdescmd4 = kmalloc(size, GFP_KERNEL);
-	if (!sdescmd4) {
-		rc = -ENOMEM;
+	rc = cifs_alloc_hash("md4", &md4, &sdescmd4);
+	if (rc)
 		goto mdfour_err;
-	}
-	sdescmd4->shash.tfm = md4;
-	sdescmd4->shash.flags = 0x0;
 
 	rc = crypto_shash_init(&sdescmd4->shash);
 	if (rc) {
@@ -156,9 +131,7 @@ mdfour(unsigned char *md4_hash, unsigned char *link_str, int link_len)
 		cifs_dbg(VFS, "%s: Could not generate md4 hash\n", __func__);
 
 mdfour_err:
-	crypto_free_shash(md4);
-	kfree(sdescmd4);
-
+	cifs_free_hash(&md4, &sdescmd4);
 	return rc;
 }
 

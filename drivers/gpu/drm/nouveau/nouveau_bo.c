@@ -194,7 +194,7 @@ nouveau_bo_new(struct nouveau_cli *cli, u64 size, int align,
 	struct nouveau_drm *drm = cli->drm;
 	struct nouveau_bo *nvbo;
 	struct nvif_mmu *mmu = &cli->mmu;
-	struct nvif_vmm *vmm = &cli->vmm.vmm;
+	struct nvif_vmm *vmm = cli->svm.cli ? &cli->svm.vmm : &cli->vmm.vmm;
 	size_t acc_size;
 	int type = ttm_bo_type_device;
 	int ret, i, pi = -1;
@@ -214,7 +214,6 @@ nouveau_bo_new(struct nouveau_cli *cli, u64 size, int align,
 	INIT_LIST_HEAD(&nvbo->entry);
 	INIT_LIST_HEAD(&nvbo->vma_list);
 	nvbo->bo.bdev = &drm->ttm.bdev;
-	nvbo->cli = cli;
 
 	/* This is confusing, and doesn't actually mean we want an uncached
 	 * mapping, but is what NOUVEAU_GEM_DOMAIN_COHERENT gets translated
@@ -298,7 +297,7 @@ nouveau_bo_new(struct nouveau_cli *cli, u64 size, int align,
 
 	ret = ttm_bo_init(&drm->ttm.bdev, &nvbo->bo, size,
 			  type, &nvbo->placement,
-			  align >> PAGE_SHIFT, false, NULL, acc_size, sg,
+			  align >> PAGE_SHIFT, false, acc_size, sg,
 			  robj, nouveau_bo_del_ttm);
 	if (ret) {
 		/* ttm will call nouveau_bo_del_ttm if it fails.. */
@@ -604,19 +603,17 @@ nouveau_bo_wr32(struct nouveau_bo *nvbo, unsigned index, u32 val)
 }
 
 static struct ttm_tt *
-nouveau_ttm_tt_create(struct ttm_bo_device *bdev, unsigned long size,
-		      uint32_t page_flags, struct page *dummy_read)
+nouveau_ttm_tt_create(struct ttm_buffer_object *bo, uint32_t page_flags)
 {
 #if IS_ENABLED(CONFIG_AGP)
-	struct nouveau_drm *drm = nouveau_bdev(bdev);
+	struct nouveau_drm *drm = nouveau_bdev(bo->bdev);
 
 	if (drm->agp.bridge) {
-		return ttm_agp_tt_create(bdev, drm->agp.bridge, size,
-					 page_flags, dummy_read);
+		return ttm_agp_tt_create(bo, drm->agp.bridge, page_flags);
 	}
 #endif
 
-	return nouveau_sgdma_create_ttm(bdev, size, page_flags, dummy_read);
+	return nouveau_sgdma_create_ttm(bo, page_flags);
 }
 
 static int
@@ -1144,6 +1141,10 @@ nouveau_bo_move_init(struct nouveau_drm *drm)
 			    struct ttm_mem_reg *, struct ttm_mem_reg *);
 		int (*init)(struct nouveau_channel *, u32 handle);
 	} _methods[] = {
+		{  "COPY", 4, 0xc5b5, nve0_bo_move_copy, nve0_bo_move_init },
+		{  "GRCE", 0, 0xc5b5, nve0_bo_move_copy, nvc0_bo_move_init },
+		{  "COPY", 4, 0xc3b5, nve0_bo_move_copy, nve0_bo_move_init },
+		{  "GRCE", 0, 0xc3b5, nve0_bo_move_copy, nvc0_bo_move_init },
 		{  "COPY", 4, 0xc1b5, nve0_bo_move_copy, nve0_bo_move_init },
 		{  "GRCE", 0, 0xc1b5, nve0_bo_move_copy, nvc0_bo_move_init },
 		{  "COPY", 4, 0xc0b5, nve0_bo_move_copy, nve0_bo_move_init },
@@ -1433,7 +1434,7 @@ nouveau_ttm_io_mem_reserve(struct ttm_bo_device *bdev, struct ttm_mem_reg *reg)
 		if (drm->client.mem->oclass < NVIF_CLASS_MEM_NV50 || !mem->kind)
 			/* untiled */
 			break;
-		/* fallthrough, tiled memory */
+		/* fall through - tiled memory */
 	case TTM_PL_VRAM:
 		reg->bus.offset = reg->start << PAGE_SHIFT;
 		reg->bus.base = device->func->resource_addr(device, 1);

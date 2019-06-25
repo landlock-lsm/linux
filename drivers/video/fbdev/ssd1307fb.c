@@ -1,9 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Driver for the Solomon SSD1307 OLED controller
  *
  * Copyright 2012 Free Electrons
- *
- * Licensed under the GPLv2 or later.
  */
 
 #include <linux/backlight.h>
@@ -628,7 +627,8 @@ static int ssd1307fb_probe(struct i2c_client *client,
 		goto fb_alloc_error;
 	}
 
-	ssd1307fb_defio = devm_kzalloc(&client->dev, sizeof(struct fb_deferred_io), GFP_KERNEL);
+	ssd1307fb_defio = devm_kzalloc(&client->dev, sizeof(*ssd1307fb_defio),
+				       GFP_KERNEL);
 	if (!ssd1307fb_defio) {
 		dev_err(&client->dev, "Couldn't allocate deferred io.\n");
 		ret = -ENOMEM;
@@ -666,9 +666,9 @@ static int ssd1307fb_probe(struct i2c_client *client,
 
 	if (par->reset) {
 		/* Reset the screen */
-		gpiod_set_value(par->reset, 0);
+		gpiod_set_value_cansleep(par->reset, 1);
 		udelay(4);
-		gpiod_set_value(par->reset, 1);
+		gpiod_set_value_cansleep(par->reset, 0);
 		udelay(4);
 	}
 

@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/gpio.h>
@@ -90,7 +79,7 @@ static int gpio_config(struct hdmi *hdmi, bool on)
 			if (gpio.num != -1) {
 				ret = gpio_request(gpio.num, gpio.label);
 				if (ret) {
-					dev_err(dev,
+					DRM_DEV_ERROR(dev,
 						"'%s'(%d) gpio_request failed: %d\n",
 						gpio.label, gpio.num, ret);
 					goto err;
@@ -156,7 +145,7 @@ static void enable_hpd_clocks(struct hdmi *hdmi, bool enable)
 
 			ret = clk_prepare_enable(hdmi->hpd_clks[i]);
 			if (ret) {
-				dev_err(dev,
+				DRM_DEV_ERROR(dev,
 					"failed to enable hpd clk: %s (%d)\n",
 					config->hpd_clk_names[i], ret);
 			}
@@ -167,8 +156,9 @@ static void enable_hpd_clocks(struct hdmi *hdmi, bool enable)
 	}
 }
 
-static int hpd_enable(struct hdmi_connector *hdmi_connector)
+int msm_hdmi_hpd_enable(struct drm_connector *connector)
 {
+	struct hdmi_connector *hdmi_connector = to_hdmi_connector(connector);
 	struct hdmi *hdmi = hdmi_connector->hdmi;
 	const struct hdmi_platform_config *config = hdmi->config;
 	struct device *dev = &hdmi->pdev->dev;
@@ -179,7 +169,7 @@ static int hpd_enable(struct hdmi_connector *hdmi_connector)
 	for (i = 0; i < config->hpd_reg_cnt; i++) {
 		ret = regulator_enable(hdmi->hpd_regs[i]);
 		if (ret) {
-			dev_err(dev, "failed to enable hpd regulator: %s (%d)\n",
+			DRM_DEV_ERROR(dev, "failed to enable hpd regulator: %s (%d)\n",
 					config->hpd_reg_names[i], ret);
 			goto fail;
 		}
@@ -187,13 +177,13 @@ static int hpd_enable(struct hdmi_connector *hdmi_connector)
 
 	ret = pinctrl_pm_select_default_state(dev);
 	if (ret) {
-		dev_err(dev, "pinctrl state chg failed: %d\n", ret);
+		DRM_DEV_ERROR(dev, "pinctrl state chg failed: %d\n", ret);
 		goto fail;
 	}
 
 	ret = gpio_config(hdmi, true);
 	if (ret) {
-		dev_err(dev, "failed to configure GPIOs: %d\n", ret);
+		DRM_DEV_ERROR(dev, "failed to configure GPIOs: %d\n", ret);
 		goto fail;
 	}
 
@@ -392,7 +382,7 @@ static int msm_hdmi_connector_get_modes(struct drm_connector *connector)
 	hdmi_write(hdmi, REG_HDMI_CTRL, hdmi_ctrl);
 
 	hdmi->hdmi_mode = drm_detect_hdmi_monitor(edid);
-	drm_mode_connector_update_edid_property(connector, edid);
+	drm_connector_update_edid_property(connector, edid);
 
 	if (edid) {
 		ret = drm_add_edid_modes(connector, edid);
@@ -450,7 +440,6 @@ struct drm_connector *msm_hdmi_connector_init(struct hdmi *hdmi)
 {
 	struct drm_connector *connector = NULL;
 	struct hdmi_connector *hdmi_connector;
-	int ret;
 
 	hdmi_connector = kzalloc(sizeof(*hdmi_connector), GFP_KERNEL);
 	if (!hdmi_connector)
@@ -471,13 +460,7 @@ struct drm_connector *msm_hdmi_connector_init(struct hdmi *hdmi)
 	connector->interlace_allowed = 0;
 	connector->doublescan_allowed = 0;
 
-	ret = hpd_enable(hdmi_connector);
-	if (ret) {
-		dev_err(&hdmi->pdev->dev, "failed to enable HPD: %d\n", ret);
-		return ERR_PTR(ret);
-	}
-
-	drm_mode_connector_attach_encoder(connector, hdmi->encoder);
+	drm_connector_attach_encoder(connector, hdmi->encoder);
 
 	return connector;
 }

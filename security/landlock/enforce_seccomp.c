@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Landlock LSM - enforcing with seccomp
  *
  * Copyright © 2016-2018 Mickaël Salaün <mic@digikod.net>
- * Copyright © 2018 ANSSI
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * Copyright © 2018-2019 ANSSI
  */
 
 #ifdef CONFIG_SECCOMP_FILTER
@@ -22,7 +19,6 @@
 #include <linux/uaccess.h> /* get_user() */
 
 #include "enforce.h"
-#include "task.h"
 
 /* headers in include/linux/landlock.h */
 
@@ -65,18 +61,9 @@ int landlock_seccomp_prepend_prog(unsigned int flags,
 	if (err)
 		return err;
 
-	/* allocate current->security here to not have to handle this in
-	 * hook_nameidata_free_security() */
-	if (!current->security) {
-		current->security = landlock_new_task_security(GFP_KERNEL);
-		if (!current->security)
-			return -ENOMEM;
-	}
 	prog = bpf_prog_get(bpf_fd);
-	if (IS_ERR(prog)) {
-		err = PTR_ERR(prog);
-		goto free_task;
-	}
+	if (IS_ERR(prog))
+		return PTR_ERR(prog);
 
 	/*
 	 * We don't need to lock anything for the current process hierarchy,
@@ -86,17 +73,10 @@ int landlock_seccomp_prepend_prog(unsigned int flags,
 			current->seccomp.landlock_prog_set, prog);
 	bpf_prog_put(prog);
 	/* @prog is managed/freed by landlock_prepend_prog() */
-	if (IS_ERR(new_prog_set)) {
-		err = PTR_ERR(new_prog_set);
-		goto free_task;
-	}
+	if (IS_ERR(new_prog_set))
+		return PTR_ERR(new_prog_set);
 	current->seccomp.landlock_prog_set = new_prog_set;
 	return 0;
-
-free_task:
-	landlock_free_task_security(current->security);
-	current->security = NULL;
-	return err;
 }
 
 void put_seccomp_landlock(struct task_struct *tsk)

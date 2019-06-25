@@ -4,6 +4,7 @@
 # IPv4 and IPv6 onlink tests
 
 PAUSE_ON_FAIL=${PAUSE_ON_FAIL:=no}
+VERBOSE=0
 
 # Network interfaces
 # - odd in current namespace; even in peer ns
@@ -56,7 +57,8 @@ TEST_NET6[2]=2001:db8:102
 
 # connected gateway
 CONGW[1]=169.254.1.254
-CONGW[2]=169.254.5.254
+CONGW[2]=169.254.3.254
+CONGW[3]=169.254.5.254
 
 # recursive gateway
 RECGW4[1]=169.254.11.254
@@ -90,10 +92,10 @@ log_test()
 
 	if [ ${rc} -eq ${expected} ]; then
 		nsuccess=$((nsuccess+1))
-		printf "\n    TEST: %-50s  [ OK ]\n" "${msg}"
+		printf "    TEST: %-50s  [ OK ]\n" "${msg}"
 	else
 		nfail=$((nfail+1))
-		printf "\n    TEST: %-50s  [FAIL]\n" "${msg}"
+		printf "    TEST: %-50s  [FAIL]\n" "${msg}"
 		if [ "${PAUSE_ON_FAIL}" = "yes" ]; then
 			echo
 			echo "hit enter to continue, 'q' to quit"
@@ -120,9 +122,23 @@ log_subsection()
 
 run_cmd()
 {
-	echo
-	echo "COMMAND: $*"
-	eval $*
+	local cmd="$*"
+	local out
+	local rc
+
+	if [ "$VERBOSE" = "1" ]; then
+		printf "    COMMAND: $cmd\n"
+	fi
+
+	out=$(eval $cmd 2>&1)
+	rc=$?
+	if [ "$VERBOSE" = "1" -a -n "$out" ]; then
+		echo "    $out"
+	fi
+
+	[ "$VERBOSE" = "1" ] && echo
+
+	return $rc
 }
 
 get_linklocal()
@@ -166,8 +182,8 @@ setup()
 	# add vrf table
 	ip li add ${VRF} type vrf table ${VRF_TABLE}
 	ip li set ${VRF} up
-	ip ro add table ${VRF_TABLE} unreachable default
-	ip -6 ro add table ${VRF_TABLE} unreachable default
+	ip ro add table ${VRF_TABLE} unreachable default metric 8192
+	ip -6 ro add table ${VRF_TABLE} unreachable default metric 8192
 
 	# create test interfaces
 	ip li add ${NETIFS[p1]} type veth peer name ${NETIFS[p2]}
@@ -184,20 +200,20 @@ setup()
 	for n in 1 3 5 7; do
 		ip li set ${NETIFS[p${n}]} up
 		ip addr add ${V4ADDRS[p${n}]}/24 dev ${NETIFS[p${n}]}
-		ip addr add ${V6ADDRS[p${n}]}/64 dev ${NETIFS[p${n}]}
+		ip addr add ${V6ADDRS[p${n}]}/64 dev ${NETIFS[p${n}]} nodad
 	done
 
 	# move peer interfaces to namespace and add addresses
 	for n in 2 4 6 8; do
 		ip li set ${NETIFS[p${n}]} netns ${PEER_NS} up
 		ip -netns ${PEER_NS} addr add ${V4ADDRS[p${n}]}/24 dev ${NETIFS[p${n}]}
-		ip -netns ${PEER_NS} addr add ${V6ADDRS[p${n}]}/64 dev ${NETIFS[p${n}]}
+		ip -netns ${PEER_NS} addr add ${V6ADDRS[p${n}]}/64 dev ${NETIFS[p${n}]} nodad
 	done
 
-	set +e
+	ip -6 ro add default via ${V6ADDRS[p3]/::[0-9]/::64}
+	ip -6 ro add table ${VRF_TABLE} default via ${V6ADDRS[p7]/::[0-9]/::64}
 
-	# let DAD complete - assume default of 1 probe
-	sleep 1
+	set +e
 }
 
 cleanup()
@@ -232,6 +248,23 @@ run_ip()
 	log_test $? ${exp_rc} "${desc}"
 }
 
+run_ip_mpath()
+{
+	local table="$1"
+	local prefix="$2"
+	local nh1="$3"
+	local nh2="$4"
+	local exp_rc="$5"
+	local desc="$6"
+
+	# dev arg may be empty
+	[ -n "${dev}" ] && dev="dev ${dev}"
+
+	run_cmd ip ro add table "${table}" "${prefix}"/32 \
+		nexthop via ${nh1} nexthop via ${nh2}
+	log_test $? ${exp_rc} "${desc}"
+}
+
 valid_onlink_ipv4()
 {
 	# - unicast connected, unicast recursive
@@ -243,13 +276,37 @@ valid_onlink_ipv4()
 
 	log_subsection "VRF ${VRF}"
 
-	run_ip ${VRF_TABLE} ${TEST_NET4[2]}.1 ${CONGW[2]} ${NETIFS[p5]} 0 "unicast connected"
+	run_ip ${VRF_TABLE} ${TEST_NET4[2]}.1 ${CONGW[3]} ${NETIFS[p5]} 0 "unicast connected"
 	run_ip ${VRF_TABLE} ${TEST_NET4[2]}.2 ${RECGW4[2]} ${NETIFS[p5]} 0 "unicast recursive"
 
 	log_subsection "VRF device, PBR table"
 
-	run_ip ${PBR_TABLE} ${TEST_NET4[2]}.3 ${CONGW[2]} ${NETIFS[p5]} 0 "unicast connected"
+	run_ip ${PBR_TABLE} ${TEST_NET4[2]}.3 ${CONGW[3]} ${NETIFS[p5]} 0 "unicast connected"
 	run_ip ${PBR_TABLE} ${TEST_NET4[2]}.4 ${RECGW4[2]} ${NETIFS[p5]} 0 "unicast recursive"
+
+	# multipath version
+	#
+	log_subsection "default VRF - main table - multipath"
+
+	run_ip_mpath 254 ${TEST_NET4[1]}.5 \
+		"${CONGW[1]} dev ${NETIFS[p1]} onlink" \
+		"${CONGW[2]} dev ${NETIFS[p3]} onlink" \
+		0 "unicast connected - multipath"
+
+	run_ip_mpath 254 ${TEST_NET4[1]}.6 \
+		"${RECGW4[1]} dev ${NETIFS[p1]} onlink" \
+		"${RECGW4[2]} dev ${NETIFS[p3]} onlink" \
+		0 "unicast recursive - multipath"
+
+	run_ip_mpath 254 ${TEST_NET4[1]}.7 \
+		"${CONGW[1]} dev ${NETIFS[p1]}"        \
+		"${CONGW[2]} dev ${NETIFS[p3]} onlink" \
+		0 "unicast connected - multipath onlink first only"
+
+	run_ip_mpath 254 ${TEST_NET4[1]}.8 \
+		"${CONGW[1]} dev ${NETIFS[p1]} onlink" \
+		"${CONGW[2]} dev ${NETIFS[p3]}"        \
+		0 "unicast connected - multipath onlink second only"
 }
 
 invalid_onlink_ipv4()
@@ -289,6 +346,21 @@ run_ip6()
 	log_test $? ${exp_rc} "${desc}"
 }
 
+run_ip6_mpath()
+{
+	local table="$1"
+	local prefix="$2"
+	local opts="$3"
+	local nh1="$4"
+	local nh2="$5"
+	local exp_rc="$6"
+	local desc="$7"
+
+	run_cmd ip -6 ro add table "${table}" "${prefix}"/128 "${opts}" \
+		nexthop via ${nh1} nexthop via ${nh2}
+	log_test $? ${exp_rc} "${desc}"
+}
+
 valid_onlink_ipv6()
 {
 	# - unicast connected, unicast recursive, v4-mapped
@@ -310,6 +382,40 @@ valid_onlink_ipv6()
 	run_ip6 ${PBR_TABLE} ${TEST_NET6[2]}::4 ${V6ADDRS[p5]/::*}::64 ${NETIFS[p5]} 0 "unicast connected"
 	run_ip6 ${PBR_TABLE} ${TEST_NET6[2]}::5 ${RECGW6[2]} ${NETIFS[p5]} 0 "unicast recursive"
 	run_ip6 ${PBR_TABLE} ${TEST_NET6[2]}::6 ::ffff:${TEST_NET4IN6[2]} ${NETIFS[p5]} 0 "v4-mapped"
+
+	# multipath version
+	#
+	log_subsection "default VRF - main table - multipath"
+
+	run_ip6_mpath 254 ${TEST_NET6[1]}::4 "onlink" \
+		"${V6ADDRS[p1]/::*}::64 dev ${NETIFS[p1]}" \
+		"${V6ADDRS[p3]/::*}::64 dev ${NETIFS[p3]}" \
+		0 "unicast connected - multipath onlink"
+
+	run_ip6_mpath 254 ${TEST_NET6[1]}::5 "onlink" \
+		"${RECGW6[1]} dev ${NETIFS[p1]}" \
+		"${RECGW6[2]} dev ${NETIFS[p3]}" \
+		0 "unicast recursive - multipath onlink"
+
+	run_ip6_mpath 254 ${TEST_NET6[1]}::6 "onlink" \
+		"::ffff:${TEST_NET4IN6[1]} dev ${NETIFS[p1]}" \
+		"::ffff:${TEST_NET4IN6[2]} dev ${NETIFS[p3]}" \
+		0 "v4-mapped - multipath onlink"
+
+	run_ip6_mpath 254 ${TEST_NET6[1]}::7 "" \
+		"${V6ADDRS[p1]/::*}::64 dev ${NETIFS[p1]} onlink" \
+		"${V6ADDRS[p3]/::*}::64 dev ${NETIFS[p3]} onlink" \
+		0 "unicast connected - multipath onlink both nexthops"
+
+	run_ip6_mpath 254 ${TEST_NET6[1]}::8 "" \
+		"${V6ADDRS[p1]/::*}::64 dev ${NETIFS[p1]} onlink" \
+		"${V6ADDRS[p3]/::*}::64 dev ${NETIFS[p3]}" \
+		0 "unicast connected - multipath onlink first only"
+
+	run_ip6_mpath 254 ${TEST_NET6[1]}::9 "" \
+		"${V6ADDRS[p1]/::*}::64 dev ${NETIFS[p1]}"        \
+		"${V6ADDRS[p3]/::*}::64 dev ${NETIFS[p3]} onlink" \
+		0 "unicast connected - multipath onlink second only"
 }
 
 invalid_onlink_ipv6()
@@ -355,7 +461,21 @@ run_onlink_tests()
 	log_section "IPv6 onlink"
 	log_subsection "Valid onlink commands"
 	valid_onlink_ipv6
+	log_subsection "Invalid onlink commands"
 	invalid_onlink_ipv6
+}
+
+################################################################################
+# usage
+
+usage()
+{
+	cat <<EOF
+usage: ${0##*/} OPTS
+
+        -p          Pause on fail
+        -v          verbose mode (show commands and output)
+EOF
 }
 
 ################################################################################
@@ -363,6 +483,16 @@ run_onlink_tests()
 
 nsuccess=0
 nfail=0
+
+while getopts :t:pPhv o
+do
+	case $o in
+		p) PAUSE_ON_FAIL=yes;;
+		v) VERBOSE=$(($VERBOSE + 1));;
+		h) usage; exit 0;;
+		*) usage; exit 1;;
+	esac
+done
 
 cleanup
 setup

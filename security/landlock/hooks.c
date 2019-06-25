@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Landlock LSM - hook helpers
  *
- * Copyright © 2016-2018 Mickaël Salaün <mic@digikod.net>
- * Copyright © 2018 ANSSI
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * Copyright © 2016-2019 Mickaël Salaün <mic@digikod.net>
+ * Copyright © 2018-2019 ANSSI
  */
 
 #include <asm/current.h>
@@ -22,38 +19,17 @@
 #include "hooks_fs.h"
 
 /* return a Landlock program context (e.g. hook_ctx->fs_walk.prog_ctx) */
-static void *update_ctx(enum landlock_hook_type hook_type,
-		struct landlock_hook_ctx *hook_ctx,
-		const struct landlock_chain *chain)
+static const void *get_ctx(enum landlock_hook_type hook_type,
+		struct landlock_hook_ctx *hook_ctx)
 {
 	switch (hook_type) {
 	case LANDLOCK_HOOK_FS_WALK:
-		return landlock_update_ctx_fs_walk(hook_ctx->fs_walk, chain);
+		return landlock_get_ctx_fs_walk(hook_ctx->fs_walk);
 	case LANDLOCK_HOOK_FS_PICK:
-		return landlock_update_ctx_fs_pick(hook_ctx->fs_pick, chain);
-	case LANDLOCK_HOOK_FS_GET:
-		return landlock_update_ctx_fs_get(hook_ctx->fs_get, chain);
+		return landlock_get_ctx_fs_pick(hook_ctx->fs_pick);
 	}
 	WARN_ON(1);
 	return NULL;
-}
-
-/* save the program context (e.g. hook_ctx->fs_get.prog_ctx.inode_tag) */
-static int save_ctx(enum landlock_hook_type hook_type,
-		struct landlock_hook_ctx *hook_ctx,
-		struct landlock_chain *chain)
-{
-	switch (hook_type) {
-	case LANDLOCK_HOOK_FS_WALK:
-		return landlock_save_ctx_fs_walk(hook_ctx->fs_walk, chain);
-	case LANDLOCK_HOOK_FS_PICK:
-		return landlock_save_ctx_fs_pick(hook_ctx->fs_pick, chain);
-	case LANDLOCK_HOOK_FS_GET:
-		/* no need to save the cookie */
-		return 0;
-	}
-	WARN_ON(1);
-	return 1;
 }
 
 /**
@@ -79,20 +55,18 @@ static bool landlock_access_deny(enum landlock_hook_type hook_type,
 	for (prog_list = prog_set->programs[hook_idx];
 			prog_list; prog_list = prog_list->prev) {
 		u32 ret;
-		void *prog_ctx;
+		const void *prog_ctx;
 
 		/* check if @prog expect at least one of this triggers */
 		if (triggers && !(triggers & prog_list->prog->aux->extra->
 					subtype.landlock_hook.triggers))
 			continue;
-		prog_ctx = update_ctx(hook_type, hook_ctx, prog_list->chain);
+		prog_ctx = get_ctx(hook_type, hook_ctx);
 		if (!prog_ctx || WARN_ON(IS_ERR(prog_ctx)))
 			return true;
 		rcu_read_lock();
 		ret = BPF_PROG_RUN(prog_list->prog, prog_ctx);
 		rcu_read_unlock();
-		if (save_ctx(hook_type, hook_ctx, prog_list->chain))
-			return true;
 		/* deny access if a program returns a value different than 0 */
 		if (ret)
 			return true;

@@ -183,7 +183,13 @@ static int nes_inetaddr_event(struct notifier_block *notifier,
 
 						rcu_read_lock();
 						in = __in_dev_get_rcu(upper_dev);
-						nesvnic->local_ipaddr = in->ifa_list->ifa_address;
+						if (in) {
+							struct in_ifaddr *ifa;
+
+							ifa = rcu_dereference(in->ifa_list);
+							if (ifa)
+								nesvnic->local_ipaddr = ifa->ifa_address;
+						}
 						rcu_read_unlock();
 					} else {
 						nesvnic->local_ipaddr = ifa->ifa_address;
@@ -455,9 +461,6 @@ static int nes_probe(struct pci_dev *pcidev, const struct pci_device_id *ent)
 	int ret = 0;
 	void __iomem *mmio_regs = NULL;
 	u8 hw_rev;
-
-	assert(pcidev != NULL);
-	assert(ent != NULL);
 
 	printk(KERN_INFO PFX "NetEffect RNIC driver v%s loading. (%s)\n",
 			DRV_VERSION, pci_name(pcidev));

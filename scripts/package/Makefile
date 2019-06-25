@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # Makefile for the different targets used to generate full packages of a kernel
 # It uses the generic clean infrastructure of kbuild
 
@@ -24,6 +25,7 @@
 # Remove hyphens since they have special meaning in RPM filenames
 KERNELPATH := kernel-$(subst -,_,$(KERNELRELEASE))
 KDEB_SOURCENAME ?= linux-$(KERNELRELEASE)
+KBUILD_PKG_ROOTCMD ?="fakeroot -u"
 export KDEB_SOURCENAME
 # Include only those top-level files that are needed by make, plus the GPL copy
 TAR_CONTENT := $(KBUILD_ALLDIRS) .config .scmversion Makefile \
@@ -32,7 +34,6 @@ MKSPEC     := $(srctree)/scripts/package/mkspec
 
 quiet_cmd_src_tar = TAR     $(2).tar.gz
       cmd_src_tar = \
-set -e; \
 if test "$(objtree)" != "$(srctree)"; then \
 	echo >&2; \
 	echo >&2 "  ERROR:"; \
@@ -59,42 +60,27 @@ rpm-pkg: FORCE
 # binrpm-pkg
 # ---------------------------------------------------------------------------
 binrpm-pkg: FORCE
-	$(MAKE) KBUILD_SRC=
+	$(MAKE) -f $(srctree)/Makefile
 	$(CONFIG_SHELL) $(MKSPEC) prebuilt > $(objtree)/binkernel.spec
 	+rpmbuild $(RPMOPTS) --define "_builddir $(objtree)" --target \
 		$(UTS_MACHINE) -bb $(objtree)/binkernel.spec
 
 clean-files += $(objtree)/*.spec
 
-# Deb target
-# ---------------------------------------------------------------------------
-quiet_cmd_builddeb = BUILDDEB
-      cmd_builddeb = set -e; \
-	test `id -u` = 0 || \
-	test -n "$(KBUILD_PKG_ROOTCMD)" || { \
-		which fakeroot >/dev/null 2>&1 && \
-		KBUILD_PKG_ROOTCMD="fakeroot -u"; \
-	} || { \
-		echo; \
-		echo "builddeb must be run as root (or using fakeroot)."; \
-		echo "KBUILD_PKG_ROOTCMD is unset and fakeroot not found."; \
-		echo "Try setting KBUILD_PKG_ROOTCMD to a command to acquire"; \
-		echo "root privileges (e.g., 'fakeroot -u' or 'sudo')."; \
-		false; \
-	} && \
-	\
-	$$KBUILD_PKG_ROOTCMD $(CONFIG_SHELL) \
-		$(srctree)/scripts/package/builddeb $@
-
 deb-pkg: FORCE
 	$(MAKE) clean
+	$(CONFIG_SHELL) $(srctree)/scripts/package/mkdebian
 	$(call cmd,src_tar,$(KDEB_SOURCENAME))
-	$(MAKE) KBUILD_SRC=
-	+$(call cmd,builddeb)
+	origversion=$$(dpkg-parsechangelog -SVersion |sed 's/-[^-]*$$//');\
+		mv $(KDEB_SOURCENAME).tar.gz ../$(KDEB_SOURCENAME)_$${origversion}.orig.tar.gz
+	+dpkg-buildpackage -r$(KBUILD_PKG_ROOTCMD) -a$$(cat debian/arch) $(DPKG_FLAGS) -i.git -us -uc
 
 bindeb-pkg: FORCE
-	$(MAKE) KBUILD_SRC=
-	+$(call cmd,builddeb)
+	$(CONFIG_SHELL) $(srctree)/scripts/package/mkdebian
+	+dpkg-buildpackage -r$(KBUILD_PKG_ROOTCMD) -a$$(cat debian/arch) $(DPKG_FLAGS) -b -nc -uc
+
+intdeb-pkg: FORCE
+	+$(CONFIG_SHELL) $(srctree)/scripts/package/builddeb
 
 clean-dirs += $(objtree)/debian/
 
@@ -117,8 +103,8 @@ clean-dirs += $(objtree)/snap/
 # tarball targets
 # ---------------------------------------------------------------------------
 tar%pkg: FORCE
-	$(MAKE) KBUILD_SRC=
-	$(CONFIG_SHELL) $(srctree)/scripts/package/buildtar $@
+	$(MAKE) -f $(srctree)/Makefile
+	+$(CONFIG_SHELL) $(srctree)/scripts/package/buildtar $@
 
 clean-dirs += $(objtree)/tar-install/
 

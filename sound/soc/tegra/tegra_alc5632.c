@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
 * tegra_alc5632.c  --  Toshiba AC100(PAZ00) machine ASoC driver
  *
@@ -7,10 +8,6 @@
  * Authors:  Leon Romanovsky <leon@leon.nu>
  *           Andrey Danin <danindrey@mail.ru>
  *           Marc Dietrich <marvin24@gmx.de>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/module.h>
@@ -190,14 +187,14 @@ static int tegra_alc5632_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev,
 			"Property 'nvidia,i2s-controller' missing or invalid\n");
 		ret = -EINVAL;
-		goto err;
+		goto err_put_codec_of_node;
 	}
 
 	tegra_alc5632_dai.platform_of_node = tegra_alc5632_dai.cpu_of_node;
 
 	ret = tegra_asoc_utils_init(&alc5632->util_data, &pdev->dev);
 	if (ret)
-		goto err;
+		goto err_put_cpu_of_node;
 
 	ret = snd_soc_register_card(card);
 	if (ret) {
@@ -210,6 +207,13 @@ static int tegra_alc5632_probe(struct platform_device *pdev)
 
 err_fini_utils:
 	tegra_asoc_utils_fini(&alc5632->util_data);
+err_put_cpu_of_node:
+	of_node_put(tegra_alc5632_dai.cpu_of_node);
+	tegra_alc5632_dai.cpu_of_node = NULL;
+	tegra_alc5632_dai.platform_of_node = NULL;
+err_put_codec_of_node:
+	of_node_put(tegra_alc5632_dai.codec_of_node);
+	tegra_alc5632_dai.codec_of_node = NULL;
 err:
 	return ret;
 }
@@ -222,6 +226,12 @@ static int tegra_alc5632_remove(struct platform_device *pdev)
 	snd_soc_unregister_card(card);
 
 	tegra_asoc_utils_fini(&machine->util_data);
+
+	of_node_put(tegra_alc5632_dai.cpu_of_node);
+	tegra_alc5632_dai.cpu_of_node = NULL;
+	tegra_alc5632_dai.platform_of_node = NULL;
+	of_node_put(tegra_alc5632_dai.codec_of_node);
+	tegra_alc5632_dai.codec_of_node = NULL;
 
 	return 0;
 }

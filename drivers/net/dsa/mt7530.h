@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2017 Sean Wang <sean.wang@mediatek.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #ifndef __MT7530_H
@@ -18,6 +10,11 @@
 #define MT7530_CPU_PORT			6
 #define MT7530_NUM_FDB_RECORDS		2048
 #define MT7530_ALL_MEMBERS		0xff
+
+enum {
+	ID_MT7530 = 0,
+	ID_MT7621 = 1,
+};
 
 #define	NUM_TRGMII_CTRL			5
 
@@ -36,6 +33,9 @@
 #define  UNM_FFP(x)			(((x) & 0xff) << 16)
 #define  UNU_FFP(x)			(((x) & 0xff) << 8)
 #define  UNU_FFP_MASK			UNU_FFP(~0)
+#define  CPU_EN				BIT(7)
+#define  CPU_PORT(x)			((x) << 4)
+#define  CPU_MASK			(0xf << 4)
 
 /* Registers for address table access */
 #define MT7530_ATA1			0x74
@@ -244,6 +244,10 @@ enum mt7530_vlan_port_attr {
 
 /* Register for hw trap status */
 #define MT7530_HWTRAP			0x7800
+#define  HWTRAP_XTAL_MASK		(BIT(10) | BIT(9))
+#define  HWTRAP_XTAL_25MHZ		(BIT(10) | BIT(9))
+#define  HWTRAP_XTAL_40MHZ		(BIT(10))
+#define  HWTRAP_XTAL_20MHZ		(BIT(9))
 
 /* Register for hw trap modification */
 #define MT7530_MHWTRAP			0x7804
@@ -402,7 +406,6 @@ struct mt7530_port {
 	bool enable;
 	u32 pm;
 	u16 pvid;
-	bool vlan_filtering;
 };
 
 /* struct mt7530_priv -	This is the main data structure for holding the state
@@ -430,6 +433,7 @@ struct mt7530_priv {
 	struct regulator	*core_pwr;
 	struct regulator	*io_pwr;
 	struct gpio_desc	*reset;
+	unsigned int		id;
 	bool			mcm;
 
 	struct mt7530_port	ports[MT7530_NUM_PORTS];

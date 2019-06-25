@@ -1,10 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
 /*
  * Broadcom BCM470X / BCM5301X arm platform code.
  * DTS for SmartRG SR400ac
  *
  * Copyright (C) 2015 Rafał Miłecki <zajec5@gmail.com>
- *
- * Licensed under the GNU/GPL. See COPYING for details.
  */
 
 /dts-v1/;
@@ -21,6 +20,7 @@
 	};
 
 	memory {
+		device_type = "memory";
 		reg = <0x00000000 0x08000000
 		       0x88000000 0x08000000>;
 	};
@@ -158,4 +158,8 @@
 			ethernet = <&gmac0>;
 		};
 	};
+};
+
+&usb3_phy {
+	status = "okay";
 };

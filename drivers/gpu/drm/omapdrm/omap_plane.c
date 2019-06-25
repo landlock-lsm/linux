@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2011 Texas Instruments Incorporated - http://www.ti.com/
  * Author: Rob Clark <rob.clark@linaro.org>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <drm/drm_atomic.h>
@@ -65,7 +54,7 @@ static void omap_plane_atomic_update(struct drm_plane *plane,
 	info.rotation_type = OMAP_DSS_ROT_NONE;
 	info.rotation = DRM_MODE_ROTATE_0;
 	info.global_alpha = 0xff;
-	info.zorder = state->zpos;
+	info.zorder = state->normalized_zpos;
 
 	/* update scanout: */
 	omap_framebuffer_update_scanout(state->fb, state, &info);
@@ -77,17 +66,17 @@ static void omap_plane_atomic_update(struct drm_plane *plane,
 			&info.paddr, &info.p_uv_addr);
 
 	/* and finally, update omapdss: */
-	ret = priv->dispc_ops->ovl_setup(omap_plane->id, &info,
+	ret = priv->dispc_ops->ovl_setup(priv->dispc, omap_plane->id, &info,
 			      omap_crtc_timings(state->crtc), false,
 			      omap_crtc_channel(state->crtc));
 	if (ret) {
 		dev_err(plane->dev->dev, "Failed to setup plane %s\n",
 			omap_plane->name);
-		priv->dispc_ops->ovl_enable(omap_plane->id, false);
+		priv->dispc_ops->ovl_enable(priv->dispc, omap_plane->id, false);
 		return;
 	}
 
-	priv->dispc_ops->ovl_enable(omap_plane->id, true);
+	priv->dispc_ops->ovl_enable(priv->dispc, omap_plane->id, true);
 }
 
 static void omap_plane_atomic_disable(struct drm_plane *plane,
@@ -100,7 +89,7 @@ static void omap_plane_atomic_disable(struct drm_plane *plane,
 	plane->state->zpos = plane->type == DRM_PLANE_TYPE_PRIMARY
 			   ? 0 : omap_plane->id;
 
-	priv->dispc_ops->ovl_enable(omap_plane->id, false);
+	priv->dispc_ops->ovl_enable(priv->dispc, omap_plane->id, false);
 }
 
 static int omap_plane_atomic_check(struct drm_plane *plane,
@@ -201,7 +190,7 @@ static void omap_plane_reset(struct drm_plane *plane)
 static int omap_plane_atomic_set_property(struct drm_plane *plane,
 					  struct drm_plane_state *state,
 					  struct drm_property *property,
-					  uint64_t val)
+					  u64 val)
 {
 	struct omap_drm_private *priv = plane->dev->dev_private;
 
@@ -216,7 +205,7 @@ static int omap_plane_atomic_set_property(struct drm_plane *plane,
 static int omap_plane_atomic_get_property(struct drm_plane *plane,
 					  const struct drm_plane_state *state,
 					  struct drm_property *property,
-					  uint64_t *val)
+					  u64 *val)
 {
 	struct omap_drm_private *priv = plane->dev->dev_private;
 
@@ -259,7 +248,7 @@ struct drm_plane *omap_plane_init(struct drm_device *dev,
 		u32 possible_crtcs)
 {
 	struct omap_drm_private *priv = dev->dev_private;
-	unsigned int num_planes = priv->dispc_ops->get_num_ovls();
+	unsigned int num_planes = priv->dispc_ops->get_num_ovls(priv->dispc);
 	struct drm_plane *plane;
 	struct omap_plane *omap_plane;
 	enum omap_plane_id id;
@@ -278,7 +267,7 @@ struct drm_plane *omap_plane_init(struct drm_device *dev,
 	if (!omap_plane)
 		return ERR_PTR(-ENOMEM);
 
-	formats = priv->dispc_ops->ovl_get_color_modes(id);
+	formats = priv->dispc_ops->ovl_get_color_modes(priv->dispc, id);
 	for (nformats = 0; formats[nformats]; ++nformats)
 		;
 	omap_plane->id = id;

@@ -1,9 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2013 Patrick McHardy <kaber@trash.net>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/module.h>
@@ -196,7 +193,7 @@ unsigned int synproxy_tstamp_adjust(struct sk_buff *skb,
 	optoff = protoff + sizeof(struct tcphdr);
 	optend = protoff + th->doff * 4;
 
-	if (!skb_make_writable(skb, optend))
+	if (skb_ensure_writable(skb, optend))
 		return 0;
 
 	while (optoff < optend) {
@@ -310,23 +307,10 @@ static const struct seq_operations synproxy_cpu_seq_ops = {
 	.show		= synproxy_cpu_seq_show,
 };
 
-static int synproxy_cpu_seq_open(struct inode *inode, struct file *file)
-{
-	return seq_open_net(inode, file, &synproxy_cpu_seq_ops,
-			    sizeof(struct seq_net_private));
-}
-
-static const struct file_operations synproxy_cpu_seq_fops = {
-	.open		= synproxy_cpu_seq_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= seq_release_net,
-};
-
 static int __net_init synproxy_proc_init(struct net *net)
 {
-	if (!proc_create("synproxy", S_IRUGO, net->proc_net_stat,
-			 &synproxy_cpu_seq_fops))
+	if (!proc_create_net("synproxy", 0444, net->proc_net_stat,
+			&synproxy_cpu_seq_ops, sizeof(struct seq_net_private)))
 		return -ENOMEM;
 	return 0;
 }

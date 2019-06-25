@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright(c) 2013-2015 Intel Corporation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of version 2 of the GNU General Public License as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
  */
 #include <linux/libnvdimm.h>
 #include <linux/badblocks.h>
@@ -134,7 +126,7 @@ static void nvdimm_map_release(struct kref *kref)
 	nvdimm_map = container_of(kref, struct nvdimm_map, kref);
 	nvdimm_bus = nvdimm_map->nvdimm_bus;
 
-	dev_dbg(&nvdimm_bus->dev, "%s: %pa\n", __func__, &nvdimm_map->offset);
+	dev_dbg(&nvdimm_bus->dev, "%pa\n", &nvdimm_map->offset);
 	list_del(&nvdimm_map->list);
 	if (nvdimm_map->flags)
 		memunmap(nvdimm_map->mem);
@@ -230,8 +222,8 @@ static int nd_uuid_parse(struct device *dev, u8 *uuid_out, const char *buf,
 
 	for (i = 0; i < 16; i++) {
 		if (!isxdigit(str[0]) || !isxdigit(str[1])) {
-			dev_dbg(dev, "%s: pos: %d buf[%zd]: %c buf[%zd]: %c\n",
-					__func__, i, str - buf, str[0],
+			dev_dbg(dev, "pos: %d buf[%zd]: %c buf[%zd]: %c\n",
+					i, str - buf, str[0],
 					str + 1 - buf, str[1]);
 			return -EINVAL;
 		}

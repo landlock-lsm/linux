@@ -1,12 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * NAU8825 ALSA SoC audio driver
  *
  * Copyright 2015 Google Inc.
  * Author: Anatol Pomozov <anatol.pomozov@chrominium.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef __NAU8825_H__
@@ -480,7 +477,7 @@ struct nau8825 {
 	bool xtalk_baktab_initialized; /* True if initialized. */
 };
 
-int nau8825_enable_jack_detect(struct snd_soc_codec *codec,
+int nau8825_enable_jack_detect(struct snd_soc_component *component,
 				struct snd_soc_jack *jack);
 
 

@@ -175,36 +175,11 @@ static const struct seq_operations dev_seq_ops = {
 	.show  = dev_seq_show,
 };
 
-static int dev_seq_open(struct inode *inode, struct file *file)
-{
-	return seq_open_net(inode, file, &dev_seq_ops,
-			    sizeof(struct seq_net_private));
-}
-
-static const struct file_operations dev_seq_fops = {
-	.open    = dev_seq_open,
-	.read    = seq_read,
-	.llseek  = seq_lseek,
-	.release = seq_release_net,
-};
-
 static const struct seq_operations softnet_seq_ops = {
 	.start = softnet_seq_start,
 	.next  = softnet_seq_next,
 	.stop  = softnet_seq_stop,
 	.show  = softnet_seq_show,
-};
-
-static int softnet_seq_open(struct inode *inode, struct file *file)
-{
-	return seq_open(file, &softnet_seq_ops);
-}
-
-static const struct file_operations softnet_seq_fops = {
-	.open    = softnet_seq_open,
-	.read    = seq_read,
-	.llseek  = seq_lseek,
-	.release = seq_release,
 };
 
 static void *ptype_get_idx(loff_t pos)
@@ -283,7 +258,7 @@ static int ptype_seq_show(struct seq_file *seq, void *v)
 		else
 			seq_printf(seq, "%04x", ntohs(pt->type));
 
-		seq_printf(seq, " %-8s %pf\n",
+		seq_printf(seq, " %-8s %ps\n",
 			   pt->dev ? pt->dev->name : "", pt->func);
 	}
 
@@ -297,30 +272,18 @@ static const struct seq_operations ptype_seq_ops = {
 	.show  = ptype_seq_show,
 };
 
-static int ptype_seq_open(struct inode *inode, struct file *file)
-{
-	return seq_open_net(inode, file, &ptype_seq_ops,
-			sizeof(struct seq_net_private));
-}
-
-static const struct file_operations ptype_seq_fops = {
-	.open    = ptype_seq_open,
-	.read    = seq_read,
-	.llseek  = seq_lseek,
-	.release = seq_release_net,
-};
-
-
 static int __net_init dev_proc_net_init(struct net *net)
 {
 	int rc = -ENOMEM;
 
-	if (!proc_create("dev", S_IRUGO, net->proc_net, &dev_seq_fops))
+	if (!proc_create_net("dev", 0444, net->proc_net, &dev_seq_ops,
+			sizeof(struct seq_net_private)))
 		goto out;
-	if (!proc_create("softnet_stat", S_IRUGO, net->proc_net,
-			 &softnet_seq_fops))
+	if (!proc_create_seq("softnet_stat", 0444, net->proc_net,
+			 &softnet_seq_ops))
 		goto out_dev;
-	if (!proc_create("ptype", S_IRUGO, net->proc_net, &ptype_seq_fops))
+	if (!proc_create_net("ptype", 0444, net->proc_net, &ptype_seq_ops,
+			sizeof(struct seq_net_private)))
 		goto out_softnet;
 
 	if (wext_proc_init(net))
@@ -349,7 +312,6 @@ static void __net_exit dev_proc_net_exit(struct net *net)
 static struct pernet_operations __net_initdata dev_proc_ops = {
 	.init = dev_proc_net_init,
 	.exit = dev_proc_net_exit,
-	.async = true,
 };
 
 static int dev_mc_seq_show(struct seq_file *seq, void *v)
@@ -378,22 +340,10 @@ static const struct seq_operations dev_mc_seq_ops = {
 	.show  = dev_mc_seq_show,
 };
 
-static int dev_mc_seq_open(struct inode *inode, struct file *file)
-{
-	return seq_open_net(inode, file, &dev_mc_seq_ops,
-			    sizeof(struct seq_net_private));
-}
-
-static const struct file_operations dev_mc_seq_fops = {
-	.open    = dev_mc_seq_open,
-	.read    = seq_read,
-	.llseek  = seq_lseek,
-	.release = seq_release_net,
-};
-
 static int __net_init dev_mc_net_init(struct net *net)
 {
-	if (!proc_create("dev_mcast", 0, net->proc_net, &dev_mc_seq_fops))
+	if (!proc_create_net("dev_mcast", 0, net->proc_net, &dev_mc_seq_ops,
+			sizeof(struct seq_net_private)))
 		return -ENOMEM;
 	return 0;
 }
@@ -406,7 +356,6 @@ static void __net_exit dev_mc_net_exit(struct net *net)
 static struct pernet_operations __net_initdata dev_mc_net_ops = {
 	.init = dev_mc_net_init,
 	.exit = dev_mc_net_exit,
-	.async = true,
 };
 
 int __init dev_proc_init(void)

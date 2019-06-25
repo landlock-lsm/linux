@@ -1,12 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Landlock LSM - enforcing helpers headers
  *
- * Copyright © 2016-2018 Mickaël Salaün <mic@digikod.net>
- * Copyright © 2018 ANSSI
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * Copyright © 2016-2019 Mickaël Salaün <mic@digikod.net>
+ * Copyright © 2018-2019 ANSSI
  */
 
 #ifndef _SECURITY_LANDLOCK_ENFORCE_H

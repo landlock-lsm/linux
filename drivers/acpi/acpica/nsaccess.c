@@ -1,45 +1,9 @@
+// SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0
 /*******************************************************************************
  *
  * Module Name: nsaccess - Top-level functions for accessing ACPI namespace
  *
  ******************************************************************************/
-
-/*
- * Copyright (C) 2000 - 2018, Intel Corp.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions, and the following disclaimer,
- *    without modification.
- * 2. Redistributions in binary form must reproduce at minimum a disclaimer
- *    substantially similar to the "NO WARRANTY" disclaimer below
- *    ("Disclaimer") and any redistribution must be conditioned upon
- *    including a substantially similar Disclaimer requirement for further
- *    binary redistribution.
- * 3. Neither the names of the above-listed copyright holders nor the names
- *    of any contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * Alternatively, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") version 2 as published by the Free
- * Software Foundation.
- *
- * NO WARRANTY
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
- * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
- * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGES.
- */
 
 #include <acpi/acpi.h>
 #include "accommon.h"
@@ -303,6 +267,7 @@ acpi_ns_lookup(union acpi_generic_state *scope_info,
 	acpi_object_type this_search_type;
 	u32 search_parent_flag = ACPI_NS_SEARCH_PARENT;
 	u32 local_flags;
+	acpi_interpreter_mode local_interpreter_mode;
 
 	ACPI_FUNCTION_TRACE(ns_lookup);
 
@@ -542,6 +507,7 @@ acpi_ns_lookup(union acpi_generic_state *scope_info,
 	 */
 	this_search_type = ACPI_TYPE_ANY;
 	current_node = this_node;
+
 	while (num_segments && current_node) {
 		num_segments--;
 		if (!num_segments) {
@@ -572,6 +538,16 @@ acpi_ns_lookup(union acpi_generic_state *scope_info,
 			}
 		}
 
+		/* Handle opcodes that create a new name_seg via a full name_path */
+
+		local_interpreter_mode = interpreter_mode;
+		if ((flags & ACPI_NS_PREFIX_MUST_EXIST) && (num_segments > 0)) {
+
+			/* Every element of the path must exist (except for the final name_seg) */
+
+			local_interpreter_mode = ACPI_IMODE_EXECUTE;
+		}
+
 		/* Extract one ACPI name from the front of the pathname */
 
 		ACPI_MOVE_32_TO_32(&simple_name, path);
@@ -580,12 +556,19 @@ acpi_ns_lookup(union acpi_generic_state *scope_info,
 
 		status =
 		    acpi_ns_search_and_enter(simple_name, walk_state,
-					     current_node, interpreter_mode,
+					     current_node,
+					     local_interpreter_mode,
 					     this_search_type, local_flags,
 					     &this_node);
 		if (ACPI_FAILURE(status)) {
 			if (status == AE_NOT_FOUND) {
-
+#if !defined ACPI_ASL_COMPILER	/* Note: iASL reports this error by itself, not needed here */
+				if (flags & ACPI_NS_PREFIX_MUST_EXIST) {
+					acpi_os_printf(ACPI_MSG_BIOS_ERROR
+						       "Object does not exist: %4.4s\n",
+						       &simple_name);
+				}
+#endif
 				/* Name not found in ACPI namespace */
 
 				ACPI_DEBUG_PRINT((ACPI_DB_NAMES,
@@ -594,6 +577,14 @@ acpi_ns_lookup(union acpi_generic_state *scope_info,
 						  (char *)&current_node->name,
 						  current_node));
 			}
+#ifdef ACPI_EXEC_APP
+			if ((status == AE_ALREADY_EXISTS) &&
+			    (this_node->flags & ANOBJ_NODE_EARLY_INIT)) {
+				this_node->flags &= ~ANOBJ_NODE_EARLY_INIT;
+				status = AE_OK;
+			}
+#endif
+
 #ifdef ACPI_ASL_COMPILER
 			/*
 			 * If this ACPI name already exists within the namespace as an
@@ -649,13 +640,6 @@ acpi_ns_lookup(union acpi_generic_state *scope_info,
 		/* Special handling for the last segment (num_segments == 0) */
 
 		else {
-#ifdef ACPI_ASL_COMPILER
-			if (!acpi_gbl_disasm_flag
-			    && (this_node->flags & ANOBJ_IS_EXTERNAL)) {
-				this_node->flags &= ~IMPLICIT_EXTERNAL;
-			}
-#endif
-
 			/*
 			 * Sanity typecheck of the target object:
 			 *
@@ -699,7 +683,7 @@ acpi_ns_lookup(union acpi_generic_state *scope_info,
 
 		/* Point to next name segment and make this node current */
 
-		path += ACPI_NAME_SIZE;
+		path += ACPI_NAMESEG_SIZE;
 		current_node = this_node;
 	}
 
@@ -719,6 +703,11 @@ acpi_ns_lookup(union acpi_generic_state *scope_info,
 			}
 		}
 	}
+#ifdef ACPI_EXEC_APP
+	if (flags & ACPI_NS_EARLY_INIT) {
+		this_node->flags |= ANOBJ_NODE_EARLY_INIT;
+	}
+#endif
 
 	*return_node = this_node;
 	return_ACPI_STATUS(AE_OK);

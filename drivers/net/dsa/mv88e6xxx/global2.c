@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Marvell 88E6xxx Switch Global 2 Registers support
  *
@@ -5,11 +6,6 @@
  *
  * Copyright (c) 2016-2017 Savoir-faire Linux Inc.
  *	Vivien Didelot <vivien.didelot@savoirfairelinux.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #include <linux/bitfield.h>
@@ -20,22 +16,22 @@
 #include "global1.h" /* for MV88E6XXX_G1_STS_IRQ_DEVICE */
 #include "global2.h"
 
-static int mv88e6xxx_g2_read(struct mv88e6xxx_chip *chip, int reg, u16 *val)
+int mv88e6xxx_g2_read(struct mv88e6xxx_chip *chip, int reg, u16 *val)
 {
 	return mv88e6xxx_read(chip, chip->info->global2_addr, reg, val);
 }
 
-static int mv88e6xxx_g2_write(struct mv88e6xxx_chip *chip, int reg, u16 val)
+int mv88e6xxx_g2_write(struct mv88e6xxx_chip *chip, int reg, u16 val)
 {
 	return mv88e6xxx_write(chip, chip->info->global2_addr, reg, val);
 }
 
-static int mv88e6xxx_g2_update(struct mv88e6xxx_chip *chip, int reg, u16 update)
+int mv88e6xxx_g2_update(struct mv88e6xxx_chip *chip, int reg, u16 update)
 {
 	return mv88e6xxx_update(chip, chip->info->global2_addr, reg, update);
 }
 
-static int mv88e6xxx_g2_wait(struct mv88e6xxx_chip *chip, int reg, u16 mask)
+int mv88e6xxx_g2_wait(struct mv88e6xxx_chip *chip, int reg, u16 mask)
 {
 	return mv88e6xxx_wait(chip, chip->info->global2_addr, reg, mask);
 }
@@ -119,35 +115,15 @@ int mv88e6352_g2_mgmt_rsvd2cpu(struct mv88e6xxx_chip *chip)
 
 /* Offset 0x06: Device Mapping Table register */
 
-static int mv88e6xxx_g2_device_mapping_write(struct mv88e6xxx_chip *chip,
-					     int target, int port)
+int mv88e6xxx_g2_device_mapping_write(struct mv88e6xxx_chip *chip, int target,
+				      int port)
 {
-	u16 val = (target << 8) | (port & 0xf);
+	u16 val = (target << 8) | (port & 0x1f);
+	/* Modern chips use 5 bits to define a device mapping port,
+	 * but bit 4 is reserved on older chips, so it is safe to use.
+	 */
 
 	return mv88e6xxx_g2_update(chip, MV88E6XXX_G2_DEVICE_MAPPING, val);
-}
-
-static int mv88e6xxx_g2_set_device_mapping(struct mv88e6xxx_chip *chip)
-{
-	int target, port;
-	int err;
-
-	/* Initialize the routing port to the 32 possible target devices */
-	for (target = 0; target < 32; ++target) {
-		port = 0xf;
-
-		if (target < DSA_MAX_SWITCHES) {
-			port = chip->ds->rtable[target];
-			if (port == DSA_RTABLE_NONE)
-				port = 0xf;
-		}
-
-		err = mv88e6xxx_g2_device_mapping_write(chip, target, port);
-		if (err)
-			break;
-	}
-
-	return err;
 }
 
 /* Offset 0x07: Trunk Mask Table register */
@@ -174,7 +150,7 @@ static int mv88e6xxx_g2_trunk_mapping_write(struct mv88e6xxx_chip *chip, int id,
 	return mv88e6xxx_g2_update(chip, MV88E6XXX_G2_TRUNK_MAPPING, val);
 }
 
-static int mv88e6xxx_g2_clear_trunk(struct mv88e6xxx_chip *chip)
+int mv88e6xxx_g2_trunk_clear(struct mv88e6xxx_chip *chip)
 {
 	const u16 port_mask = BIT(mv88e6xxx_num_ports(chip)) - 1;
 	int i, err;
@@ -798,6 +774,7 @@ int mv88e6xxx_g2_smi_phy_write(struct mv88e6xxx_chip *chip, struct mii_bus *bus,
 						   val);
 }
 
+/* Offset 0x1B: Watchdog Control */
 static int mv88e6097_watchdog_action(struct mv88e6xxx_chip *chip, int irq)
 {
 	u16 reg;
@@ -833,6 +810,32 @@ const struct mv88e6xxx_irq_ops mv88e6097_watchdog_ops = {
 	.irq_action = mv88e6097_watchdog_action,
 	.irq_setup = mv88e6097_watchdog_setup,
 	.irq_free = mv88e6097_watchdog_free,
+};
+
+static void mv88e6250_watchdog_free(struct mv88e6xxx_chip *chip)
+{
+	u16 reg;
+
+	mv88e6xxx_g2_read(chip, MV88E6250_G2_WDOG_CTL, &reg);
+
+	reg &= ~(MV88E6250_G2_WDOG_CTL_EGRESS_ENABLE |
+		 MV88E6250_G2_WDOG_CTL_QC_ENABLE);
+
+	mv88e6xxx_g2_write(chip, MV88E6250_G2_WDOG_CTL, reg);
+}
+
+static int mv88e6250_watchdog_setup(struct mv88e6xxx_chip *chip)
+{
+	return mv88e6xxx_g2_write(chip, MV88E6250_G2_WDOG_CTL,
+				  MV88E6250_G2_WDOG_CTL_EGRESS_ENABLE |
+				  MV88E6250_G2_WDOG_CTL_QC_ENABLE |
+				  MV88E6250_G2_WDOG_CTL_SWRESET);
+}
+
+const struct mv88e6xxx_irq_ops mv88e6250_watchdog_ops = {
+	.irq_action = mv88e6097_watchdog_action,
+	.irq_setup = mv88e6250_watchdog_setup,
+	.irq_free = mv88e6250_watchdog_free,
 };
 
 static int mv88e6390_watchdog_setup(struct mv88e6xxx_chip *chip)
@@ -890,20 +893,20 @@ static irqreturn_t mv88e6xxx_g2_watchdog_thread_fn(int irq, void *dev_id)
 	struct mv88e6xxx_chip *chip = dev_id;
 	irqreturn_t ret = IRQ_NONE;
 
-	mutex_lock(&chip->reg_lock);
+	mv88e6xxx_reg_lock(chip);
 	if (chip->info->ops->watchdog_ops->irq_action)
 		ret = chip->info->ops->watchdog_ops->irq_action(chip, irq);
-	mutex_unlock(&chip->reg_lock);
+	mv88e6xxx_reg_unlock(chip);
 
 	return ret;
 }
 
 static void mv88e6xxx_g2_watchdog_free(struct mv88e6xxx_chip *chip)
 {
-	mutex_lock(&chip->reg_lock);
+	mv88e6xxx_reg_lock(chip);
 	if (chip->info->ops->watchdog_ops->irq_free)
 		chip->info->ops->watchdog_ops->irq_free(chip);
-	mutex_unlock(&chip->reg_lock);
+	mv88e6xxx_reg_unlock(chip);
 
 	free_irq(chip->watchdog_irq, chip);
 	irq_dispose_mapping(chip->watchdog_irq);
@@ -925,10 +928,10 @@ static int mv88e6xxx_g2_watchdog_setup(struct mv88e6xxx_chip *chip)
 	if (err)
 		return err;
 
-	mutex_lock(&chip->reg_lock);
+	mv88e6xxx_reg_lock(chip);
 	if (chip->info->ops->watchdog_ops->irq_setup)
 		err = chip->info->ops->watchdog_ops->irq_setup(chip);
-	mutex_unlock(&chip->reg_lock);
+	mv88e6xxx_reg_unlock(chip);
 
 	return err;
 }
@@ -983,9 +986,9 @@ static irqreturn_t mv88e6xxx_g2_irq_thread_fn(int irq, void *dev_id)
 	int err;
 	u16 reg;
 
-	mutex_lock(&chip->reg_lock);
+	mv88e6xxx_reg_lock(chip);
 	err = mv88e6xxx_g2_int_source(chip, &reg);
-	mutex_unlock(&chip->reg_lock);
+	mv88e6xxx_reg_unlock(chip);
 	if (err)
 		goto out;
 
@@ -1004,7 +1007,7 @@ static void mv88e6xxx_g2_irq_bus_lock(struct irq_data *d)
 {
 	struct mv88e6xxx_chip *chip = irq_data_get_irq_chip_data(d);
 
-	mutex_lock(&chip->reg_lock);
+	mv88e6xxx_reg_lock(chip);
 }
 
 static void mv88e6xxx_g2_irq_bus_sync_unlock(struct irq_data *d)
@@ -1016,7 +1019,7 @@ static void mv88e6xxx_g2_irq_bus_sync_unlock(struct irq_data *d)
 	if (err)
 		dev_err(chip->dev, "failed to mask interrupts\n");
 
-	mutex_unlock(&chip->reg_lock);
+	mv88e6xxx_reg_unlock(chip);
 }
 
 static const struct irq_chip mv88e6xxx_g2_irq_chip = {
@@ -1066,9 +1069,6 @@ int mv88e6xxx_g2_irq_setup(struct mv88e6xxx_chip *chip)
 {
 	int err, irq, virq;
 
-	if (!chip->dev->of_node)
-		return -EINVAL;
-
 	chip->g2_irq.domain = irq_domain_add_simple(
 		chip->dev->of_node, 16, 0, &mv88e6xxx_g2_irq_domain_ops, chip);
 	if (!chip->g2_irq.domain)
@@ -1089,7 +1089,7 @@ int mv88e6xxx_g2_irq_setup(struct mv88e6xxx_chip *chip)
 
 	err = request_threaded_irq(chip->device_irq, NULL,
 				   mv88e6xxx_g2_irq_thread_fn,
-				   IRQF_ONESHOT, "mv88e6xxx-g1", chip);
+				   IRQF_ONESHOT, "mv88e6xxx-g2", chip);
 	if (err)
 		goto out;
 
@@ -1106,30 +1106,34 @@ out:
 	return err;
 }
 
-int mv88e6xxx_g2_setup(struct mv88e6xxx_chip *chip)
+int mv88e6xxx_g2_irq_mdio_setup(struct mv88e6xxx_chip *chip,
+				struct mii_bus *bus)
 {
-	u16 reg;
-	int err;
+	int phy, irq, err, err_phy;
 
-	/* Ignore removed tag data on doubly tagged packets, disable
-	 * flow control messages, force flow control priority to the
-	 * highest, and send all special multicast frames to the CPU
-	 * port at the highest priority.
-	 */
-	reg = MV88E6XXX_G2_SWITCH_MGMT_FORCE_FLOW_CTL_PRI | (0x7 << 4);
-	err = mv88e6xxx_g2_write(chip, MV88E6XXX_G2_SWITCH_MGMT, reg);
-	if (err)
-		return err;
-
-	/* Program the DSA routing table. */
-	err = mv88e6xxx_g2_set_device_mapping(chip);
-	if (err)
-		return err;
-
-	/* Clear all trunk masks and mapping. */
-	err = mv88e6xxx_g2_clear_trunk(chip);
-	if (err)
-		return err;
-
+	for (phy = 0; phy < chip->info->num_internal_phys; phy++) {
+		irq = irq_find_mapping(chip->g2_irq.domain, phy);
+		if (irq < 0) {
+			err = irq;
+			goto out;
+		}
+		bus->irq[chip->info->phy_base_addr + phy] = irq;
+	}
 	return 0;
+out:
+	err_phy = phy;
+
+	for (phy = 0; phy < err_phy; phy++)
+		irq_dispose_mapping(bus->irq[phy]);
+
+	return err;
+}
+
+void mv88e6xxx_g2_irq_mdio_free(struct mv88e6xxx_chip *chip,
+				struct mii_bus *bus)
+{
+	int phy;
+
+	for (phy = 0; phy < chip->info->num_internal_phys; phy++)
+		irq_dispose_mapping(bus->irq[phy]);
 }

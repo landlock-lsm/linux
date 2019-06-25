@@ -51,7 +51,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <bpf/bpf.h>
-#include "libbpf.h"
+#include "bpf_insn.h"
 
 #define PORT 8888
 
@@ -159,7 +159,7 @@ static void prog_load(void)
 	};
 	prog_fd = bpf_load_program(BPF_PROG_TYPE_SOCKET_FILTER, prog,
 					ARRAY_SIZE(prog), "GPL", 0,
-					log_buf, sizeof(log_buf), NULL);
+					log_buf, sizeof(log_buf));
 	if (prog_fd < 0)
 		error(1, errno, "failed to load prog\n%s\n", log_buf);
 }
@@ -246,7 +246,7 @@ static void udp_client(void)
 		recv_len = recvfrom(s_rcv, &buf, sizeof(buf), 0,
 			     (struct sockaddr *)&si_me, &slen);
 		if (recv_len < 0)
-			error(1, errno, "revieve\n");
+			error(1, errno, "receive\n");
 		res = memcmp(&(si_other.sin_addr), &(si_me.sin_addr),
 			   sizeof(si_me.sin_addr));
 		if (res != 0)

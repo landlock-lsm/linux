@@ -1,11 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * inode map for Landlock
  *
- * Copyright © 2017-2018 Mickaël Salaün <mic@digikod.net>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * Copyright © 2017-2019 Mickaël Salaün <mic@digikod.net>
+ * Copyright © 2019 ANSSI
  */
 
 #include <asm/resource.h> /* RLIMIT_NOFILE */
@@ -58,8 +56,10 @@ static struct inode *inode_from_fd(int ufd, bool check_access)
 		goto put_fd;
 	}
 	if (check_access) {
-		/* need to be allowed to access attributes from this file to
-		 * then be able to compare an inode to this entry */
+		/*
+		 * need to be allowed to access attributes from this file to
+		 * then be able to compare an inode to this entry
+		 */
 		deny = security_inode_getattr(&f.file->f_path);
 		if (deny) {
 			ret = ERR_PTR(deny);
@@ -178,13 +178,8 @@ static struct bpf_map *inode_map_alloc(union bpf_attr *attr)
 		return ERR_PTR(-ENOMEM);
 
 	/* copy mandatory map attributes */
-	array->map.key_size = attr->key_size;
-	array->map.map_flags = attr->map_flags;
-	array->map.map_type = attr->map_type;
-	array->map.max_entries = attr->max_entries;
-	array->map.numa_node = numa_node;
-	array->map.pages = round_up(array_size, PAGE_SIZE) >> PAGE_SHIFT;
-	array->map.value_size = attr->value_size;
+	bpf_map_init_from_attr(&array->map, attr);
+	array->map.memory.pages = round_up(array_size, PAGE_SIZE) >> PAGE_SHIFT;
 
 	return &array->map;
 }
@@ -214,8 +209,10 @@ static u64 inode_map_lookup_elem(struct bpf_map *map, struct inode *key)
 	return ret;
 }
 
-/* key is an FD when called from a syscall, but an inode pointer when called
- * from an eBPF program */
+/*
+ * The key is a FD when called from a syscall, but an inode pointer when called
+ * from an eBPF program.
+ */
 
 /* called from syscall */
 int bpf_inode_map_lookup_elem(struct bpf_map *map, int *key, u64 *value)

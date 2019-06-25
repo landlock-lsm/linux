@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * AMD Cryptographic Coprocessor (CCP) driver
  *
  * Copyright (C) 2016,2017 Advanced Micro Devices, Inc.
  *
  * Author: Gary R Hook <gary.hook@amd.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/module.h>
@@ -38,7 +35,7 @@ static unsigned int dma_chan_attr = CCP_DMA_DFLT;
 module_param(dma_chan_attr, uint, 0444);
 MODULE_PARM_DESC(dma_chan_attr, "Set DMA channel visibility: 0 (default) = device defaults, 1 = make private, 2 = make public");
 
-unsigned int ccp_get_dma_chan_attr(struct ccp_device *ccp)
+static unsigned int ccp_get_dma_chan_attr(struct ccp_device *ccp)
 {
 	switch (dma_chan_attr) {
 	case CCP_DMA_DFLT:

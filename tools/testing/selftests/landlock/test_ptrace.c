@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Landlock tests - ptrace
  *
- * Copyright © 2017 Mickaël Salaün <mic@digikod.net>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * Copyright © 2017-2019 Mickaël Salaün <mic@digikod.net>
  */
 
 #define _GNU_SOURCE
@@ -32,10 +29,9 @@ static void apply_null_sandbox(struct __test_metadata *_metadata)
 	int prog;
 	char log[256] = "";
 
-	prog = bpf_load_program(BPF_PROG_TYPE_LANDLOCK_HOOK,
-			(const struct bpf_insn *)&prog_accept,
-			sizeof(prog_accept) / sizeof(struct bpf_insn), "GPL",
-			0, log, sizeof(log), &subtype);
+	prog = ll_bpf_load_program((const struct bpf_insn *)&prog_accept,
+			sizeof(prog_accept) / sizeof(struct bpf_insn), log,
+			sizeof(log), &subtype);
 	ASSERT_NE(-1, prog) {
 		TH_LOG("Failed to load minimal rule: %s\n%s",
 				strerror(errno), log);

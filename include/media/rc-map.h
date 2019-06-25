@@ -1,12 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * rc-map.h - define RC map names used by RC drivers
  *
  * Copyright (c) 2010 by Mauro Carvalho Chehab
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #include <linux/input.h>
@@ -36,6 +32,11 @@
 #define RC_PROTO_BIT_SHARP		BIT_ULL(RC_PROTO_SHARP)
 #define RC_PROTO_BIT_XMP		BIT_ULL(RC_PROTO_XMP)
 #define RC_PROTO_BIT_CEC		BIT_ULL(RC_PROTO_CEC)
+#define RC_PROTO_BIT_IMON		BIT_ULL(RC_PROTO_IMON)
+#define RC_PROTO_BIT_RCMM12		BIT_ULL(RC_PROTO_RCMM12)
+#define RC_PROTO_BIT_RCMM24		BIT_ULL(RC_PROTO_RCMM24)
+#define RC_PROTO_BIT_RCMM32		BIT_ULL(RC_PROTO_RCMM32)
+#define RC_PROTO_BIT_XBOX_DVD		BIT_ULL(RC_PROTO_XBOX_DVD)
 
 #define RC_PROTO_BIT_ALL \
 			(RC_PROTO_BIT_UNKNOWN | RC_PROTO_BIT_OTHER | \
@@ -49,7 +50,10 @@
 			 RC_PROTO_BIT_RC6_0 | RC_PROTO_BIT_RC6_6A_20 | \
 			 RC_PROTO_BIT_RC6_6A_24 | RC_PROTO_BIT_RC6_6A_32 | \
 			 RC_PROTO_BIT_RC6_MCE | RC_PROTO_BIT_SHARP | \
-			 RC_PROTO_BIT_XMP | RC_PROTO_BIT_CEC)
+			 RC_PROTO_BIT_XMP | RC_PROTO_BIT_CEC | \
+			 RC_PROTO_BIT_IMON | RC_PROTO_BIT_RCMM12 | \
+			 RC_PROTO_BIT_RCMM24 | RC_PROTO_BIT_RCMM32 | \
+			 RC_PROTO_BIT_XBOX_DVD)
 /* All rc protocols for which we have decoders */
 #define RC_PROTO_BIT_ALL_IR_DECODER \
 			(RC_PROTO_BIT_RC5 | RC_PROTO_BIT_RC5X_20 | \
@@ -62,7 +66,9 @@
 			 RC_PROTO_BIT_RC6_0 | RC_PROTO_BIT_RC6_6A_20 | \
 			 RC_PROTO_BIT_RC6_6A_24 |  RC_PROTO_BIT_RC6_6A_32 | \
 			 RC_PROTO_BIT_RC6_MCE | RC_PROTO_BIT_SHARP | \
-			 RC_PROTO_BIT_XMP)
+			 RC_PROTO_BIT_XMP | RC_PROTO_BIT_IMON | \
+			 RC_PROTO_BIT_RCMM12 | RC_PROTO_BIT_RCMM24 | \
+			 RC_PROTO_BIT_RCMM32)
 
 #define RC_PROTO_BIT_ALL_IR_ENCODER \
 			(RC_PROTO_BIT_RC5 | RC_PROTO_BIT_RC5X_20 | \
@@ -75,7 +81,9 @@
 			 RC_PROTO_BIT_RC6_0 | RC_PROTO_BIT_RC6_6A_20 | \
 			 RC_PROTO_BIT_RC6_6A_24 | \
 			 RC_PROTO_BIT_RC6_6A_32 | RC_PROTO_BIT_RC6_MCE | \
-			 RC_PROTO_BIT_SHARP)
+			 RC_PROTO_BIT_SHARP | RC_PROTO_BIT_IMON | \
+			 RC_PROTO_BIT_RCMM12 | RC_PROTO_BIT_RCMM24 | \
+			 RC_PROTO_BIT_RCMM32)
 
 #define RC_SCANCODE_UNKNOWN(x)			(x)
 #define RC_SCANCODE_OTHER(x)			(x)
@@ -134,14 +142,14 @@ struct rc_map_list {
 /* Routines from rc-map.c */
 
 /**
- * rc_map_register() - Registers a Remote Controler scancode map
+ * rc_map_register() - Registers a Remote Controller scancode map
  *
  * @map:	pointer to struct rc_map_list
  */
 int rc_map_register(struct rc_map_list *map);
 
 /**
- * rc_map_unregister() - Unregisters a Remote Controler scancode map
+ * rc_map_unregister() - Unregisters a Remote Controller scancode map
  *
  * @map:	pointer to struct rc_map_list
  */
@@ -211,6 +219,7 @@ struct rc_map *rc_map_get(const char *name);
 #define RC_MAP_HISI_TV_DEMO              "rc-hisi-tv-demo"
 #define RC_MAP_IMON_MCE                  "rc-imon-mce"
 #define RC_MAP_IMON_PAD                  "rc-imon-pad"
+#define RC_MAP_IMON_RSC                  "rc-imon-rsc"
 #define RC_MAP_IODATA_BCTV7E             "rc-iodata-bctv7e"
 #define RC_MAP_IT913X_V1                 "rc-it913x-v1"
 #define RC_MAP_IT913X_V2                 "rc-it913x-v2"
@@ -274,6 +283,7 @@ struct rc_map *rc_map_get(const char *name);
 #define RC_MAP_WINFAST                   "rc-winfast"
 #define RC_MAP_WINFAST_USBII_DELUXE      "rc-winfast-usbii-deluxe"
 #define RC_MAP_SU3000                    "rc-su3000"
+#define RC_MAP_XBOX_DVD                  "rc-xbox-dvd"
 #define RC_MAP_ZX_IRDEC                  "rc-zx-irdec"
 
 /*

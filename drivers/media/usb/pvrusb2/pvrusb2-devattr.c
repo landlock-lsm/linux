@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *
- *
  *  Copyright (C) 2007 Mike Isely <isely@pobox.com>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
  */
 
 /*
@@ -182,7 +172,6 @@ static const struct pvr2_device_desc pvr2_device_av400 = {
 
 #ifdef CONFIG_VIDEO_PVRUSB2_DVB
 static struct lgdt330x_config pvr2_lgdt3303_config = {
-	.demod_address       = 0x0e,
 	.demod_chip          = LGDT3303,
 	.clock_polarity_flip = 1,
 };
@@ -190,6 +179,7 @@ static struct lgdt330x_config pvr2_lgdt3303_config = {
 static int pvr2_lgdt3303_attach(struct pvr2_dvb_adapter *adap)
 {
 	adap->fe = dvb_attach(lgdt330x_attach, &pvr2_lgdt3303_config,
+			      0x0e,
 			      &adap->channel.hdw->i2c_adap);
 	if (adap->fe)
 		return 0;
@@ -243,13 +233,13 @@ static const struct pvr2_device_desc pvr2_device_onair_creator = {
 
 #ifdef CONFIG_VIDEO_PVRUSB2_DVB
 static struct lgdt330x_config pvr2_lgdt3302_config = {
-	.demod_address       = 0x0e,
 	.demod_chip          = LGDT3302,
 };
 
 static int pvr2_lgdt3302_attach(struct pvr2_dvb_adapter *adap)
 {
 	adap->fe = dvb_attach(lgdt330x_attach, &pvr2_lgdt3302_config,
+			      0x0e,
 			      &adap->channel.hdw->i2c_adap);
 	if (adap->fe)
 		return 0;

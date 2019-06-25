@@ -9,8 +9,6 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-#include <sys/resource.h>
-
 #include <linux/unistd.h>
 #include <linux/filter.h>
 #include <linux/bpf_perf_event.h>
@@ -19,10 +17,8 @@
 #include <bpf/bpf.h>
 
 #include "../../../include/linux/filter.h"
-
-#ifndef ARRAY_SIZE
-# define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
-#endif
+#include "bpf_rlimit.h"
+#include "bpf_util.h"
 
 #define MAX_INSNS	512
 #define MAX_MATCHES	16
@@ -624,8 +620,8 @@ static int do_test_single(struct bpf_align_test *test)
 
 	prog_len = probe_filter_length(prog);
 	fd_prog = bpf_verify_program(prog_type ? : BPF_PROG_TYPE_SOCKET_FILTER,
-				     prog, prog_len, 1, "GPL", 0,
-				     bpf_vlog, sizeof(bpf_vlog), 2, NULL);
+				     prog, prog_len, BPF_F_STRICT_ALIGNMENT,
+				     "GPL", 0, bpf_vlog, sizeof(bpf_vlog), 2);
 	if (fd_prog < 0 && test->result != REJECT) {
 		printf("Failed to load program.\n");
 		printf("%s", bpf_vlog);
@@ -702,9 +698,6 @@ static int do_test(unsigned int from, unsigned int to)
 int main(int argc, char **argv)
 {
 	unsigned int from = 0, to = ARRAY_SIZE(tests);
-	struct rlimit rinf = { RLIM_INFINITY, RLIM_INFINITY };
-
-	setrlimit(RLIMIT_MEMLOCK, &rinf);
 
 	if (argc == 3) {
 		unsigned int l = atoi(argv[argc - 2]);

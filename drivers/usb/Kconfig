@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 #
 # USB device configuration
 #
@@ -17,6 +18,12 @@ config USB_EHCI_BIG_ENDIAN_MMIO
 	bool
 
 config USB_EHCI_BIG_ENDIAN_DESC
+	bool
+
+config USB_UHCI_BIG_ENDIAN_MMIO
+	bool
+
+config USB_UHCI_BIG_ENDIAN_DESC
 	bool
 
 menuconfig USB_SUPPORT
@@ -164,6 +171,8 @@ source "drivers/usb/phy/Kconfig"
 source "drivers/usb/gadget/Kconfig"
 
 source "drivers/usb/typec/Kconfig"
+
+source "drivers/usb/roles/Kconfig"
 
 config USB_LED_TRIG
 	bool "USB LED Triggers"

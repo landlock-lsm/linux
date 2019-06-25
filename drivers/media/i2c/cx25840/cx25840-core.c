@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* cx25840 - Conexant CX25840 audio/video decoder driver
  *
  * Copyright (C) 2004 Ulf Eklund
@@ -20,16 +21,6 @@
  *
  * CX23888 DIF support for the HVR1850
  * Copyright (C) 2011 Steven Toth <stoth@kernellabs.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 
@@ -463,7 +454,12 @@ static void cx23885_initialize(struct i2c_client *client)
 {
 	DEFINE_WAIT(wait);
 	struct cx25840_state *state = to_state(i2c_get_clientdata(client));
+	u32 clk_freq = 0;
 	struct workqueue_struct *q;
+
+	/* cx23885 sets hostdata to clk_freq pointer */
+	if (v4l2_get_subdev_hostdata(&state->sd))
+		clk_freq = *((u32 *)v4l2_get_subdev_hostdata(&state->sd));
 
 	/*
 	 * Come out of digital power down
@@ -500,8 +496,13 @@ static void cx23885_initialize(struct i2c_client *client)
 		 * 50.0 MHz * (0xb + 0xe8ba26/0x2000000)/4 = 5 * 28.636363 MHz
 		 * 572.73 MHz before post divide
 		 */
-		/* HVR1850 or 50MHz xtal */
-		cx25840_write(client, 0x2, 0x71);
+		if (clk_freq == 25000000) {
+			/* 888/ImpactVCBe or 25Mhz xtal */
+			; /* nothing to do */
+		} else {
+			/* HVR1850 or 50MHz xtal */
+			cx25840_write(client, 0x2, 0x71);
+		}
 		cx25840_write4(client, 0x11c, 0x01d1744c);
 		cx25840_write4(client, 0x118, 0x00000416);
 		cx25840_write4(client, 0x404, 0x0010253e);
@@ -544,9 +545,15 @@ static void cx23885_initialize(struct i2c_client *client)
 	/* HVR1850 */
 	switch (state->id) {
 	case CX23888_AV:
-		/* 888/HVR1250 specific */
-		cx25840_write4(client, 0x10c, 0x13333333);
-		cx25840_write4(client, 0x108, 0x00000515);
+		if (clk_freq == 25000000) {
+			/* 888/ImpactVCBe or 25MHz xtal */
+			cx25840_write4(client, 0x10c, 0x01b6db7b);
+			cx25840_write4(client, 0x108, 0x00000512);
+		} else {
+			/* 888/HVR1250 or 50MHz xtal */
+			cx25840_write4(client, 0x10c, 0x13333333);
+			cx25840_write4(client, 0x108, 0x00000515);
+		}
 		break;
 	default:
 		cx25840_write4(client, 0x10c, 0x002be2c9);
@@ -576,7 +583,7 @@ static void cx23885_initialize(struct i2c_client *client)
 		 * 368.64 MHz before post divide
 		 * 122.88 MHz / 0xa = 12.288 MHz
 		 */
-		/* HVR1850  or 50MHz xtal */
+		/* HVR1850 or 50MHz xtal or 25MHz xtal */
 		cx25840_write4(client, 0x114, 0x017dbf48);
 		cx25840_write4(client, 0x110, 0x000a030e);
 		break;
@@ -5200,8 +5207,9 @@ static int cx25840_probe(struct i2c_client *client,
 	 * those extra inputs. So, let's add it only when needed.
 	 */
 	state->pads[CX25840_PAD_INPUT].flags = MEDIA_PAD_FL_SINK;
+	state->pads[CX25840_PAD_INPUT].sig_type = PAD_SIGNAL_ANALOG;
 	state->pads[CX25840_PAD_VID_OUT].flags = MEDIA_PAD_FL_SOURCE;
-	state->pads[CX25840_PAD_VBI_OUT].flags = MEDIA_PAD_FL_SOURCE;
+	state->pads[CX25840_PAD_VID_OUT].sig_type = PAD_SIGNAL_DV;
 	sd->entity.function = MEDIA_ENT_F_ATV_DECODER;
 
 	ret = media_entity_pads_init(&sd->entity, ARRAY_SIZE(state->pads),

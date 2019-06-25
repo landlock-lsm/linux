@@ -47,7 +47,7 @@
 
 static enum qed_resc_lock qed_ptcdev_to_resc(struct qed_hwfn *p_hwfn)
 {
-	switch (qed_device_get_port_id(p_hwfn->cdev)) {
+	switch (MFW_PORT(p_hwfn)) {
 	case 0:
 		return QED_RESC_LOCK_PTP_PORT0;
 	case 1:
@@ -157,7 +157,8 @@ static int qed_ptp_hw_read_tx_ts(struct qed_dev *cdev, u64 *timestamp)
 	*timestamp = 0;
 	val = qed_rd(p_hwfn, p_ptt, NIG_REG_TX_LLH_PTP_BUF_SEQID);
 	if (!(val & QED_TIMESTAMP_MASK)) {
-		DP_INFO(p_hwfn, "Invalid Tx timestamp, buf_seqid = %d\n", val);
+		DP_VERBOSE(p_hwfn, QED_MSG_DEBUG,
+			   "Invalid Tx timestamp, buf_seqid = %08x\n", val);
 		return -EINVAL;
 	}
 

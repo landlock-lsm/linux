@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Landlock LSM - init
  *
- * Copyright © 2016-2018 Mickaël Salaün <mic@digikod.net>
- * Copyright © 2018 ANSSI
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * Copyright © 2016-2019 Mickaël Salaün <mic@digikod.net>
+ * Copyright © 2018-2019 ANSSI
  */
 
 #include <linux/bpf.h> /* enum bpf_access_type */
@@ -16,20 +13,19 @@
 
 #include "common.h" /* LANDLOCK_* */
 #include "hooks_fs.h"
-#include "hooks_cred.h"
 #include "hooks_ptrace.h"
 
 static bool bpf_landlock_is_valid_access(int off, int size,
-		enum bpf_access_type type, struct bpf_insn_access_aux *info,
-		const struct bpf_prog_extra *prog_extra)
+		enum bpf_access_type type, const struct bpf_prog *prog,
+		struct bpf_insn_access_aux *info)
 {
 	const union bpf_prog_subtype *prog_subtype;
 	enum bpf_reg_type reg_type = NOT_INIT;
 	int max_size = 0;
 
-	if (WARN_ON(!prog_extra))
+	if (WARN_ON(!prog->aux->extra))
 		return false;
-	prog_subtype = &prog_extra->subtype;
+	prog_subtype = &prog->aux->extra->subtype;
 
 	if (off < 0)
 		return false;
@@ -45,11 +41,6 @@ static bool bpf_landlock_is_valid_access(int off, int size,
 		break;
 	case LANDLOCK_HOOK_FS_WALK:
 		if (!landlock_is_valid_access_fs_walk(off, type, &reg_type,
-					&max_size))
-			return false;
-		break;
-	case LANDLOCK_HOOK_FS_GET:
-		if (!landlock_is_valid_access_fs_get(off, type, &reg_type,
 					&max_size))
 			return false;
 		break;
@@ -78,43 +69,6 @@ static bool bpf_landlock_is_valid_access(int off, int size,
 	return true;
 }
 
-/*
- * Check order of Landlock programs
- *
- * Keep in sync with enforce.c:is_hook_type_forkable().
- */
-static bool good_previous_prog(enum landlock_hook_type current_type,
-		const struct bpf_prog *previous)
-{
-	enum landlock_hook_type previous_type;
-
-	if (previous->type != BPF_PROG_TYPE_LANDLOCK_HOOK)
-		return false;
-	if (WARN_ON(!previous->aux->extra))
-		return false;
-	previous_type = previous->aux->extra->subtype.landlock_hook.type;
-	switch (current_type) {
-	case LANDLOCK_HOOK_FS_PICK:
-		switch (previous_type) {
-		case LANDLOCK_HOOK_FS_PICK:
-		case LANDLOCK_HOOK_FS_WALK:
-			return true;
-		default:
-			return false;
-		}
-	case LANDLOCK_HOOK_FS_GET:
-		/* In the future, fs_get could be chained with another fs_get
-		 * (different triggers), but not for now. */
-		if (previous_type != LANDLOCK_HOOK_FS_PICK)
-			return false;
-		return true;
-	case LANDLOCK_HOOK_FS_WALK:
-		return false;
-	}
-	WARN_ON(1);
-	return false;
-}
-
 static bool bpf_landlock_is_valid_subtype(struct bpf_prog_extra *prog_extra)
 {
 	const union bpf_prog_subtype *subtype;
@@ -131,7 +85,6 @@ static bool bpf_landlock_is_valid_subtype(struct bpf_prog_extra *prog_extra)
 			return false;
 		break;
 	case LANDLOCK_HOOK_FS_WALK:
-	case LANDLOCK_HOOK_FS_GET:
 		if (subtype->landlock_hook.triggers)
 			return false;
 		break;
@@ -139,37 +92,18 @@ static bool bpf_landlock_is_valid_subtype(struct bpf_prog_extra *prog_extra)
 		return false;
 	}
 
-	if (subtype->landlock_hook.options & ~_LANDLOCK_OPTION_MASK)
-		return false;
-	if (subtype->landlock_hook.options & LANDLOCK_OPTION_PREVIOUS) {
-		struct bpf_prog *previous;
-
-		/* check and save the chained program */
-		previous = bpf_prog_get(subtype->landlock_hook.previous);
-		if (IS_ERR(previous))
-			return false;
-		if (!good_previous_prog(subtype->landlock_hook.type,
-					previous)) {
-			bpf_prog_put(previous);
-			return false;
-		}
-		/* It is not possible to create loops because the current
-		 * program does not exist yet. */
-		prog_extra->landlock_hook.previous = previous;
-	}
-
 	return true;
 }
 
 static const struct bpf_func_proto *bpf_landlock_func_proto(
 		enum bpf_func_id func_id,
-		const struct bpf_prog_extra *prog_extra)
+		const struct bpf_prog *prog)
 {
 	u64 hook_type;
 
-	if (WARN_ON(!prog_extra))
+	if (WARN_ON(!prog->aux->extra))
 		return NULL;
-	hook_type = prog_extra->subtype.landlock_hook.type;
+	hook_type = prog->aux->extra->subtype.landlock_hook.type;
 
 	/* generic functions */
 	/* TODO: do we need/want update/delete functions for every LL prog?
@@ -191,18 +125,6 @@ static const struct bpf_func_proto *bpf_landlock_func_proto(
 		switch (func_id) {
 		case BPF_FUNC_inode_map_lookup:
 			return &bpf_inode_map_lookup_proto;
-		case BPF_FUNC_inode_get_tag:
-			return &bpf_inode_get_tag_proto;
-		default:
-			break;
-		}
-		break;
-	case LANDLOCK_HOOK_FS_GET:
-		switch (func_id) {
-		case BPF_FUNC_inode_get_tag:
-			return &bpf_inode_get_tag_proto;
-		case BPF_FUNC_landlock_set_tag:
-			return &bpf_landlock_set_tag_proto;
 		default:
 			break;
 		}
@@ -211,28 +133,27 @@ static const struct bpf_func_proto *bpf_landlock_func_proto(
 	return NULL;
 }
 
-static void bpf_landlock_put_extra(struct bpf_prog_extra *prog_extra)
-{
-	if (WARN_ON(!prog_extra))
-		return;
-	if (prog_extra->landlock_hook.previous)
-		bpf_prog_put(prog_extra->landlock_hook.previous);
-}
-
 const struct bpf_verifier_ops landlock_verifier_ops = {
 	.get_func_proto	= bpf_landlock_func_proto,
 	.is_valid_access = bpf_landlock_is_valid_access,
 	.is_valid_subtype = bpf_landlock_is_valid_subtype,
 };
 
-const struct bpf_prog_ops landlock_prog_ops = {
-	.put_extra = bpf_landlock_put_extra,
-};
+const struct bpf_prog_ops landlock_prog_ops = {};
 
-void __init landlock_add_hooks(void)
+static int __init landlock_init(void)
 {
-	pr_info(LANDLOCK_NAME ": Ready to sandbox with seccomp\n");
-	landlock_add_hooks_cred();
+	pr_info(LANDLOCK_NAME ": Initializing (sandbox with seccomp)\n");
 	landlock_add_hooks_ptrace();
 	landlock_add_hooks_fs();
+	return 0;
 }
+
+struct lsm_blob_sizes landlock_blob_sizes __lsm_ro_after_init = {};
+
+DEFINE_LSM(LANDLOCK_NAME) = {
+	.name = LANDLOCK_NAME,
+	.order = LSM_ORDER_LAST,
+	.blobs = &landlock_blob_sizes,
+	.init = landlock_init,
+};

@@ -6,9 +6,9 @@ Landlock programs
 =================
 
 eBPF programs are used to create security programs.  They are contained and can
-call only a whitelist of dedicated functions. Moreover, they cannot loop, which
-protects from denial of service.  More information on BPF can be found in
-*Documentation/networking/filter.txt*.
+call only a whitelist of dedicated functions. Moreover, they can only loop
+under strict conditions, which protects from denial of service.  More
+information on BPF can be found in *Documentation/networking/filter.txt*.
 
 
 Writing a program
@@ -118,45 +118,6 @@ To be allowed to use :manpage:`ptrace(2)` and related syscalls on a target
 process, a landlocked process must have a subset of the target process programs.
 
 
-Chained programs
-================
-
-Landlock programs can be chained according to the hook they are tied to.  This
-enable to keep a state between multiple program evaluation for an object access
-check (e.g. walking through a file path).  The *cookie* field from the context
-can be used as a temporary storage shared between a chain of programs.
-
-The following graph is an example of the chain of programs used in
-*samples/bpf/landlock1_kern.c*.  The fs_walk program evaluate if a file is
-beneath a set of file hierarchy.  The first fs_pick program may be called when
-there is a read-like action (i.e. trigger for open, chdir, getattr...).  The
-second fs_pick program may be called for write-like actions.  And finally, the
-fs_get program is called to tag a file when it is open, receive or when the
-current task changes directory.  This tagging is needed to be able to keep the
-state of this file evaluation for a next one involving the same opened file.
-
-::
-
-    .---------.
-    | fs_walk |
-    '---------'
-         |
-         v
-    .---------.
-    | fs_pick |  open, chdir, getattr...
-    '---------'
-         |
-         v
-    .---------.
-    | fs_pick |  create, write, link...
-    '---------'
-         |
-         v
-    .--------.
-    | fs_get |
-    '--------'
-
-
 Landlock structures and constants
 =================================
 
@@ -179,25 +140,6 @@ Triggers for fs_pick
 
 .. kernel-doc:: include/uapi/linux/landlock.h
     :functions: landlock_triggers
-
-
-Helper functions
-----------------
-
-::
-
-    u64 bpf_inode_get_tag(inode, chain)
-        @inode: pointer to struct inode
-        @chain: pointer to struct landlock_chain
-        Return: tag tied to this inode and chain, or zero if none
-
-    int bpf_landlock_set_tag(tag_obj, chain, value)
-        @tag_obj: pointer pointing to a taggable object (e.g. inode)
-        @chain: pointer to struct landlock_chain
-        @value: value of the tag
-        Return: 0 on success or negative error code
-
-See *include/uapi/linux/bpf.h* for other functions documentation.
 
 
 Additional documentation

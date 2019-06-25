@@ -17,7 +17,6 @@
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <linux/types.h>
-#include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <sys/ioctl.h>
@@ -25,7 +24,7 @@
 #include <poll.h>
 #include <ctype.h>
 #include <assert.h>
-#include "libbpf.h"
+#include <bpf/bpf.h>
 #include "bpf_load.h"
 #include "perf-sys.h"
 
@@ -42,10 +41,10 @@ int prog_cnt;
 int prog_array_fd = -1;
 
 struct bpf_map_data map_data[MAX_MAPS];
-int map_data_count = 0;
+int map_data_count;
 
 struct bpf_subtype_data subtype_data[MAX_PROGS];
-int subtype_data_count = 0;
+int subtype_data_count;
 
 static int populate_prog_array(const char *event, int prog_fd)
 {
@@ -59,18 +58,39 @@ static int populate_prog_array(const char *event, int prog_fd)
 	return 0;
 }
 
+static int write_kprobe_events(const char *val)
+{
+	int fd, ret, flags;
+
+	if (val == NULL)
+		return -1;
+	else if (val[0] == '\0')
+		flags = O_WRONLY | O_TRUNC;
+	else
+		flags = O_WRONLY | O_APPEND;
+
+	fd = open(DEBUGFS "kprobe_events", flags);
+
+	ret = write(fd, val, strlen(val));
+	close(fd);
+
+	return ret;
+}
+
 static int load_and_attach(const char *event, struct bpf_insn *prog, int size)
 {
 	bool is_socket = strncmp(event, "socket", 6) == 0;
 	bool is_kprobe = strncmp(event, "kprobe/", 7) == 0;
 	bool is_kretprobe = strncmp(event, "kretprobe/", 10) == 0;
 	bool is_tracepoint = strncmp(event, "tracepoint/", 11) == 0;
+	bool is_raw_tracepoint = strncmp(event, "raw_tracepoint/", 15) == 0;
 	bool is_xdp = strncmp(event, "xdp", 3) == 0;
 	bool is_perf_event = strncmp(event, "perf_event", 10) == 0;
 	bool is_cgroup_skb = strncmp(event, "cgroup/skb", 10) == 0;
 	bool is_cgroup_sk = strncmp(event, "cgroup/sock", 11) == 0;
 	bool is_sockops = strncmp(event, "sockops", 7) == 0;
 	bool is_sk_skb = strncmp(event, "sk_skb", 6) == 0;
+	bool is_sk_msg = strncmp(event, "sk_msg", 6) == 0;
 	bool is_landlock = strncmp(event, "landlock", 8) == 0;
 	size_t insns_cnt = size / sizeof(struct bpf_insn);
 	enum bpf_prog_type prog_type;
@@ -79,6 +99,7 @@ static int load_and_attach(const char *event, struct bpf_insn *prog, int size)
 	struct perf_event_attr attr = {};
 	union bpf_prog_subtype *st = NULL;
 	struct bpf_subtype_data *sd = NULL;
+	struct bpf_load_program_attr load_attr;
 
 	attr.type = PERF_TYPE_TRACEPOINT;
 	attr.sample_type = PERF_SAMPLE_RAW;
@@ -91,6 +112,8 @@ static int load_and_attach(const char *event, struct bpf_insn *prog, int size)
 		prog_type = BPF_PROG_TYPE_KPROBE;
 	} else if (is_tracepoint) {
 		prog_type = BPF_PROG_TYPE_TRACEPOINT;
+	} else if (is_raw_tracepoint) {
+		prog_type = BPF_PROG_TYPE_RAW_TRACEPOINT;
 	} else if (is_xdp) {
 		prog_type = BPF_PROG_TYPE_XDP;
 	} else if (is_perf_event) {
@@ -103,6 +126,8 @@ static int load_and_attach(const char *event, struct bpf_insn *prog, int size)
 		prog_type = BPF_PROG_TYPE_SOCK_OPS;
 	} else if (is_sk_skb) {
 		prog_type = BPF_PROG_TYPE_SK_SKB;
+	} else if (is_sk_msg) {
+		prog_type = BPF_PROG_TYPE_SK_MSG;
 	} else if (is_landlock) {
 		int i, prog_id;
 		const char *event_id = (event + 8);
@@ -128,32 +153,23 @@ static int load_and_attach(const char *event, struct bpf_insn *prog, int size)
 			printf("missing subtype\n");
 			return -1;
 		}
-		/* automatic conversion of program pointer to FD */
-		if (st->landlock_hook.options & LANDLOCK_OPTION_PREVIOUS) {
-			int previous = -1;
-
-			/* assume the previous program is already loaded */
-			for (i = 0; i < subtype_data_count; i++) {
-				if (subtype_data[i].prog_id ==
-						st->landlock_hook.previous) {
-					previous = subtype_data[i].prog_fd;
-					break;
-				}
-			}
-			if (previous == -1) {
-				printf("could not find the previous program\n");
-				return -1;
-			}
-			st->landlock_hook.previous = previous;
-		}
 		prog_type = BPF_PROG_TYPE_LANDLOCK_HOOK;
 	} else {
 		printf("Unknown event '%s'\n", event);
 		return -1;
 	}
 
-	fd = bpf_load_program(prog_type, prog, insns_cnt, license, kern_version,
-			      bpf_log_buf, BPF_LOG_BUF_SIZE, st);
+	if (prog_cnt == MAX_PROGS)
+		return -1;
+
+	memset(&load_attr, 0, sizeof(struct bpf_load_program_attr));
+	load_attr.prog_type = prog_type;
+	load_attr.prog_subtype = st;
+	load_attr.insns = prog;
+	load_attr.insns_cnt = insns_cnt;
+	load_attr.license = license;
+	load_attr.kern_version = kern_version;
+	fd = bpf_load_program_xattr(&load_attr, bpf_log_buf, BPF_LOG_BUF_SIZE);
 	if (fd < 0) {
 		printf("bpf_load_program() err=%d\n%s", errno, bpf_log_buf);
 		return -1;
@@ -167,7 +183,7 @@ static int load_and_attach(const char *event, struct bpf_insn *prog, int size)
 	    is_landlock)
 		return 0;
 
-	if (is_socket || is_sockops || is_sk_skb) {
+	if (is_socket || is_sockops || is_sk_skb || is_sk_msg) {
 		if (is_socket)
 			event += 6;
 		else
@@ -182,7 +198,20 @@ static int load_and_attach(const char *event, struct bpf_insn *prog, int size)
 		return populate_prog_array(event, fd);
 	}
 
+	if (is_raw_tracepoint) {
+		efd = bpf_raw_tracepoint_open(event + 15, fd);
+		if (efd < 0) {
+			printf("tracepoint %s %s\n", event + 15, strerror(errno));
+			return -1;
+		}
+		event_fd[prog_cnt - 1] = efd;
+		return 0;
+	}
+
 	if (is_kprobe || is_kretprobe) {
+		bool need_normal_check = true;
+		const char *event_prefix = "";
+
 		if (is_kprobe)
 			event += 7;
 		else
@@ -196,18 +225,31 @@ static int load_and_attach(const char *event, struct bpf_insn *prog, int size)
 		if (isdigit(*event))
 			return populate_prog_array(event, fd);
 
-		snprintf(buf, sizeof(buf),
-			 "echo '%c:%s %s' >> /sys/kernel/debug/tracing/kprobe_events",
-			 is_kprobe ? 'p' : 'r', event, event);
-		err = system(buf);
-		if (err < 0) {
-			printf("failed to create kprobe '%s' error '%s'\n",
-			       event, strerror(errno));
-			return -1;
+#ifdef __x86_64__
+		if (strncmp(event, "sys_", 4) == 0) {
+			snprintf(buf, sizeof(buf), "%c:__x64_%s __x64_%s",
+				is_kprobe ? 'p' : 'r', event, event);
+			err = write_kprobe_events(buf);
+			if (err >= 0) {
+				need_normal_check = false;
+				event_prefix = "__x64_";
+			}
+		}
+#endif
+		if (need_normal_check) {
+			snprintf(buf, sizeof(buf), "%c:%s %s",
+				is_kprobe ? 'p' : 'r', event, event);
+			err = write_kprobe_events(buf);
+			if (err < 0) {
+				printf("failed to create kprobe '%s' error '%s'\n",
+				       event, strerror(errno));
+				return -1;
+			}
 		}
 
 		strcpy(buf, DEBUGFS);
 		strcat(buf, "events/kprobes/");
+		strcat(buf, event_prefix);
 		strcat(buf, event);
 		strcat(buf, "/id");
 	} else if (is_tracepoint) {
@@ -302,8 +344,8 @@ static int load_maps(struct bpf_map_data *maps, int nr_maps,
 							numa_node);
 		}
 		if (map_fd[i] < 0) {
-			printf("failed to create a map: %d %s\n",
-			       errno, strerror(errno));
+			printf("failed to create map %d (%s): %d %s\n",
+			       i, maps[i].name, errno, strerror(errno));
 			return 1;
 		}
 		maps[i].fd = map_fd[i];
@@ -440,7 +482,7 @@ static int load_elf_maps_section(struct bpf_map_data *maps, int maps_shndx,
 
 	/* Keeping compatible with ELF maps section changes
 	 * ------------------------------------------------
-	 * The program size of struct bpf_map_def is known by loader
+	 * The program size of struct bpf_load_map_def is known by loader
 	 * code, but struct stored in ELF file can be different.
 	 *
 	 * Unfortunately sym[i].st_size is zero.  To calculate the
@@ -449,7 +491,7 @@ static int load_elf_maps_section(struct bpf_map_data *maps, int maps_shndx,
 	 * symbols.
 	 */
 	map_sz_elf = data_maps->d_size / nr_maps;
-	map_sz_copy = sizeof(struct bpf_map_def);
+	map_sz_copy = sizeof(struct bpf_load_map_def);
 	if (map_sz_elf < map_sz_copy) {
 		/*
 		 * Backward compat, loading older ELF file with
@@ -468,8 +510,8 @@ static int load_elf_maps_section(struct bpf_map_data *maps, int maps_shndx,
 
 	/* Memcpy relevant part of ELF maps data to loader maps */
 	for (i = 0; i < nr_maps; i++) {
+		struct bpf_load_map_def *def;
 		unsigned char *addr, *end;
-		struct bpf_map_def *def;
 		const char *map_name;
 		size_t offset;
 
@@ -484,15 +526,15 @@ static int load_elf_maps_section(struct bpf_map_data *maps, int maps_shndx,
 
 		/* Symbol value is offset into ELF maps section data area */
 		offset = sym[i].st_value;
-		def = (struct bpf_map_def *)(data_maps->d_buf + offset);
+		def = (struct bpf_load_map_def *)(data_maps->d_buf + offset);
 		maps[i].elf_offset = offset;
-		memset(&maps[i].def, 0, sizeof(struct bpf_map_def));
+		memset(&maps[i].def, 0, sizeof(struct bpf_load_map_def));
 		memcpy(&maps[i].def, def, map_sz_copy);
 
 		/* Verify no newer features were requested */
 		if (validate_zero) {
-			addr = (unsigned char*) def + map_sz_copy;
-			end  = (unsigned char*) def + map_sz_elf;
+			addr = (unsigned char *) def + map_sz_copy;
+			end  = (unsigned char *) def + map_sz_elf;
 			for (; addr < end; addr++) {
 				if (*addr != 0) {
 					free(sym);
@@ -520,6 +562,7 @@ static int do_load_bpf_file(const char *path, fixup_map_cb fixup_map)
 	kern_version = 0;
 	memset(license, 0, sizeof(license));
 	memset(processed_sec, 0, sizeof(processed_sec));
+	subtype_data_count = 0;
 
 	if (elf_version(EV_CURRENT) == EV_NONE)
 		return 1;
@@ -537,7 +580,7 @@ static int do_load_bpf_file(const char *path, fixup_map_cb fixup_map)
 		return 1;
 
 	/* clear all kprobes */
-	i = system("echo \"\" > /sys/kernel/debug/tracing/kprobe_events");
+	i = write_kprobe_events("");
 
 	/* scan over all elf sections to get license and map info */
 	for (i = 1; i < ehdr.e_shnum; i++) {
@@ -610,7 +653,6 @@ static int do_load_bpf_file(const char *path, fixup_map_cb fixup_map)
 		if (nr_maps < 0) {
 			printf("Error: Failed loading ELF maps (errno:%d):%s\n",
 			       nr_maps, strerror(-nr_maps));
-			ret = 1;
 			goto done;
 		}
 		if (load_maps(map_data, nr_maps, fixup_map))
@@ -651,6 +693,7 @@ static int do_load_bpf_file(const char *path, fixup_map_cb fixup_map)
 
 	/* load programs */
 	for (i = 1; i < ehdr.e_shnum; i++) {
+
 		if (processed_sec[i])
 			continue;
 
@@ -660,12 +703,14 @@ static int do_load_bpf_file(const char *path, fixup_map_cb fixup_map)
 		if (memcmp(shname, "kprobe/", 7) == 0 ||
 		    memcmp(shname, "kretprobe/", 10) == 0 ||
 		    memcmp(shname, "tracepoint/", 11) == 0 ||
+		    memcmp(shname, "raw_tracepoint/", 15) == 0 ||
 		    memcmp(shname, "xdp", 3) == 0 ||
 		    memcmp(shname, "perf_event", 10) == 0 ||
 		    memcmp(shname, "socket", 6) == 0 ||
 		    memcmp(shname, "cgroup/", 7) == 0 ||
 		    memcmp(shname, "sockops", 7) == 0 ||
 		    memcmp(shname, "sk_skb", 6) == 0 ||
+		    memcmp(shname, "sk_msg", 6) == 0 ||
 		    memcmp(shname, "landlock", 8) == 0) {
 			ret = load_and_attach(shname, data->d_buf,
 					      data->d_size);
@@ -674,7 +719,6 @@ static int do_load_bpf_file(const char *path, fixup_map_cb fixup_map)
 		}
 	}
 
-	ret = 0;
 done:
 	close(fd);
 	return ret;
@@ -702,73 +746,10 @@ void read_trace_pipe(void)
 		static char buf[4096];
 		ssize_t sz;
 
-		sz = read(trace_fd, buf, sizeof(buf));
+		sz = read(trace_fd, buf, sizeof(buf) - 1);
 		if (sz > 0) {
 			buf[sz] = 0;
 			puts(buf);
 		}
 	}
 }
-
-#define MAX_SYMS 300000
-static struct ksym syms[MAX_SYMS];
-static int sym_cnt;
-
-static int ksym_cmp(const void *p1, const void *p2)
-{
-	return ((struct ksym *)p1)->addr - ((struct ksym *)p2)->addr;
-}
-
-int load_kallsyms(void)
-{
-	FILE *f = fopen("/proc/kallsyms", "r");
-	char func[256], buf[256];
-	char symbol;
-	void *addr;
-	int i = 0;
-
-	if (!f)
-		return -ENOENT;
-
-	while (!feof(f)) {
-		if (!fgets(buf, sizeof(buf), f))
-			break;
-		if (sscanf(buf, "%p %c %s", &addr, &symbol, func) != 3)
-			break;
-		if (!addr)
-			continue;
-		syms[i].addr = (long) addr;
-		syms[i].name = strdup(func);
-		i++;
-	}
-	sym_cnt = i;
-	qsort(syms, sym_cnt, sizeof(struct ksym), ksym_cmp);
-	return 0;
-}
-
-struct ksym *ksym_search(long key)
-{
-	int start = 0, end = sym_cnt;
-	int result;
-
-	while (start < end) {
-		size_t mid = start + (end - start) / 2;
-
-		result = key - syms[mid].addr;
-		if (result < 0)
-			end = mid;
-		else if (result > 0)
-			start = mid + 1;
-		else
-			return &syms[mid];
-	}
-
-	if (start >= 1 && syms[start - 1].addr < key &&
-	    key < syms[start].addr)
-		/* valid ksym */
-		return &syms[start - 1];
-
-	/* out of range. return _stext */
-	return &syms[0];
-}
-

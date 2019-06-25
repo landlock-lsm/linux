@@ -1,9 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * digi00x-pcm.c - a part of driver for Digidesign Digi 002/003 family
  *
  * Copyright (c) 2014-2015 Takashi Sakamoto
- *
- * Licensed under the terms of the GNU General Public License, version 2.
  */
 
 #include "digi00x.h"
@@ -352,7 +351,6 @@ int snd_dg00x_create_pcm_devices(struct snd_dg00x *dg00x)
 		.pointer	= pcm_playback_pointer,
 		.ack		= pcm_playback_ack,
 		.page		= snd_pcm_lib_get_vmalloc_page,
-		.mmap		= snd_pcm_lib_mmap_vmalloc,
 	};
 	struct snd_pcm *pcm;
 	int err;

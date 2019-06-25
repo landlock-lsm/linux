@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Landlock LSM - enforcing helpers
  *
- * Copyright © 2016-2018 Mickaël Salaün <mic@digikod.net>
- * Copyright © 2018 ANSSI
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * Copyright © 2016-2019 Mickaël Salaün <mic@digikod.net>
+ * Copyright © 2018-2019 ANSSI
  */
 
 #include <asm/barrier.h> /* smp_store_release() */
@@ -19,7 +16,6 @@
 #include <linux/refcount.h>
 #include <linux/slab.h> /* alloc(), kfree() */
 
-#include "chain.h"
 #include "common.h" /* struct landlock_prog_list */
 
 /* TODO: use a dedicated kmem_cache_alloc() instead of k*alloc() */
@@ -34,7 +30,6 @@ static void put_landlock_prog_list(struct landlock_prog_list *prog_list)
 
 		if (orig->prog)
 			bpf_prog_put(orig->prog);
-		landlock_put_chain(orig->chain);
 		orig = orig->prev;
 		kfree(freeme);
 	}
@@ -47,24 +42,15 @@ void landlock_put_prog_set(struct landlock_prog_set *prog_set)
 
 		for (i = 0; i < ARRAY_SIZE(prog_set->programs); i++)
 			put_landlock_prog_list(prog_set->programs[i]);
-		landlock_put_chain(prog_set->chain_last);
 		kfree(prog_set);
 	}
 }
 
 void landlock_get_prog_set(struct landlock_prog_set *prog_set)
 {
-	struct landlock_chain *chain;
-
 	if (!prog_set)
 		return;
 	refcount_inc(&prog_set->usage);
-	chain = prog_set->chain_last;
-	/* mark all inherited chains as (potentially) shared */
-	while (chain && !chain->shared) {
-		chain->shared = 1;
-		chain = chain->next;
-	}
 }
 
 static struct landlock_prog_set *new_landlock_prog_set(void)
@@ -79,39 +65,16 @@ static struct landlock_prog_set *new_landlock_prog_set(void)
 	return ret;
 }
 
-/*
- * If a program type is able to fork, this means that there is one amongst
- * multiple programs (types) that may be called after, depending on the action
- * type. This means that if a (sub)type has a "triggers" field (e.g. fs_pick),
- * then it is forkable.
- *
- * Keep in sync with init.c:good_previous_prog().
- */
-static bool is_hook_type_forkable(enum landlock_hook_type hook_type)
-{
-	switch (hook_type) {
-	case LANDLOCK_HOOK_FS_WALK:
-		return false;
-	case LANDLOCK_HOOK_FS_PICK:
-		/* can fork to fs_get or fs_ioctl... */
-		return true;
-	case LANDLOCK_HOOK_FS_GET:
-		return false;
-	}
-	WARN_ON(1);
-	return false;
-}
-
 /**
  * store_landlock_prog - prepend and deduplicate a Landlock prog_list
  *
- * Prepend @prog to @init_prog_set while ignoring @prog and its chained programs
+ * Prepend @prog to @init_prog_set while ignoring @prog
  * if they are already in @ref_prog_set.  Whatever is the result of this
  * function call, you can call bpf_prog_put(@prog) after.
  *
  * @init_prog_set: empty prog_set to prepend to
  * @ref_prog_set: prog_set to check for duplicate programs
- * @prog: program chain to prepend
+ * @prog: program to prepend
  *
  * Return -errno on error or 0 if @prog was successfully stored.
  */
@@ -122,120 +85,46 @@ static int store_landlock_prog(struct landlock_prog_set *init_prog_set,
 	struct landlock_prog_list *tmp_list = NULL;
 	int err;
 	u32 hook_idx;
-	bool new_is_last_of_type;
-	bool first = true;
-	struct landlock_chain *chain = NULL;
 	enum landlock_hook_type last_type;
 	struct bpf_prog *new = prog;
 
 	/* allocate all the memory we need */
-	for (; new; new = new->aux->extra->landlock_hook.previous) {
-		bool ignore = false;
-		struct landlock_prog_list *new_list;
+	struct landlock_prog_list *new_list;
 
-		new_is_last_of_type = first || (last_type != get_type(new));
-		last_type = get_type(new);
-		first = false;
-		/* ignore duplicate programs */
-		if (ref_prog_set) {
-			struct landlock_prog_list *ref;
-			struct bpf_prog *new_prev;
+	last_type = get_type(new);
 
-			/*
-			 * The subtype verifier has already checked the
-			 * coherency of the program types chained in @new (cf.
-			 * good_previous_prog).
-			 *
-			 * Here we only allow linking to a chain if the common
-			 * program's type is able to fork (e.g. fs_pick) and
-			 * come from the same task (i.e. not shared).  This
-			 * program must also be the last one of its type in
-			 * both the @ref and the @new chains.  Finally, two
-			 * programs with the same parent must be of different
-			 * type.
-			 */
-			if (WARN_ON(!new->aux->extra))
-				continue;
-			new_prev = new->aux->extra->landlock_hook.previous;
-			hook_idx = get_index(get_type(new));
-			for (ref = ref_prog_set->programs[hook_idx];
-					ref; ref = ref->prev) {
-				struct bpf_prog *ref_prev;
+	/* ignore duplicate programs */
+	if (ref_prog_set) {
+		struct landlock_prog_list *ref;
 
-				ignore = (ref->prog == new);
-				if (ignore)
-					break;
-				ref_prev = ref->prog->aux->extra->
-					landlock_hook.previous;
-				/* deny fork to the same types */
-				if (new_prev && new_prev == ref_prev) {
-					err = -EINVAL;
-					goto put_tmp_list;
-				}
-			}
-			/* remaining programs are already in ref_prog_set */
-			if (ignore) {
-				bool is_forkable =
-					is_hook_type_forkable(get_type(new));
-
-				if (ref->chain->shared || !is_forkable ||
-						!new_is_last_of_type ||
-						!ref->is_last_of_type) {
-					err = -EINVAL;
-					goto put_tmp_list;
-				}
-				/* use the same session (i.e. cookie state) */
-				chain = ref->chain;
-				/* will increment the usage counter later */
-				break;
-			}
+		hook_idx = get_index(get_type(new));
+		for (ref = ref_prog_set->programs[hook_idx];
+				ref; ref = ref->prev) {
+			if (ref->prog == new)
+				return -EINVAL;
 		}
-
-		new = bpf_prog_inc(new);
-		if (IS_ERR(new)) {
-			err = PTR_ERR(new);
-			goto put_tmp_list;
-		}
-		new_list = kzalloc(sizeof(*new_list), GFP_KERNEL);
-		if (!new_list) {
-			bpf_prog_put(new);
-			err = -ENOMEM;
-			goto put_tmp_list;
-		}
-		/* ignore Landlock types in this tmp_list */
-		new_list->is_last_of_type = new_is_last_of_type;
-		new_list->prog = new;
-		new_list->prev = tmp_list;
-		refcount_set(&new_list->usage, 1);
-		tmp_list = new_list;
 	}
+
+	new = bpf_prog_inc(new);
+	if (IS_ERR(new)) {
+		err = PTR_ERR(new);
+		goto put_tmp_list;
+	}
+	new_list = kzalloc(sizeof(*new_list), GFP_KERNEL);
+	if (!new_list) {
+		bpf_prog_put(new);
+		err = -ENOMEM;
+		goto put_tmp_list;
+	}
+	/* ignore Landlock types in this tmp_list */
+	new_list->prog = new;
+	new_list->prev = tmp_list;
+	refcount_set(&new_list->usage, 1);
+	tmp_list = new_list;
 
 	if (!tmp_list)
 		/* inform user space that this program was already added */
 		return -EEXIST;
-
-	if (!chain) {
-		u8 chain_index;
-
-		if (ref_prog_set) {
-			/* this is a new independent chain */
-			chain_index = ref_prog_set->chain_last->index + 1;
-			/* check for integer overflow */
-			if (chain_index < ref_prog_set->chain_last->index) {
-				err = -E2BIG;
-				goto put_tmp_list;
-			}
-		} else {
-			chain_index = 0;
-		}
-		chain = landlock_new_chain(chain_index);
-		if (IS_ERR(chain)) {
-			err = PTR_ERR(chain);
-			goto put_tmp_list;
-		}
-		/* no need to refcount_dec(&init_prog_set->chain_last) */
-	}
-	init_prog_set->chain_last = chain;
 
 	/* properly store the list (without error cases) */
 	while (tmp_list) {
@@ -246,8 +135,6 @@ static int store_landlock_prog(struct landlock_prog_set *init_prog_set,
 		/* do not increment the previous prog list usage */
 		hook_idx = get_index(get_type(new_list->prog));
 		new_list->prev = init_prog_set->programs[hook_idx];
-		new_list->chain = chain;
-		refcount_inc(&chain->usage);
 		/* no need to add from the last program to the first because
 		 * each of them are a different Landlock type */
 		smp_store_release(&init_prog_set->programs[hook_idx], new_list);
@@ -376,7 +263,6 @@ struct landlock_prog_set *landlock_prepend_prog(
 			new_prog_set->programs[i] = tmp_prog_set.programs[i];
 		}
 	}
-	new_prog_set->chain_last = tmp_prog_set.chain_last;
 	return new_prog_set;
 
 put_tmp_lists:

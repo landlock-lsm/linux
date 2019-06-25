@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* -*- linux-c -*-
  * sysctl_net.c: sysctl interface to net subsystem.
  *
@@ -89,7 +90,6 @@ static void __net_exit sysctl_net_exit(struct net *net)
 static struct pernet_operations sysctl_pernet_ops = {
 	.init = sysctl_net_init,
 	.exit = sysctl_net_exit,
-	.async = true,
 };
 
 static struct ctl_table_header *net_header;

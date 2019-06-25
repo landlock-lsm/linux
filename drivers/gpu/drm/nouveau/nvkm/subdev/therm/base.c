@@ -132,11 +132,12 @@ nvkm_therm_update(struct nvkm_therm *therm, int mode)
 			duty = nvkm_therm_update_linear(therm);
 			break;
 		case NVBIOS_THERM_FAN_OTHER:
-			if (therm->cstate)
+			if (therm->cstate) {
 				duty = therm->cstate;
-			else
+				poll = false;
+			} else {
 				duty = nvkm_therm_update_linear_fallback(therm);
-			poll = false;
+			}
 			break;
 		}
 		immd = false;
@@ -301,7 +302,7 @@ nvkm_therm_attr_set(struct nvkm_therm *therm,
 void
 nvkm_therm_clkgate_enable(struct nvkm_therm *therm)
 {
-	if (!therm->func->clkgate_enable || !therm->clkgating_enabled)
+	if (!therm || !therm->func->clkgate_enable || !therm->clkgating_enabled)
 		return;
 
 	nvkm_debug(&therm->subdev,
@@ -312,7 +313,7 @@ nvkm_therm_clkgate_enable(struct nvkm_therm *therm)
 void
 nvkm_therm_clkgate_fini(struct nvkm_therm *therm, bool suspend)
 {
-	if (!therm->func->clkgate_fini || !therm->clkgating_enabled)
+	if (!therm || !therm->func->clkgate_fini || !therm->clkgating_enabled)
 		return;
 
 	nvkm_debug(&therm->subdev,
@@ -395,7 +396,7 @@ void
 nvkm_therm_clkgate_init(struct nvkm_therm *therm,
 			const struct nvkm_therm_clkgate_pack *p)
 {
-	if (!therm->func->clkgate_init || !therm->clkgating_enabled)
+	if (!therm || !therm->func->clkgate_init || !therm->clkgating_enabled)
 		return;
 
 	therm->func->clkgate_init(therm, p);

@@ -1,10 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2012 Russell King
  *  Rewritten from the dovefb driver, and Armada510 manuals.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 #ifndef ARMADA_HW_H
 #define ARMADA_HW_H
@@ -160,6 +157,7 @@ enum {
 	CFG_ALPHAM_GRA		= 0x1 << 16,
 	CFG_ALPHAM_CFG		= 0x2 << 16,
 	CFG_ALPHA_MASK		= 0xff << 8,
+#define CFG_ALPHA(x)		((x) << 8)
 	CFG_PIXCMD_MASK		= 0xff,
 };
 
@@ -314,5 +312,20 @@ enum {
 	GRA_FF_ALLEMPTY		= 1 << 1,
 	PWRDN_IRQ_LEVEL		= 1 << 0,
 };
+
+static inline u32 armada_rect_hw_fp(struct drm_rect *r)
+{
+	return (drm_rect_height(r) & 0xffff0000) | drm_rect_width(r) >> 16;
+}
+
+static inline u32 armada_rect_hw(struct drm_rect *r)
+{
+	return drm_rect_height(r) << 16 | (drm_rect_width(r) & 0x0000ffff);
+}
+
+static inline u32 armada_rect_yx(struct drm_rect *r)
+{
+	return (r)->y1 << 16 | ((r)->x1 & 0x0000ffff);
+}
 
 #endif

@@ -1,12 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * rt5677.h  --  RT5677 ALSA SoC audio driver
  *
  * Copyright 2013 Realtek Semiconductor Corp.
  * Author: Oder Chiou <oder_chiou@realtek.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef __RT5677_H__
@@ -1790,7 +1787,7 @@ struct rt5677_platform_data {
 };
 
 struct rt5677_priv {
-	struct snd_soc_codec *codec;
+	struct snd_soc_component *component;
 	struct rt5677_platform_data pdata;
 	struct regmap *regmap, *regmap_physical;
 	const struct firmware *fw1, *fw2;
@@ -1816,7 +1813,7 @@ struct rt5677_priv {
 	bool is_vref_slow;
 };
 
-int rt5677_sel_asrc_clk_src(struct snd_soc_codec *codec,
+int rt5677_sel_asrc_clk_src(struct snd_soc_component *component,
 		unsigned int filter_mask, unsigned int clk_src);
 
 #endif /* __RT5677_H__ */

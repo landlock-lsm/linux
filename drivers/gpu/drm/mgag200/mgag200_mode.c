@@ -1,10 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2010 Matt Turner.
  * Copyright 2012 Red Hat
- *
- * This file is subject to the terms and conditions of the GNU General
- * Public License version 2. See the file COPYING in the main
- * directory of this archive for more details.
  *
  * Authors: Matthew Garrett
  *	    Matt Turner
@@ -16,6 +13,7 @@
 #include <drm/drmP.h>
 #include <drm/drm_crtc_helper.h>
 #include <drm/drm_plane_helper.h>
+#include <drm/drm_probe_helper.h>
 
 #include "mgag200_drv.h"
 
@@ -1553,7 +1551,7 @@ static int mga_vga_get_modes(struct drm_connector *connector)
 
 	edid = drm_get_edid(connector, &mga_connector->i2c->adapter);
 	if (edid) {
-		drm_mode_connector_update_edid_property(connector, edid);
+		drm_connector_update_edid_property(connector, edid);
 		ret = drm_add_edid_modes(connector, edid);
 		kfree(edid);
 	}
@@ -1586,7 +1584,7 @@ static uint32_t mga_vga_calculate_mode_bandwidth(struct drm_display_mode *mode,
 
 #define MODE_BANDWIDTH	MODE_BAD
 
-static int mga_vga_mode_valid(struct drm_connector *connector,
+static enum drm_mode_status mga_vga_mode_valid(struct drm_connector *connector,
 				 struct drm_display_mode *mode)
 {
 	struct drm_device *dev = connector->dev;
@@ -1620,8 +1618,8 @@ static int mga_vga_mode_valid(struct drm_connector *connector,
 			return MODE_VIRTUAL_X;
 		if (mode->vdisplay > 1024)
 			return MODE_VIRTUAL_Y;
-		if (mga_vga_calculate_mode_bandwidth(mode,
-			bpp > (31877 * 1024)))
+		if (mga_vga_calculate_mode_bandwidth(mode, bpp) >
+		    (31877 * 1024))
 			return MODE_BANDWIDTH;
 	} else if (mdev->type == G200_EV &&
 		(mga_vga_calculate_mode_bandwidth(mode, bpp)
@@ -1747,7 +1745,7 @@ int mgag200_modeset_init(struct mga_device *mdev)
 		return -1;
 	}
 
-	drm_mode_connector_attach_encoder(connector, encoder);
+	drm_connector_attach_encoder(connector, encoder);
 
 	ret = mgag200_fbdev_init(mdev);
 	if (ret) {

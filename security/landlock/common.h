@@ -1,12 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Landlock LSM - private headers
  *
- * Copyright © 2016-2018 Mickaël Salaün <mic@digikod.net>
- * Copyright © 2018 ANSSI
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * Copyright © 2016-2019 Mickaël Salaün <mic@digikod.net>
+ * Copyright © 2018-2019 ANSSI
  */
 
 #ifndef _SECURITY_LANDLOCK_COMMON_H
@@ -14,6 +11,7 @@
 
 #include <linux/bpf.h> /* enum bpf_prog_aux */
 #include <linux/filter.h> /* bpf_prog */
+#include <linux/lsm_hooks.h> /* lsm_blob_sizes */
 #include <linux/refcount.h> /* refcount_t */
 #include <uapi/linux/landlock.h> /* enum landlock_hook_type */
 
@@ -21,26 +19,17 @@
 
 /* UAPI bounds and bitmasks */
 
-#define _LANDLOCK_HOOK_LAST LANDLOCK_HOOK_FS_GET
-
-#define _LANDLOCK_OPTION_LAST		LANDLOCK_OPTION_PREVIOUS
-#define _LANDLOCK_OPTION_MASK		((_LANDLOCK_OPTION_LAST << 1ULL) - 1)
+#define _LANDLOCK_HOOK_LAST LANDLOCK_HOOK_FS_WALK
 
 #define _LANDLOCK_TRIGGER_FS_PICK_LAST	LANDLOCK_TRIGGER_FS_PICK_WRITE
 #define _LANDLOCK_TRIGGER_FS_PICK_MASK	((_LANDLOCK_TRIGGER_FS_PICK_LAST << 1ULL) - 1)
 
-struct landlock_chain;
+extern struct lsm_blob_sizes landlock_blob_sizes;
 
-/*
- * @is_last_of_type: in a chain of programs, it marks if this program is the
- *		     last of its type
- */
 struct landlock_prog_list {
 	struct landlock_prog_list *prev;
 	struct bpf_prog *prog;
-	struct landlock_chain *chain;
 	refcount_t usage;
-	u8 is_last_of_type:1;
 };
 
 /**
@@ -57,11 +46,9 @@ struct landlock_prog_list {
  *	   add Landlock programs and if @usage is greater than 1, then the
  *	   thread must duplicate &struct landlock_prog_set to not change the
  *	   children's programs as well.
- * @chain_last: chain of the last prepended program
  * @programs: array of non-NULL &struct landlock_prog_list pointers
  */
 struct landlock_prog_set {
-	struct landlock_chain *chain_last;
 	struct landlock_prog_list *programs[_LANDLOCK_HOOK_LAST];
 	refcount_t usage;
 };

@@ -105,7 +105,7 @@ static int fillonedir(struct dir_context *ctx, const char *name, int namlen,
 	}
 	buf->result++;
 	dirent = buf->dirent;
-	if (!access_ok(VERIFY_WRITE, dirent,
+	if (!access_ok(dirent,
 			(unsigned long)(dirent->d_name + namlen + 1) -
 				(unsigned long)dirent))
 		goto efault;
@@ -221,7 +221,7 @@ SYSCALL_DEFINE3(getdents, unsigned int, fd,
 	};
 	int error;
 
-	if (!access_ok(VERIFY_WRITE, dirent, count))
+	if (!access_ok(dirent, count))
 		return -EFAULT;
 
 	f = fdget_pos(fd);
@@ -292,8 +292,8 @@ efault:
 	return -EFAULT;
 }
 
-SYSCALL_DEFINE3(getdents64, unsigned int, fd,
-		struct linux_dirent64 __user *, dirent, unsigned int, count)
+int ksys_getdents64(unsigned int fd, struct linux_dirent64 __user *dirent,
+		    unsigned int count)
 {
 	struct fd f;
 	struct linux_dirent64 __user * lastdirent;
@@ -304,7 +304,7 @@ SYSCALL_DEFINE3(getdents64, unsigned int, fd,
 	};
 	int error;
 
-	if (!access_ok(VERIFY_WRITE, dirent, count))
+	if (!access_ok(dirent, count))
 		return -EFAULT;
 
 	f = fdget_pos(fd);
@@ -324,6 +324,13 @@ SYSCALL_DEFINE3(getdents64, unsigned int, fd,
 	}
 	fdput_pos(f);
 	return error;
+}
+
+
+SYSCALL_DEFINE3(getdents64, unsigned int, fd,
+		struct linux_dirent64 __user *, dirent, unsigned int, count)
+{
+	return ksys_getdents64(fd, dirent, count);
 }
 
 #ifdef CONFIG_COMPAT
@@ -358,7 +365,7 @@ static int compat_fillonedir(struct dir_context *ctx, const char *name,
 	}
 	buf->result++;
 	dirent = buf->dirent;
-	if (!access_ok(VERIFY_WRITE, dirent,
+	if (!access_ok(dirent,
 			(unsigned long)(dirent->d_name + namlen + 1) -
 				(unsigned long)dirent))
 		goto efault;
@@ -468,7 +475,7 @@ COMPAT_SYSCALL_DEFINE3(getdents, unsigned int, fd,
 	};
 	int error;
 
-	if (!access_ok(VERIFY_WRITE, dirent, count))
+	if (!access_ok(dirent, count))
 		return -EFAULT;
 
 	f = fdget_pos(fd);

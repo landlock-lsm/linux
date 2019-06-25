@@ -1,19 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2017 Priit Laes <plaes@plaes.org>.
  * Copyright (c) 2017 Maxime Ripard.
  * Copyright (c) 2017 Jonathan Liu.
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/clk-provider.h>
+#include <linux/io.h>
 #include <linux/of_address.h>
 
 #include "ccu_common.h"
@@ -1434,8 +1427,16 @@ static void __init sun4i_ccu_init(struct device_node *node,
 		return;
 	}
 
-	/* Force the PLL-Audio-1x divider to 1 */
 	val = readl(reg + SUN4I_PLL_AUDIO_REG);
+
+	/*
+	 * Force VCO and PLL bias current to lowest setting. Higher
+	 * settings interfere with sigma-delta modulation and result
+	 * in audible noise and distortions when using SPDIF or I2S.
+	 */
+	val &= ~GENMASK(25, 16);
+
+	/* Force the PLL-Audio-1x divider to 1 */
 	val &= ~GENMASK(29, 26);
 	writel(val | (1 << 26), reg + SUN4I_PLL_AUDIO_REG);
 

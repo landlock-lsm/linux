@@ -4,7 +4,9 @@
 #include "util.h"
 #include "tests.h"
 #include <errno.h>
+#include <stdio.h>
 #include <linux/kernel.h>
+#include <linux/limits.h>
 
 /* Simulated format definitions. */
 static struct test_format {
@@ -98,7 +100,7 @@ static char *test_format_dir_get(void)
 		struct test_format *format = &test_formats[i];
 		FILE *file;
 
-		snprintf(name, PATH_MAX, "%s/%s", dir, format->name);
+		scnprintf(name, PATH_MAX, "%s/%s", dir, format->name);
 
 		file = fopen(name, "w");
 		if (!file)

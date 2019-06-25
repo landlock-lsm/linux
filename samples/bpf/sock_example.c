@@ -9,10 +9,10 @@
  *   if (value)
  *        (*(u64*)value) += 1;
  *
- * - attaches this program to eth0 raw socket
+ * - attaches this program to loopback interface "lo" raw socket
  *
  * - every second user space reads map[tcp], map[udp], map[icmp] to see
- *   how many packets of given protocol were seen on eth0
+ *   how many packets of given protocol were seen on "lo"
  */
 #include <stdio.h>
 #include <unistd.h>
@@ -26,7 +26,8 @@
 #include <linux/if_ether.h>
 #include <linux/ip.h>
 #include <stddef.h>
-#include "libbpf.h"
+#include <bpf/bpf.h>
+#include "bpf_insn.h"
 #include "sock_example.h"
 
 char bpf_log_buf[BPF_LOG_BUF_SIZE];
@@ -60,8 +61,7 @@ static int test_sock(void)
 	size_t insns_cnt = sizeof(prog) / sizeof(struct bpf_insn);
 
 	prog_fd = bpf_load_program(BPF_PROG_TYPE_SOCKET_FILTER, prog, insns_cnt,
-				   "GPL", 0, bpf_log_buf, BPF_LOG_BUF_SIZE,
-				   NULL);
+				   "GPL", 0, bpf_log_buf, BPF_LOG_BUF_SIZE);
 	if (prog_fd < 0) {
 		printf("failed to load prog '%s'\n", strerror(errno));
 		goto cleanup;
@@ -99,7 +99,7 @@ int main(void)
 {
 	FILE *f;
 
-	f = popen("ping -c5 localhost", "r");
+	f = popen("ping -4 -c5 localhost", "r");
 	(void)f;
 
 	return test_sock();

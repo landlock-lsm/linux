@@ -1,8 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) 2012 CERN (www.cern.ch)
  * Author: Alessandro Rubini <rubini@gnudd.com>
- *
- * Released according to the GNU GPL, version 2 or any later version.
  *
  * This work is part of the White Rabbit project, a research effort led
  * by CERN, the European Institute for Nuclear Research.
@@ -244,7 +243,7 @@ int fmc_device_register_n_gw(struct fmc_device **devs, int n,
 		if (!fmc->carrier_name || !fmc->carrier_data ||
 		    !fmc->device_id) {
 			dev_err(fmc->hwdev,
-				"deivce nr %i: carrier name, "
+				"device nr %i: carrier name, "
 				"data or dev_id not set\n", i);
 			ret = -EINVAL;
 		}

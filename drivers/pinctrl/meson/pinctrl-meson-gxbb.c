@@ -1,15 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Pin controller and GPIO driver for Amlogic Meson GXBB.
  *
  * Copyright (C) 2016 Endless Mobile, Inc.
  * Author: Carlo Caione <carlo@endlessm.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <dt-bindings/gpio/meson-gxbb-gpio.h>
@@ -243,6 +237,8 @@ static const unsigned int i2s_out_ch67_y_pins[]	= { GPIOY_10 };
 
 static const unsigned int spdif_out_y_pins[]	= { GPIOY_12 };
 
+static const unsigned int gen_clk_out_pins[]	= { GPIOY_15 };
+
 static const struct pinctrl_pin_desc meson_gxbb_aobus_pins[] = {
 	MESON_PIN(GPIOAO_0),
 	MESON_PIN(GPIOAO_1),
@@ -453,6 +449,7 @@ static struct meson_pmx_group meson_gxbb_periphs_groups[] = {
 	GROUP(i2s_out_ch45_y,	1,	6),
 	GROUP(i2s_out_ch67_y,	1,	7),
 	GROUP(spdif_out_y,	1,	9),
+	GROUP(gen_clk_out,	6,	15),
 
 	/* Bank Z */
 	GROUP(eth_mdio,		6,	1),
@@ -627,8 +624,8 @@ static const char * const sdio_groups[] = {
 };
 
 static const char * const nand_groups[] = {
-	"nand_ce0", "nand_ce1", "nand_rb0", "nand_ale", "nand_cle",
-	"nand_wen_clk", "nand_ren_wr", "nand_dqs",
+	"emmc_nand_d07", "nand_ce0", "nand_ce1", "nand_rb0", "nand_ale",
+	"nand_cle", "nand_wen_clk", "nand_ren_wr", "nand_dqs",
 };
 
 static const char * const uart_a_groups[] = {
@@ -704,6 +701,10 @@ static const char * const i2s_out_groups[] = {
 
 static const char * const spdif_out_groups[] = {
 	"spdif_out_y",
+};
+
+static const char * const gen_clk_out_groups[] = {
+	"gen_clk_out",
 };
 
 static const char * const gpio_aobus_groups[] = {
@@ -790,6 +791,7 @@ static struct meson_pmx_func meson_gxbb_periphs_functions[] = {
 	FUNCTION(hdmi_i2c),
 	FUNCTION(i2s_out),
 	FUNCTION(spdif_out),
+	FUNCTION(gen_clk_out),
 };
 
 static struct meson_pmx_func meson_gxbb_aobus_functions[] = {
@@ -822,7 +824,7 @@ static struct meson_bank meson_gxbb_periphs_banks[] = {
 
 static struct meson_bank meson_gxbb_aobus_banks[] = {
 	/*   name    first      last       irq    pullen  pull    dir     out     in  */
-	BANK("AO",   GPIOAO_0,  GPIOAO_13, 0, 13, 0,  0,  0, 16,  0,  0,  0, 16,  1,  0),
+	BANK("AO",   GPIOAO_0,  GPIOAO_13, 0, 13, 0,  16, 0, 0,   0,  0,  0, 16,  1,  0),
 };
 
 static struct meson_pinctrl_data meson_gxbb_periphs_pinctrl_data = {

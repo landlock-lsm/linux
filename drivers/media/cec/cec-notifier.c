@@ -1,21 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * cec-notifier.c - notify CEC drivers of physical address changes
  *
  * Copyright 2016 Russell King <rmk+kernel@arm.linux.org.uk>
  * Copyright 2016-2017 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
- *
- * This program is free software; you may redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; version 2 of the License.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
  */
 
 #include <linux/export.h>
@@ -23,6 +11,7 @@
 #include <linux/slab.h>
 #include <linux/list.h>
 #include <linux/kref.h>
+#include <linux/of_platform.h>
 
 #include <media/cec.h>
 #include <media/cec-notifier.h>
@@ -33,6 +22,7 @@ struct cec_notifier {
 	struct list_head head;
 	struct kref kref;
 	struct device *dev;
+	const char *conn;
 	struct cec_adapter *cec_adap;
 	void (*callback)(struct cec_adapter *adap, u16 pa);
 
@@ -42,13 +32,14 @@ struct cec_notifier {
 static LIST_HEAD(cec_notifiers);
 static DEFINE_MUTEX(cec_notifiers_lock);
 
-struct cec_notifier *cec_notifier_get(struct device *dev)
+struct cec_notifier *cec_notifier_get_conn(struct device *dev, const char *conn)
 {
 	struct cec_notifier *n;
 
 	mutex_lock(&cec_notifiers_lock);
 	list_for_each_entry(n, &cec_notifiers, head) {
-		if (n->dev == dev) {
+		if (n->dev == dev &&
+		    (!conn || !strcmp(n->conn, conn))) {
 			kref_get(&n->kref);
 			mutex_unlock(&cec_notifiers_lock);
 			return n;
@@ -58,6 +49,8 @@ struct cec_notifier *cec_notifier_get(struct device *dev)
 	if (!n)
 		goto unlock;
 	n->dev = dev;
+	if (conn)
+		n->conn = kstrdup(conn, GFP_KERNEL);
 	n->phys_addr = CEC_PHYS_ADDR_INVALID;
 	mutex_init(&n->lock);
 	kref_init(&n->kref);
@@ -66,7 +59,7 @@ unlock:
 	mutex_unlock(&cec_notifiers_lock);
 	return n;
 }
-EXPORT_SYMBOL_GPL(cec_notifier_get);
+EXPORT_SYMBOL_GPL(cec_notifier_get_conn);
 
 static void cec_notifier_release(struct kref *kref)
 {
@@ -74,6 +67,7 @@ static void cec_notifier_release(struct kref *kref)
 		container_of(kref, struct cec_notifier, kref);
 
 	list_del(&n->head);
+	kfree(n->conn);
 	kfree(n);
 }
 
@@ -134,3 +128,32 @@ void cec_notifier_unregister(struct cec_notifier *n)
 	cec_notifier_put(n);
 }
 EXPORT_SYMBOL_GPL(cec_notifier_unregister);
+
+struct device *cec_notifier_parse_hdmi_phandle(struct device *dev)
+{
+	struct platform_device *hdmi_pdev;
+	struct device *hdmi_dev = NULL;
+	struct device_node *np;
+
+	np = of_parse_phandle(dev->of_node, "hdmi-phandle", 0);
+
+	if (!np) {
+		dev_err(dev, "Failed to find HDMI node in device tree\n");
+		return ERR_PTR(-ENODEV);
+	}
+	hdmi_pdev = of_find_device_by_node(np);
+	of_node_put(np);
+	if (hdmi_pdev) {
+		hdmi_dev = &hdmi_pdev->dev;
+		/*
+		 * Note that the device struct is only used as a key into the
+		 * cec_notifiers list, it is never actually accessed.
+		 * So we decrement the reference here so we don't leak
+		 * memory.
+		 */
+		put_device(hdmi_dev);
+		return hdmi_dev;
+	}
+	return ERR_PTR(-EPROBE_DEFER);
+}
+EXPORT_SYMBOL_GPL(cec_notifier_parse_hdmi_phandle);

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * OMAP SmartReflex Voltage Control
  *
@@ -11,13 +12,10 @@
  *
  * Copyright (C) 2007 Texas Instruments, Inc.
  * Lesly A M <x0080970@ti.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/interrupt.h>
 #include <linux/clk.h>
 #include <linux/io.h>
@@ -36,7 +34,6 @@
 static LIST_HEAD(sr_list);
 
 static struct omap_sr_class_data *sr_class;
-static struct omap_sr_pmic_data *sr_pmic_data;
 static struct dentry		*sr_dbg_dir;
 
 static inline void sr_write_reg(struct omap_sr *sr, unsigned offset, u32 value)
@@ -132,12 +129,16 @@ static void sr_set_clk_length(struct omap_sr *sr)
 	struct clk *fck;
 	u32 fclk_speed;
 
-	fck = clk_get(&sr->pdev->dev, "fck");
-
+	/* Try interconnect target module fck first if it already exists */
+	fck = clk_get(sr->pdev->dev.parent, "fck");
 	if (IS_ERR(fck)) {
-		dev_err(&sr->pdev->dev, "%s: unable to get fck for device %s\n",
-			__func__, dev_name(&sr->pdev->dev));
-		return;
+		fck = clk_get(&sr->pdev->dev, "fck");
+		if (IS_ERR(fck)) {
+			dev_err(&sr->pdev->dev,
+				"%s: unable to get fck for device %s\n",
+				__func__, dev_name(&sr->pdev->dev));
+			return;
+		}
 	}
 
 	fclk_speed = clk_get_rate(fck);
@@ -775,25 +776,6 @@ void omap_sr_disable_reset_volt(struct voltagedomain *voltdm)
 	sr_class->disable(sr, 1);
 }
 
-/**
- * omap_sr_register_pmic() - API to register pmic specific info.
- * @pmic_data:	The structure containing pmic specific data.
- *
- * This API is to be called from the PMIC specific code to register with
- * smartreflex driver pmic specific info. Currently the only info required
- * is the smartreflex init on the PMIC side.
- */
-void omap_sr_register_pmic(struct omap_sr_pmic_data *pmic_data)
-{
-	if (!pmic_data) {
-		pr_warn("%s: Trying to register NULL PMIC data structure with smartreflex\n",
-			__func__);
-		return;
-	}
-
-	sr_pmic_data = pmic_data;
-}
-
 /* PM Debug FS entries to enable and disable smartreflex. */
 static int omap_sr_autocomp_show(void *data, u64 *val)
 {
@@ -838,7 +820,7 @@ static int omap_sr_autocomp_store(void *data, u64 val)
 DEFINE_SIMPLE_ATTRIBUTE(pm_sr_fops, omap_sr_autocomp_show,
 			omap_sr_autocomp_store, "%llu\n");
 
-static int __init omap_sr_probe(struct platform_device *pdev)
+static int omap_sr_probe(struct platform_device *pdev)
 {
 	struct omap_sr *sr_info;
 	struct omap_sr_data *pdata = pdev->dev.platform_data;
@@ -897,6 +879,12 @@ static int __init omap_sr_probe(struct platform_device *pdev)
 	sr_set_clk_length(sr_info);
 
 	list_add(&sr_info->node, &sr_list);
+
+	ret = pm_runtime_get_sync(&pdev->dev);
+	if (ret < 0) {
+		pm_runtime_put_noidle(&pdev->dev);
+		goto err_list_del;
+	}
 
 	/*
 	 * Call into late init to do initializations that require
@@ -966,12 +954,17 @@ static int __init omap_sr_probe(struct platform_device *pdev)
 
 	}
 
+	pm_runtime_put_sync(&pdev->dev);
+
 	return ret;
 
 err_debugfs:
 	debugfs_remove_recursive(sr_info->dbg_dir);
 err_list_del:
 	list_del(&sr_info->node);
+
+	pm_runtime_put_sync(&pdev->dev);
+
 	return ret;
 }
 
@@ -994,8 +987,7 @@ static int omap_sr_remove(struct platform_device *pdev)
 
 	if (sr_info->autocomp_active)
 		sr_stop_vddautocomp(sr_info);
-	if (sr_info->dbg_dir)
-		debugfs_remove_recursive(sr_info->dbg_dir);
+	debugfs_remove_recursive(sr_info->dbg_dir);
 
 	pm_runtime_disable(&pdev->dev);
 	list_del(&sr_info->node);
@@ -1025,11 +1017,23 @@ static void omap_sr_shutdown(struct platform_device *pdev)
 	return;
 }
 
+static const struct of_device_id omap_sr_match[] = {
+	{ .compatible = "ti,omap3-smartreflex-core", },
+	{ .compatible = "ti,omap3-smartreflex-mpu-iva", },
+	{ .compatible = "ti,omap4-smartreflex-core", },
+	{ .compatible = "ti,omap4-smartreflex-mpu", },
+	{ .compatible = "ti,omap4-smartreflex-iva", },
+	{  },
+};
+MODULE_DEVICE_TABLE(of, omap_sr_match);
+
 static struct platform_driver smartreflex_driver = {
+	.probe		= omap_sr_probe,
 	.remove         = omap_sr_remove,
 	.shutdown	= omap_sr_shutdown,
 	.driver		= {
 		.name	= DRIVER_NAME,
+		.of_match_table	= omap_sr_match,
 	},
 };
 
@@ -1037,18 +1041,7 @@ static int __init sr_init(void)
 {
 	int ret = 0;
 
-	/*
-	 * sr_init is a late init. If by then a pmic specific API is not
-	 * registered either there is no need for anything to be done on
-	 * the PMIC side or somebody has forgotten to register a PMIC
-	 * handler. Warn for the second condition.
-	 */
-	if (sr_pmic_data && sr_pmic_data->sr_pmic_init)
-		sr_pmic_data->sr_pmic_init();
-	else
-		pr_warn("%s: No PMIC hook to init smartreflex\n", __func__);
-
-	ret = platform_driver_probe(&smartreflex_driver, omap_sr_probe);
+	ret = platform_driver_register(&smartreflex_driver);
 	if (ret) {
 		pr_err("%s: platform driver register failed for SR\n",
 		       __func__);

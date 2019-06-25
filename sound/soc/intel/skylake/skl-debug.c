@@ -1,24 +1,16 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  skl-debug.c - Debugfs for skl driver
  *
  *  Copyright (C) 2016-17 Intel Corp
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; version 2 of the License.
- *
- *  This program is distributed in the hope that it will be useful, but
- *  WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  General Public License for more details.
  */
 
 #include <linux/pci.h>
 #include <linux/debugfs.h>
+#include <uapi/sound/skl-tplg-interface.h>
 #include "skl.h"
 #include "skl-sst-dsp.h"
 #include "skl-sst-ipc.h"
-#include "skl-tplg-interface.h"
 #include "skl-topology.h"
 #include "../common/sst-dsp.h"
 #include "../common/sst-dsp-priv.h"
@@ -142,8 +134,8 @@ static ssize_t module_read(struct file *file, char __user *user_buf,
 			mconfig->max_out_queue, ret, false);
 
 	ret += snprintf(buf + ret, MOD_BUF - ret,
-			"Other:\n\tDomain %d\n\tHomogenous Input %s\n\t"
-			"Homogenous Output %s\n\tIn Queue Mask %d\n\t"
+			"Other:\n\tDomain %d\n\tHomogeneous Input %s\n\t"
+			"Homogeneous Output %s\n\tIn Queue Mask %d\n\t"
 			"Out Queue Mask %d\n\tDMA ID %d\n\tMem Pages %d\n\t"
 			"Module Type %d\n\tModule State %d\n",
 			mconfig->domain,
@@ -231,7 +223,7 @@ struct skl_debug *skl_debugfs_init(struct skl *skl)
 
 	/* create the debugfs dir with platform component's debugfs as parent */
 	d->fs = debugfs_create_dir("dsp",
-				   skl->platform->component.debugfs_root);
+				   skl->component->debugfs_root);
 	if (IS_ERR(d->fs) || !d->fs) {
 		dev_err(&skl->pci->dev, "debugfs root creation failed\n");
 		return NULL;

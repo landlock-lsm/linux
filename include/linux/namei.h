@@ -14,19 +14,7 @@ enum { MAX_NESTED_LINKS = 8 };
 /*
  * Type of the last component on LOOKUP_PARENT
  */
-enum namei_type {LAST_NORM, LAST_ROOT, LAST_DOT, LAST_DOTDOT, LAST_BIND};
-
-#ifdef CONFIG_SECURITY
-struct nameidata_lookup {
-	void *security;
-	enum namei_type type;
-};
-
-struct inode;
-
-extern struct nameidata_lookup *current_nameidata_lookup(
-		const struct inode *inode);
-#endif
+enum {LAST_NORM, LAST_ROOT, LAST_DOT, LAST_DOTDOT, LAST_BIND};
 
 /*
  * The bitmask for a lookup event:
@@ -36,6 +24,8 @@ extern struct nameidata_lookup *current_nameidata_lookup(
  *  - internal "there are more path components" flag
  *  - dentry cache is untrusted; force a real lookup
  *  - suppress terminal automount
+ *  - skip revalidation
+ *  - don't fetch xattrs on audit_inode
  */
 #define LOOKUP_FOLLOW		0x0001
 #define LOOKUP_DIRECTORY	0x0002
@@ -45,6 +35,7 @@ extern struct nameidata_lookup *current_nameidata_lookup(
 #define LOOKUP_REVAL		0x0020
 #define LOOKUP_RCU		0x0040
 #define LOOKUP_NO_REVAL		0x0080
+#define LOOKUP_NO_EVAL		0x0100
 
 /*
  * Intent data
@@ -93,6 +84,7 @@ extern void done_path_create(struct path *, struct dentry *);
 extern struct dentry *kern_path_locked(const char *, struct path *);
 extern int kern_path_mountpoint(int, const char *, struct path *, unsigned int);
 
+extern struct dentry *try_lookup_one_len(const char *, struct dentry *, int);
 extern struct dentry *lookup_one_len(const char *, struct dentry *, int);
 extern struct dentry *lookup_one_len_unlocked(const char *, struct dentry *, int);
 

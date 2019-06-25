@@ -56,7 +56,7 @@ static int itimer_one_shot(struct clock_event_device *evt)
 static struct clock_event_device timer_clockevent = {
 	.name			= "posix-timer",
 	.rating			= 250,
-	.cpumask		= cpu_all_mask,
+	.cpumask		= cpu_possible_mask,
 	.features		= CLOCK_EVT_FEAT_PERIODIC |
 				  CLOCK_EVT_FEAT_ONESHOT,
 	.set_state_shutdown	= itimer_shutdown,
@@ -121,12 +121,12 @@ static void __init um_timer_setup(void)
 	clockevents_register_device(&timer_clockevent);
 }
 
-void read_persistent_clock(struct timespec *ts)
+void read_persistent_clock64(struct timespec64 *ts)
 {
 	long long nsecs = os_persistent_clock_emulation();
 
-	set_normalized_timespec(ts, nsecs / NSEC_PER_SEC,
-				nsecs % NSEC_PER_SEC);
+	set_normalized_timespec64(ts, nsecs / NSEC_PER_SEC,
+				  nsecs % NSEC_PER_SEC);
 }
 
 void __init time_init(void)

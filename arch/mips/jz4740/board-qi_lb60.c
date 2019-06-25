@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * linux/arch/mips/jz4740/board-qi_lb60.c
  *
@@ -6,10 +7,6 @@
  * Copyright (c) 2009 Qi Hardware inc.,
  * Author: Xiangfu Liu <xiangfu@qi-hardware.com>
  * Copyright 2010, Lars-Peter Clausen <lars@metafoo.de>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 or later
- * as published by the Free Software Foundation.
  */
 
 #include <linux/kernel.h>
@@ -29,10 +26,11 @@
 #include <linux/power/gpio-charger.h>
 #include <linux/pwm.h>
 
+#include <linux/platform_data/jz4740/jz4740_nand.h>
+
 #include <asm/mach-jz4740/gpio.h>
 #include <asm/mach-jz4740/jz4740_fb.h>
 #include <asm/mach-jz4740/jz4740_mmc.h>
-#include <asm/mach-jz4740/jz4740_nand.h>
 
 #include <linux/regulator/fixed.h>
 #include <linux/regulator/machine.h>
@@ -42,9 +40,6 @@
 #include "clock.h"
 
 /* GPIOs */
-#define QI_LB60_GPIO_SD_CD		JZ_GPIO_PORTD(0)
-#define QI_LB60_GPIO_SD_VCC_EN_N	JZ_GPIO_PORTD(2)
-
 #define QI_LB60_GPIO_KEYOUT(x)		(JZ_GPIO_PORTC(10) + (x))
 #define QI_LB60_GPIO_KEYIN(x)		(JZ_GPIO_PORTD(18) + (x))
 #define QI_LB60_GPIO_KEYIN8		JZ_GPIO_PORTD(26)
@@ -313,25 +308,34 @@ static struct jz4740_fb_platform_data qi_lb60_fb_pdata = {
 	.pixclk_falling_edge = 1,
 };
 
-struct spi_gpio_platform_data spigpio_platform_data = {
-	.sck = JZ_GPIO_PORTC(23),
-	.mosi = JZ_GPIO_PORTC(22),
-	.miso = -1,
+struct spi_gpio_platform_data qi_lb60_spigpio_platform_data = {
 	.num_chipselect = 1,
 };
 
-static struct platform_device spigpio_device = {
+static struct platform_device qi_lb60_spigpio_device = {
 	.name = "spi_gpio",
 	.id   = 1,
 	.dev = {
-		.platform_data = &spigpio_platform_data,
+		.platform_data = &qi_lb60_spigpio_platform_data,
+	},
+};
+
+static struct gpiod_lookup_table qi_lb60_spigpio_gpio_table = {
+	.dev_id         = "spi_gpio",
+	.table          = {
+		GPIO_LOOKUP("GPIOC", 23,
+			    "sck", GPIO_ACTIVE_HIGH),
+		GPIO_LOOKUP("GPIOC", 22,
+			    "mosi", GPIO_ACTIVE_HIGH),
+		GPIO_LOOKUP("GPIOC", 21,
+			    "cs", GPIO_ACTIVE_HIGH),
+		{ },
 	},
 };
 
 static struct spi_board_info qi_lb60_spi_board_info[] = {
 	{
 		.modalias = "ili8960",
-		.controller_data = (void *)JZ_GPIO_PORTC(21),
 		.chip_select = 0,
 		.bus_num = 1,
 		.max_speed_hz = 30 * 1000,
@@ -376,10 +380,16 @@ static struct platform_device qi_lb60_gpio_keys = {
 };
 
 static struct jz4740_mmc_platform_data qi_lb60_mmc_pdata = {
-	.gpio_card_detect	= QI_LB60_GPIO_SD_CD,
-	.gpio_read_only		= -1,
-	.gpio_power		= QI_LB60_GPIO_SD_VCC_EN_N,
-	.power_active_low	= 1,
+	/* Intentionally left blank */
+};
+
+static struct gpiod_lookup_table qi_lb60_mmc_gpio_table = {
+	.dev_id = "jz4740-mmc.0",
+	.table = {
+		GPIO_LOOKUP("GPIOD", 0, "cd", GPIO_ACTIVE_HIGH),
+		GPIO_LOOKUP("GPIOD", 2, "power", GPIO_ACTIVE_LOW),
+		{ },
+	},
 };
 
 /* beeper */
@@ -435,7 +445,7 @@ static struct platform_device *jz_platform_devices[] __initdata = {
 	&jz4740_mmc_device,
 	&jz4740_nand_device,
 	&qi_lb60_keypad,
-	&spigpio_device,
+	&qi_lb60_spigpio_device,
 	&jz4740_framebuffer_device,
 	&jz4740_pcm_device,
 	&jz4740_i2s_device,
@@ -489,6 +499,8 @@ static int __init qi_lb60_init_platform_devices(void)
 
 	gpiod_add_lookup_table(&qi_lb60_audio_gpio_table);
 	gpiod_add_lookup_table(&qi_lb60_nand_gpio_table);
+	gpiod_add_lookup_table(&qi_lb60_spigpio_gpio_table);
+	gpiod_add_lookup_table(&qi_lb60_mmc_gpio_table);
 
 	spi_register_board_info(qi_lb60_spi_board_info,
 				ARRAY_SIZE(qi_lb60_spi_board_info));

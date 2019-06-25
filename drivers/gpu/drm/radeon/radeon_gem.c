@@ -34,8 +34,6 @@ void radeon_gem_object_free(struct drm_gem_object *gobj)
 	struct radeon_bo *robj = gem_to_radeon_bo(gobj);
 
 	if (robj) {
-		if (robj->gem_base.import_attach)
-			drm_prime_gem_destroy(&robj->gem_base, robj->tbo.sg);
 		radeon_mn_unregister(robj);
 		radeon_bo_unref(&robj);
 	}
@@ -554,7 +552,7 @@ static void radeon_gem_va_update_vm(struct radeon_device *rdev,
 	INIT_LIST_HEAD(&list);
 
 	tv.bo = &bo_va->bo->tbo;
-	tv.shared = true;
+	tv.num_shared = 1;
 	list_add(&tv.head, &list);
 
 	vm_bos = radeon_vm_get_bos(rdev, bo_va->vm, &list);

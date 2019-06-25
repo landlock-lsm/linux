@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
  *  S390 version
- *    Copyright IBM Corp. 1999, 2010
+ *    Copyright IBM Corp. 1999, 2017
  */
 #ifndef _ASM_S390_SETUP_H
 #define _ASM_S390_SETUP_H
@@ -9,8 +9,13 @@
 #include <linux/const.h>
 #include <uapi/asm/setup.h>
 
-
+#define EP_OFFSET		0x10008
+#define EP_STRING		"S390EP"
 #define PARMAREA		0x10400
+#define EARLY_SCCB_OFFSET	0x11000
+#define HEAD_END		0x12000
+
+#define EARLY_SCCB_SIZE		PAGE_SIZE
 
 /*
  * Machine features detected in early.c
@@ -25,7 +30,6 @@
 #define MACHINE_FLAG_DIAG44	_BITUL(6)
 #define MACHINE_FLAG_EDAT1	_BITUL(7)
 #define MACHINE_FLAG_EDAT2	_BITUL(8)
-#define MACHINE_FLAG_LPP	_BITUL(9)
 #define MACHINE_FLAG_TOPOLOGY	_BITUL(10)
 #define MACHINE_FLAG_TE		_BITUL(11)
 #define MACHINE_FLAG_TLB_LC	_BITUL(12)
@@ -38,23 +42,46 @@
 #define LPP_MAGIC		_BITUL(31)
 #define LPP_PID_MASK		_AC(0xffffffff, UL)
 
+/* Offsets to entry points in kernel/head.S  */
+
+#define STARTUP_NORMAL_OFFSET	0x10000
+#define STARTUP_KDUMP_OFFSET	0x10010
+
+/* Offsets to parameters in kernel/head.S  */
+
+#define IPL_DEVICE_OFFSET	0x10400
+#define INITRD_START_OFFSET	0x10408
+#define INITRD_SIZE_OFFSET	0x10410
+#define OLDMEM_BASE_OFFSET	0x10418
+#define OLDMEM_SIZE_OFFSET	0x10420
+#define COMMAND_LINE_OFFSET	0x10480
+
 #ifndef __ASSEMBLY__
 
 #include <asm/lowcore.h>
 #include <asm/types.h>
 
-#define IPL_DEVICE        (*(unsigned long *)  (0x10400))
-#define INITRD_START      (*(unsigned long *)  (0x10408))
-#define INITRD_SIZE       (*(unsigned long *)  (0x10410))
-#define OLDMEM_BASE	  (*(unsigned long *)  (0x10418))
-#define OLDMEM_SIZE	  (*(unsigned long *)  (0x10420))
-#define COMMAND_LINE      ((char *)            (0x10480))
+#define IPL_DEVICE	(*(unsigned long *)  (IPL_DEVICE_OFFSET))
+#define INITRD_START	(*(unsigned long *)  (INITRD_START_OFFSET))
+#define INITRD_SIZE	(*(unsigned long *)  (INITRD_SIZE_OFFSET))
+#define OLDMEM_BASE	(*(unsigned long *)  (OLDMEM_BASE_OFFSET))
+#define OLDMEM_SIZE	(*(unsigned long *)  (OLDMEM_SIZE_OFFSET))
+#define COMMAND_LINE	((char *)	     (COMMAND_LINE_OFFSET))
 
+struct parmarea {
+	unsigned long ipl_device;			/* 0x10400 */
+	unsigned long initrd_start;			/* 0x10408 */
+	unsigned long initrd_size;			/* 0x10410 */
+	unsigned long oldmem_base;			/* 0x10418 */
+	unsigned long oldmem_size;			/* 0x10420 */
+	char pad1[0x10480 - 0x10428];			/* 0x10428 - 0x10480 */
+	char command_line[ARCH_COMMAND_LINE_SIZE];	/* 0x10480 */
+};
+
+extern int noexec_disabled;
 extern int memory_end_set;
 extern unsigned long memory_end;
 extern unsigned long max_physmem_end;
-
-extern void detect_memory_memblock(void);
 
 #define MACHINE_IS_VM		(S390_lowcore.machine_flags & MACHINE_FLAG_VM)
 #define MACHINE_IS_KVM		(S390_lowcore.machine_flags & MACHINE_FLAG_KVM)
@@ -66,7 +93,6 @@ extern void detect_memory_memblock(void);
 #define MACHINE_HAS_DIAG44	(S390_lowcore.machine_flags & MACHINE_FLAG_DIAG44)
 #define MACHINE_HAS_EDAT1	(S390_lowcore.machine_flags & MACHINE_FLAG_EDAT1)
 #define MACHINE_HAS_EDAT2	(S390_lowcore.machine_flags & MACHINE_FLAG_EDAT2)
-#define MACHINE_HAS_LPP		(S390_lowcore.machine_flags & MACHINE_FLAG_LPP)
 #define MACHINE_HAS_TOPOLOGY	(S390_lowcore.machine_flags & MACHINE_FLAG_TOPOLOGY)
 #define MACHINE_HAS_TE		(S390_lowcore.machine_flags & MACHINE_FLAG_TE)
 #define MACHINE_HAS_TLB_LC	(S390_lowcore.machine_flags & MACHINE_FLAG_TLB_LC)
@@ -121,14 +147,20 @@ extern void (*_machine_restart)(char *command);
 extern void (*_machine_halt)(void);
 extern void (*_machine_power_off)(void);
 
+extern unsigned long __kaslr_offset;
+static inline unsigned long kaslr_offset(void)
+{
+	return __kaslr_offset;
+}
+
 #else /* __ASSEMBLY__ */
 
-#define IPL_DEVICE        0x10400
-#define INITRD_START      0x10408
-#define INITRD_SIZE       0x10410
-#define OLDMEM_BASE	  0x10418
-#define OLDMEM_SIZE	  0x10420
-#define COMMAND_LINE      0x10480
+#define IPL_DEVICE	(IPL_DEVICE_OFFSET)
+#define INITRD_START	(INITRD_START_OFFSET)
+#define INITRD_SIZE	(INITRD_SIZE_OFFSET)
+#define OLDMEM_BASE	(OLDMEM_BASE_OFFSET)
+#define OLDMEM_SIZE	(OLDMEM_SIZE_OFFSET)
+#define COMMAND_LINE	(COMMAND_LINE_OFFSET)
 
 #endif /* __ASSEMBLY__ */
 #endif /* _ASM_S390_SETUP_H */

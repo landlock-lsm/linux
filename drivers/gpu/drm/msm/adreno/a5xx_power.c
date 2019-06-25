@@ -1,14 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* Copyright (c) 2016 The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
  */
 
 #include <linux/pm_opp.h>
@@ -261,7 +252,6 @@ void a5xx_gpmu_ucode_init(struct msm_gpu *gpu)
 	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
 	struct a5xx_gpu *a5xx_gpu = to_a5xx_gpu(adreno_gpu);
 	struct drm_device *drm = gpu->dev;
-	const struct firmware *fw;
 	uint32_t dwords = 0, offset = 0, bosize;
 	unsigned int *data, *ptr, *cmds;
 	unsigned int cmds_size;
@@ -269,15 +259,7 @@ void a5xx_gpmu_ucode_init(struct msm_gpu *gpu)
 	if (a5xx_gpu->gpmu_bo)
 		return;
 
-	/* Get the firmware */
-	fw = adreno_request_fw(adreno_gpu, adreno_gpu->info->gpmufw);
-	if (IS_ERR(fw)) {
-		DRM_ERROR("%s: Could not get GPMU firmware. GPMU will not be active\n",
-			gpu->name);
-		return;
-	}
-
-	data = (unsigned int *) fw->data;
+	data = (unsigned int *) adreno_gpu->fw[ADRENO_FW_GPMU]->data;
 
 	/*
 	 * The first dword is the size of the remaining data in dwords. Use it
@@ -285,12 +267,14 @@ void a5xx_gpmu_ucode_init(struct msm_gpu *gpu)
 	 * the firmware that we read
 	 */
 
-	if (fw->size < 8 || (data[0] < 2) || (data[0] >= (fw->size >> 2)))
-		goto out;
+	if (adreno_gpu->fw[ADRENO_FW_GPMU]->size < 8 ||
+		(data[0] < 2) || (data[0] >=
+			(adreno_gpu->fw[ADRENO_FW_GPMU]->size >> 2)))
+		return;
 
 	/* The second dword is an ID - look for 2 (GPMU_FIRMWARE_ID) */
 	if (data[1] != 2)
-		goto out;
+		return;
 
 	cmds = data + data[2] + 3;
 	cmds_size = data[0] - data[2] - 2;
@@ -305,7 +289,9 @@ void a5xx_gpmu_ucode_init(struct msm_gpu *gpu)
 		MSM_BO_UNCACHED | MSM_BO_GPU_READONLY, gpu->aspace,
 		&a5xx_gpu->gpmu_bo, &a5xx_gpu->gpmu_iova);
 	if (IS_ERR(ptr))
-		goto err;
+		return;
+
+	msm_gem_object_set_name(a5xx_gpu->gpmu_bo, "gpmufw");
 
 	while (cmds_size > 0) {
 		int i;
@@ -324,20 +310,4 @@ void a5xx_gpmu_ucode_init(struct msm_gpu *gpu)
 
 	msm_gem_put_vaddr(a5xx_gpu->gpmu_bo);
 	a5xx_gpu->gpmu_dwords = dwords;
-
-	goto out;
-
-err:
-	if (a5xx_gpu->gpmu_iova)
-		msm_gem_put_iova(a5xx_gpu->gpmu_bo, gpu->aspace);
-	if (a5xx_gpu->gpmu_bo)
-		drm_gem_object_unreference(a5xx_gpu->gpmu_bo);
-
-	a5xx_gpu->gpmu_bo = NULL;
-	a5xx_gpu->gpmu_iova = 0;
-	a5xx_gpu->gpmu_dwords = 0;
-
-out:
-	/* No need to keep that firmware laying around anymore */
-	release_firmware(fw);
 }

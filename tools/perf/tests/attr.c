@@ -170,8 +170,8 @@ static int run_dir(const char *d, const char *perf)
 	if (verbose > 0)
 		vcnt++;
 
-	snprintf(cmd, 3*PATH_MAX, PYTHON " %s/attr.py -d %s/attr/ -p %s %.*s",
-		 d, d, perf, vcnt, v);
+	scnprintf(cmd, 3*PATH_MAX, PYTHON " %s/attr.py -d %s/attr/ -p %s %.*s",
+		  d, d, perf, vcnt, v);
 
 	return system(cmd) ? TEST_FAIL : TEST_OK;
 }
@@ -182,7 +182,7 @@ int test__attr(struct test *test __maybe_unused, int subtest __maybe_unused)
 	char path_perf[PATH_MAX];
 	char path_dir[PATH_MAX];
 
-	/* First try developement tree tests. */
+	/* First try development tree tests. */
 	if (!lstat("./tests", &st))
 		return run_dir("./tests", "./perf");
 

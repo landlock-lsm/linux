@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 
 #include <linux/ceph/ceph_debug.h>
 #include <linux/backing-dev.h>
@@ -54,7 +55,7 @@ static const struct kernel_param_ops param_ops_supported_features = {
 	.get = param_get_supported_features,
 };
 module_param_cb(supported_features, &param_ops_supported_features, NULL,
-		S_IRUGO);
+		0444);
 
 const char *ceph_msg_type_name(int type)
 {
@@ -72,6 +73,7 @@ const char *ceph_msg_type_name(int type)
 	case CEPH_MSG_MON_GET_VERSION: return "mon_get_version";
 	case CEPH_MSG_MON_GET_VERSION_REPLY: return "mon_get_version_reply";
 	case CEPH_MSG_MDS_MAP: return "mds_map";
+	case CEPH_MSG_FS_MAP_USER: return "fs_map_user";
 	case CEPH_MSG_CLIENT_SESSION: return "client_session";
 	case CEPH_MSG_CLIENT_RECONNECT: return "client_reconnect";
 	case CEPH_MSG_CLIENT_REQUEST: return "client_request";
@@ -79,8 +81,13 @@ const char *ceph_msg_type_name(int type)
 	case CEPH_MSG_CLIENT_REPLY: return "client_reply";
 	case CEPH_MSG_CLIENT_CAPS: return "client_caps";
 	case CEPH_MSG_CLIENT_CAPRELEASE: return "client_cap_release";
+	case CEPH_MSG_CLIENT_QUOTA: return "client_quota";
 	case CEPH_MSG_CLIENT_SNAP: return "client_snap";
 	case CEPH_MSG_CLIENT_LEASE: return "client_lease";
+	case CEPH_MSG_POOLOP_REPLY: return "poolop_reply";
+	case CEPH_MSG_POOLOP: return "poolop";
+	case CEPH_MSG_MON_COMMAND: return "mon_command";
+	case CEPH_MSG_MON_COMMAND_ACK: return "mon_command_ack";
 	case CEPH_MSG_OSD_MAP: return "osd_map";
 	case CEPH_MSG_OSD_OP: return "osd_op";
 	case CEPH_MSG_OSD_OPREPLY: return "osd_opreply";
@@ -217,7 +224,7 @@ static int parse_fsid(const char *str, struct ceph_fsid *fsid)
 
 	if (i == 16)
 		err = 0;
-	dout("parse_fsid ret %d got fsid %pU", err, fsid);
+	dout("parse_fsid ret %d got fsid %pU\n", err, fsid);
 	return err;
 }
 
@@ -249,6 +256,7 @@ enum {
 	Opt_nocephx_sign_messages,
 	Opt_tcp_nodelay,
 	Opt_notcp_nodelay,
+	Opt_abort_on_full,
 };
 
 static match_table_t opt_tokens = {
@@ -274,6 +282,7 @@ static match_table_t opt_tokens = {
 	{Opt_nocephx_sign_messages, "nocephx_sign_messages"},
 	{Opt_tcp_nodelay, "tcp_nodelay"},
 	{Opt_notcp_nodelay, "notcp_nodelay"},
+	{Opt_abort_on_full, "abort_on_full"},
 	{-1, NULL}
 };
 
@@ -298,7 +307,7 @@ static int get_secret(struct ceph_crypto_key *dst, const char *name) {
 	struct ceph_crypto_key *ckey;
 
 	ukey = request_key(&key_type_ceph, name, NULL);
-	if (!ukey || IS_ERR(ukey)) {
+	if (IS_ERR(ukey)) {
 		/* request_key errors don't map nicely to mount(2)
 		   errors; don't even try, but still printk */
 		key_err = PTR_ERR(ukey);
@@ -373,7 +382,7 @@ ceph_parse_options(char *options, const char *dev_name,
 
 	/* parse mount options */
 	while ((c = strsep(&options, ",")) != NULL) {
-		int token, intval, ret;
+		int token, intval;
 		if (!*c)
 			continue;
 		err = -EINVAL;
@@ -388,11 +397,10 @@ ceph_parse_options(char *options, const char *dev_name,
 			continue;
 		}
 		if (token < Opt_last_int) {
-			ret = match_int(&argstr[0], &intval);
-			if (ret < 0) {
-				pr_err("bad mount option arg (not int) "
-				       "at '%s'\n", c);
-				continue;
+			err = match_int(&argstr[0], &intval);
+			if (err < 0) {
+				pr_err("bad option arg (not int) at '%s'\n", c);
+				goto out;
 			}
 			dout("got int token %d val %d\n", token, intval);
 		} else if (token > Opt_last_int && token < Opt_last_string) {
@@ -418,6 +426,7 @@ ceph_parse_options(char *options, const char *dev_name,
 				opt->flags |= CEPH_OPT_FSID;
 			break;
 		case Opt_name:
+			kfree(opt->name);
 			opt->name = kstrndup(argstr[0].from,
 					      argstr[0].to-argstr[0].from,
 					      GFP_KERNEL);
@@ -427,6 +436,9 @@ ceph_parse_options(char *options, const char *dev_name,
 			}
 			break;
 		case Opt_secret:
+			ceph_crypto_key_destroy(opt->key);
+			kfree(opt->key);
+
 		        opt->key = kzalloc(sizeof(*opt->key), GFP_KERNEL);
 			if (!opt->key) {
 				err = -ENOMEM;
@@ -437,6 +449,9 @@ ceph_parse_options(char *options, const char *dev_name,
 				goto out;
 			break;
 		case Opt_key:
+			ceph_crypto_key_destroy(opt->key);
+			kfree(opt->key);
+
 		        opt->key = kzalloc(sizeof(*opt->key), GFP_KERNEL);
 			if (!opt->key) {
 				err = -ENOMEM;
@@ -523,6 +538,10 @@ ceph_parse_options(char *options, const char *dev_name,
 			opt->flags &= ~CEPH_OPT_TCP_NODELAY;
 			break;
 
+		case Opt_abort_on_full:
+			opt->flags |= CEPH_OPT_ABORT_ON_FULL;
+			break;
+
 		default:
 			BUG_ON(token);
 		}
@@ -537,7 +556,8 @@ out:
 }
 EXPORT_SYMBOL(ceph_parse_options);
 
-int ceph_print_client_options(struct seq_file *m, struct ceph_client *client)
+int ceph_print_client_options(struct seq_file *m, struct ceph_client *client,
+			      bool show_all)
 {
 	struct ceph_options *opt = client->options;
 	size_t pos = m->count;
@@ -562,6 +582,8 @@ int ceph_print_client_options(struct seq_file *m, struct ceph_client *client)
 		seq_puts(m, "nocephx_sign_messages,");
 	if ((opt->flags & CEPH_OPT_TCP_NODELAY) == 0)
 		seq_puts(m, "notcp_nodelay,");
+	if (show_all && (opt->flags & CEPH_OPT_ABORT_ON_FULL))
+		seq_puts(m, "abort_on_full,");
 
 	if (opt->mount_timeout != CEPH_MOUNT_TIMEOUT_DEFAULT)
 		seq_printf(m, "mount_timeout=%d,",
@@ -717,7 +739,6 @@ int __ceph_open_session(struct ceph_client *client, unsigned long started)
 }
 EXPORT_SYMBOL(__ceph_open_session);
 
-
 int ceph_open_session(struct ceph_client *client)
 {
 	int ret;
@@ -733,6 +754,23 @@ int ceph_open_session(struct ceph_client *client)
 }
 EXPORT_SYMBOL(ceph_open_session);
 
+int ceph_wait_for_latest_osdmap(struct ceph_client *client,
+				unsigned long timeout)
+{
+	u64 newest_epoch;
+	int ret;
+
+	ret = ceph_monc_get_version(&client->monc, "osdmap", &newest_epoch);
+	if (ret)
+		return ret;
+
+	if (client->osdc.osdmap->epoch >= newest_epoch)
+		return 0;
+
+	ceph_osdc_maybe_request_map(&client->osdc);
+	return ceph_monc_wait_osdmap(&client->monc, newest_epoch, timeout);
+}
+EXPORT_SYMBOL(ceph_wait_for_latest_osdmap);
 
 static int __init init_ceph_lib(void)
 {

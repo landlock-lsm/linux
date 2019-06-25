@@ -1,12 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * Landlock - UAPI headers
  *
- * Copyright © 2017-2018 Mickaël Salaün <mic@digikod.net>
- * Copyright © 2018 ANSSI
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * Copyright © 2017-2019 Mickaël Salaün <mic@digikod.net>
+ * Copyright © 2018-2019 ANSSI
  */
 
 #ifndef _UAPI__LINUX_LANDLOCK_H__
@@ -26,22 +23,11 @@
  * @LANDLOCK_HOOK_FS_PICK: called for the last element of a file path
  * @LANDLOCK_HOOK_FS_WALK: called for each directory of a file path (excluding
  *			   the directory passed to fs_pick, if any)
- * @LANDLOCK_HOOK_FS_GET: called for file opening or receiveing or when
- *			  changing directory or root
  */
 enum landlock_hook_type {
 	LANDLOCK_HOOK_FS_PICK = 1,
 	LANDLOCK_HOOK_FS_WALK,
-	LANDLOCK_HOOK_FS_GET,
 };
-
-/**
- * DOC: landlock_subtype_options
- *
- * - %LANDLOCK_OPTION_PREVIOUS: specify a previous file descriptor in the
- *			        dedicated field
- */
-#define LANDLOCK_OPTION_PREVIOUS			(1ULL << 0)
 
 /**
  * DOC: landlock_triggers
@@ -100,56 +86,24 @@ enum landlock_hook_type {
 #define LANDLOCK_TRIGGER_FS_PICK_UNLINK			(1ULL << 22)
 #define LANDLOCK_TRIGGER_FS_PICK_WRITE			(1ULL << 23)
 
-/* inode_lookup */
-/* LOOKUP_ROOT can only be seen for the first fs_walk call */
-#define LANDLOCK_CTX_FS_WALK_INODE_LOOKUP_ROOT		1
-#define LANDLOCK_CTX_FS_WALK_INODE_LOOKUP_DOT		2
-#define LANDLOCK_CTX_FS_WALK_INODE_LOOKUP_DOTDOT	3
-
 /**
  * struct landlock_ctx_fs_pick - context accessible to a fs_pick program
  *
- * @cookie: value saved and restored between calls to chained programs
- * @chain: chain pointer to identify the current chain
- * @inode: pointer to the current kernel object that can be used with
- *	   bpf_inode_get_tag()
- * @inode_lookup: bitflags to identify how we got there
+ * @inode: pointer to the current kernel object that can be used to compare
+ *         inodes from an inode map.
  */
 struct landlock_ctx_fs_pick {
-	__u64 cookie;
-	__u64 chain;
 	__u64 inode;
-	__u8 inode_lookup;
 };
 
 /**
  * struct landlock_ctx_fs_walk - context accessible to a fs_walk program
  *
- * @cookie: value saved and restored between calls to chained programs
- * @chain: chain pointer to identify the current chain
- * @inode: pointer to the current kernel object that can be used with
- *	   bpf_inode_get_tag()
- * @inode_lookup: bitflags to identify how we got there
+ * @inode: pointer to the current kernel object that can be used to compare
+ *         inodes from an inode map.
  */
 struct landlock_ctx_fs_walk {
-	__u64 cookie;
-	__u64 chain;
 	__u64 inode;
-	__u8 inode_lookup;
-};
-
-/**
- * struct landlock_ctx_fs_get - context accessible to a fs_get program
- *
- * @cookie: value saved and restored between calls to chained programs
- * @chain: chain pointer to identify the current chain
- * @tag_object: pointer that can be used to tag a file/inode with
- *		bpf_landlock_set_tag()
- */
-struct landlock_ctx_fs_get {
-	__u64 cookie;
-	__u64 chain;
-	__u64 tag_object;
 };
 
 #endif /* _UAPI__LINUX_LANDLOCK_H__ */

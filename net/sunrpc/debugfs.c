@@ -33,7 +33,7 @@ tasks_show(struct seq_file *f, void *v)
 
 	seq_printf(f, "%5u %04x %6d 0x%x 0x%x %8ld %ps %sv%u %s a:%ps q:%s\n",
 		task->tk_pid, task->tk_flags, task->tk_status,
-		clnt->cl_clid, xid, task->tk_timeout, task->tk_ops,
+		clnt->cl_clid, xid, rpc_task_timeout(task), task->tk_ops,
 		clnt->cl_program->name, clnt->cl_vers, rpc_proc_name(task),
 		task->tk_action, rpc_waitq);
 	return 0;
@@ -139,14 +139,14 @@ rpc_clnt_debugfs_register(struct rpc_clnt *clnt)
 		return;
 
 	/* make tasks file */
-	if (!debugfs_create_file("tasks", S_IFREG | S_IRUSR, clnt->cl_debugfs,
+	if (!debugfs_create_file("tasks", S_IFREG | 0400, clnt->cl_debugfs,
 				 clnt, &tasks_fops))
 		goto out_err;
 
 	rcu_read_lock();
 	xprt = rcu_dereference(clnt->cl_xprt);
 	/* no "debugfs" dentry? Don't bother with the symlink. */
-	if (!xprt->debugfs) {
+	if (IS_ERR_OR_NULL(xprt->debugfs)) {
 		rcu_read_unlock();
 		return;
 	}
@@ -241,7 +241,7 @@ rpc_xprt_debugfs_register(struct rpc_xprt *xprt)
 		return;
 
 	/* make tasks file */
-	if (!debugfs_create_file("info", S_IFREG | S_IRUSR, xprt->debugfs,
+	if (!debugfs_create_file("info", S_IFREG | 0400, xprt->debugfs,
 				 xprt, &xprt_info_fops)) {
 		debugfs_remove_recursive(xprt->debugfs);
 		xprt->debugfs = NULL;
@@ -317,7 +317,7 @@ inject_fault_dir(struct dentry *topdir)
 	if (!faultdir)
 		return NULL;
 
-	if (!debugfs_create_file("disconnect", S_IFREG | S_IRUSR, faultdir,
+	if (!debugfs_create_file("disconnect", S_IFREG | 0400, faultdir,
 				 NULL, &fault_disconnect_fops))
 		return NULL;
 

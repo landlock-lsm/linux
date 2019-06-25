@@ -28,8 +28,9 @@
 #include <fcntl.h>
 
 #include <linux/bpf.h>
+#include <bpf/bpf.h>
 
-#include "libbpf.h"
+#include "bpf_insn.h"
 
 enum {
 	MAP_KEY_PACKETS,
@@ -72,7 +73,7 @@ static int prog_load(int map_fd, int verdict)
 
 	return bpf_load_program(BPF_PROG_TYPE_CGROUP_SKB,
 				prog, insns_cnt, "GPL", 0,
-				bpf_log_buf, BPF_LOG_BUF_SIZE, NULL);
+				bpf_log_buf, BPF_LOG_BUF_SIZE);
 }
 
 static int usage(const char *argv0)

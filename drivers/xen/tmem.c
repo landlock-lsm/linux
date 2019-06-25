@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Xen implementation for transcendent memory (tmem)
  *
@@ -283,6 +284,10 @@ static int tmem_frontswap_store(unsigned type, pgoff_t offset,
 	u32 ind = (u32)offset;
 	int pool = tmem_frontswap_poolid;
 	int ret;
+
+	/* THP isn't supported */
+	if (PageTransHuge(page))
+		return -1;
 
 	if (pool < 0)
 		return -1;

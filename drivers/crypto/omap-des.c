@@ -1,13 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Support for OMAP DES and Triple DES HW acceleration.
  *
  * Copyright (c) 2013 Texas Instruments Incorporated
  * Author: Joel Fernandes <joelf@ti.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
- *
  */
 
 #define pr_fmt(fmt) "%s: " fmt, __func__
@@ -86,6 +82,7 @@
 #define FLAGS_OUT_DATA_ST_SHIFT	10
 
 struct omap_des_ctx {
+	struct crypto_engine_ctx enginectx;
 	struct omap_des_dev *dd;
 
 	int		keylen;
@@ -498,7 +495,7 @@ static void omap_des_finish_req(struct omap_des_dev *dd, int err)
 
 	pr_debug("err: %d\n", err);
 
-	crypto_finalize_cipher_request(dd->engine, req, err);
+	crypto_finalize_ablkcipher_request(dd->engine, req, err);
 
 	pm_runtime_mark_last_busy(dd->dev);
 	pm_runtime_put_autosuspend(dd->dev);
@@ -520,14 +517,15 @@ static int omap_des_handle_queue(struct omap_des_dev *dd,
 				 struct ablkcipher_request *req)
 {
 	if (req)
-		return crypto_transfer_cipher_request_to_engine(dd->engine, req);
+		return crypto_transfer_ablkcipher_request_to_engine(dd->engine, req);
 
 	return 0;
 }
 
 static int omap_des_prepare_req(struct crypto_engine *engine,
-				struct ablkcipher_request *req)
+				void *areq)
 {
+	struct ablkcipher_request *req = container_of(areq, struct ablkcipher_request, base);
 	struct omap_des_ctx *ctx = crypto_ablkcipher_ctx(
 			crypto_ablkcipher_reqtfm(req));
 	struct omap_des_dev *dd = omap_des_find_dev(ctx);
@@ -582,8 +580,9 @@ static int omap_des_prepare_req(struct crypto_engine *engine,
 }
 
 static int omap_des_crypt_req(struct crypto_engine *engine,
-			      struct ablkcipher_request *req)
+			      void *areq)
 {
+	struct ablkcipher_request *req = container_of(areq, struct ablkcipher_request, base);
 	struct omap_des_ctx *ctx = crypto_ablkcipher_ctx(
 			crypto_ablkcipher_reqtfm(req));
 	struct omap_des_dev *dd = omap_des_find_dev(ctx);
@@ -653,13 +652,10 @@ static int omap_des_setkey(struct crypto_ablkcipher *cipher, const u8 *key,
 	struct omap_des_ctx *ctx = crypto_ablkcipher_ctx(cipher);
 	struct crypto_tfm *tfm = crypto_ablkcipher_tfm(cipher);
 
-	if (keylen != DES_KEY_SIZE && keylen != (3*DES_KEY_SIZE))
-		return -EINVAL;
-
 	pr_debug("enter, keylen: %d\n", keylen);
 
 	/* Do we need to test against weak key? */
-	if (tfm->crt_flags & CRYPTO_TFM_REQ_WEAK_KEY) {
+	if (tfm->crt_flags & CRYPTO_TFM_REQ_FORBID_WEAK_KEYS) {
 		u32 tmp[DES_EXPKEY_WORDS];
 		int ret = des_ekey(tmp, key);
 
@@ -667,6 +663,28 @@ static int omap_des_setkey(struct crypto_ablkcipher *cipher, const u8 *key,
 			tfm->crt_flags |= CRYPTO_TFM_RES_WEAK_KEY;
 			return -EINVAL;
 		}
+	}
+
+	memcpy(ctx->key, key, keylen);
+	ctx->keylen = keylen;
+
+	return 0;
+}
+
+static int omap_des3_setkey(struct crypto_ablkcipher *cipher, const u8 *key,
+			   unsigned int keylen)
+{
+	struct omap_des_ctx *ctx = crypto_ablkcipher_ctx(cipher);
+	u32 flags;
+	int err;
+
+	pr_debug("enter, keylen: %d\n", keylen);
+
+	flags = crypto_ablkcipher_get_flags(cipher);
+	err = __des3_verify_key(&flags, key);
+	if (unlikely(err)) {
+		crypto_ablkcipher_set_flags(cipher, flags);
+		return err;
 	}
 
 	memcpy(ctx->key, key, keylen);
@@ -695,11 +713,22 @@ static int omap_des_cbc_decrypt(struct ablkcipher_request *req)
 	return omap_des_crypt(req, FLAGS_CBC);
 }
 
+static int omap_des_prepare_req(struct crypto_engine *engine,
+				void *areq);
+static int omap_des_crypt_req(struct crypto_engine *engine,
+			      void *areq);
+
 static int omap_des_cra_init(struct crypto_tfm *tfm)
 {
+	struct omap_des_ctx *ctx = crypto_tfm_ctx(tfm);
+
 	pr_debug("enter\n");
 
 	tfm->crt_ablkcipher.reqsize = sizeof(struct omap_des_reqctx);
+
+	ctx->enginectx.op.prepare_request = omap_des_prepare_req;
+	ctx->enginectx.op.unprepare_request = NULL;
+	ctx->enginectx.op.do_one_request = omap_des_crypt_req;
 
 	return 0;
 }
@@ -774,7 +803,7 @@ static struct crypto_alg algs_ecb_cbc[] = {
 	.cra_u.ablkcipher = {
 		.min_keysize	= 3*DES_KEY_SIZE,
 		.max_keysize	= 3*DES_KEY_SIZE,
-		.setkey		= omap_des_setkey,
+		.setkey		= omap_des3_setkey,
 		.encrypt	= omap_des_ecb_encrypt,
 		.decrypt	= omap_des_ecb_decrypt,
 	}
@@ -797,7 +826,7 @@ static struct crypto_alg algs_ecb_cbc[] = {
 		.min_keysize	= 3*DES_KEY_SIZE,
 		.max_keysize	= 3*DES_KEY_SIZE,
 		.ivsize		= DES_BLOCK_SIZE,
-		.setkey		= omap_des_setkey,
+		.setkey		= omap_des3_setkey,
 		.encrypt	= omap_des_cbc_encrypt,
 		.decrypt	= omap_des_cbc_decrypt,
 	}
@@ -1046,8 +1075,6 @@ static int omap_des_probe(struct platform_device *pdev)
 		goto err_engine;
 	}
 
-	dd->engine->prepare_cipher_request = omap_des_prepare_req;
-	dd->engine->cipher_one_request = omap_des_crypt_req;
 	err = crypto_engine_start(dd->engine);
 	if (err)
 		goto err_engine;
@@ -1057,7 +1084,6 @@ static int omap_des_probe(struct platform_device *pdev)
 			algp = &dd->pdata->algs_info[i].algs_list[j];
 
 			pr_debug("reg alg: %s\n", algp->cra_name);
-			INIT_LIST_HEAD(&algp->cra_list);
 
 			err = crypto_register_alg(algp);
 			if (err)

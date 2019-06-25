@@ -1,9 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * motu.h - a part of driver for MOTU FireWire series
  *
  * Copyright (c) 2015-2017 Takashi Sakamoto <o-takashi@sakamocchi.jp>
- *
- * Licensed under the terms of the GNU General Public License, version 2.
  */
 
 #ifndef SOUND_FIREWIRE_MOTU_H_INCLUDED
@@ -79,13 +78,14 @@ enum snd_motu_spec_flags {
 	SND_MOTU_SPEC_TX_MICINST_CHUNK	= 0x0004,
 	SND_MOTU_SPEC_TX_RETURN_CHUNK	= 0x0008,
 	SND_MOTU_SPEC_TX_REVERB_CHUNK	= 0x0010,
-	SND_MOTU_SPEC_TX_AESEBU_CHUNK	= 0x0020,
+	SND_MOTU_SPEC_HAS_AESEBU_IFACE	= 0x0020,
 	SND_MOTU_SPEC_HAS_OPT_IFACE_A	= 0x0040,
 	SND_MOTU_SPEC_HAS_OPT_IFACE_B	= 0x0080,
 	SND_MOTU_SPEC_RX_MIDI_2ND_Q	= 0x0100,
 	SND_MOTU_SPEC_RX_MIDI_3RD_Q	= 0x0200,
 	SND_MOTU_SPEC_TX_MIDI_2ND_Q	= 0x0400,
 	SND_MOTU_SPEC_TX_MIDI_3RD_Q	= 0x0800,
+	SND_MOTU_SPEC_RX_SEPARETED_MAIN	= 0x1000,
 };
 
 #define SND_MOTU_CLOCK_RATE_COUNT	6
@@ -127,6 +127,9 @@ struct snd_motu_spec {
 
 extern const struct snd_motu_protocol snd_motu_protocol_v2;
 extern const struct snd_motu_protocol snd_motu_protocol_v3;
+
+extern const struct snd_motu_spec snd_motu_spec_traveler;
+extern const struct snd_motu_spec snd_motu_spec_8pre;
 
 int amdtp_motu_init(struct amdtp_stream *s, struct fw_unit *unit,
 		    enum amdtp_stream_direction dir,

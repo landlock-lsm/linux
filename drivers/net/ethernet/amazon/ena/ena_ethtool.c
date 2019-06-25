@@ -81,21 +81,24 @@ static const struct ena_stats ena_stats_tx_strings[] = {
 	ENA_STAT_TX_ENTRY(doorbells),
 	ENA_STAT_TX_ENTRY(prepare_ctx_err),
 	ENA_STAT_TX_ENTRY(bad_req_id),
+	ENA_STAT_TX_ENTRY(llq_buffer_copy),
 	ENA_STAT_TX_ENTRY(missed_tx),
 };
 
 static const struct ena_stats ena_stats_rx_strings[] = {
 	ENA_STAT_RX_ENTRY(cnt),
 	ENA_STAT_RX_ENTRY(bytes),
+	ENA_STAT_RX_ENTRY(rx_copybreak_pkt),
+	ENA_STAT_RX_ENTRY(csum_good),
 	ENA_STAT_RX_ENTRY(refil_partial),
 	ENA_STAT_RX_ENTRY(bad_csum),
 	ENA_STAT_RX_ENTRY(page_alloc_fail),
 	ENA_STAT_RX_ENTRY(skb_alloc_fail),
 	ENA_STAT_RX_ENTRY(dma_mapping_err),
 	ENA_STAT_RX_ENTRY(bad_desc_num),
-	ENA_STAT_RX_ENTRY(rx_copybreak_pkt),
 	ENA_STAT_RX_ENTRY(bad_req_id),
 	ENA_STAT_RX_ENTRY(empty_rx_ring),
+	ENA_STAT_RX_ENTRY(csum_unchecked),
 };
 
 static const struct ena_stats ena_stats_ena_com_strings[] = {
@@ -195,15 +198,24 @@ static void ena_get_ethtool_stats(struct net_device *netdev,
 	ena_dev_admin_queue_stats(adapter, &data);
 }
 
+static int get_stats_sset_count(struct ena_adapter *adapter)
+{
+	return  adapter->num_queues * (ENA_STATS_ARRAY_TX + ENA_STATS_ARRAY_RX)
+		+ ENA_STATS_ARRAY_GLOBAL + ENA_STATS_ARRAY_ENA_COM;
+}
+
 int ena_get_sset_count(struct net_device *netdev, int sset)
 {
 	struct ena_adapter *adapter = netdev_priv(netdev);
 
-	if (sset != ETH_SS_STATS)
+	switch (sset) {
+	case ETH_SS_STATS:
+		return get_stats_sset_count(adapter);
+	case ETH_SS_PRIV_FLAGS:
+		return adapter->ena_extra_properties_count;
+	default:
 		return -EOPNOTSUPP;
-
-	return  adapter->num_queues * (ENA_STATS_ARRAY_TX + ENA_STATS_ARRAY_RX)
-		+ ENA_STATS_ARRAY_GLOBAL + ENA_STATS_ARRAY_ENA_COM;
+	}
 }
 
 static void ena_queue_strings(struct ena_adapter *adapter, u8 **data)
@@ -245,24 +257,52 @@ static void ena_com_dev_strings(u8 **data)
 	}
 }
 
-static void ena_get_strings(struct net_device *netdev, u32 sset, u8 *data)
+static void get_stats_strings(struct ena_adapter *adapter, u8 *data)
 {
-	struct ena_adapter *adapter = netdev_priv(netdev);
 	const struct ena_stats *ena_stats;
 	int i;
 
-	if (sset != ETH_SS_STATS)
-		return;
-
 	for (i = 0; i < ENA_STATS_ARRAY_GLOBAL; i++) {
 		ena_stats = &ena_stats_global_strings[i];
-
 		memcpy(data, ena_stats->name, ETH_GSTRING_LEN);
 		data += ETH_GSTRING_LEN;
 	}
-
 	ena_queue_strings(adapter, &data);
 	ena_com_dev_strings(&data);
+}
+
+static void get_private_flags_strings(struct ena_adapter *adapter, u8 *data)
+{
+	struct ena_com_dev *ena_dev = adapter->ena_dev;
+	u8 *strings = ena_dev->extra_properties_strings.virt_addr;
+	int i;
+
+	if (unlikely(!strings)) {
+		adapter->ena_extra_properties_count = 0;
+		return;
+	}
+
+	for (i = 0; i < adapter->ena_extra_properties_count; i++) {
+		strlcpy(data, strings + ENA_ADMIN_EXTRA_PROPERTIES_STRING_LEN * i,
+			ETH_GSTRING_LEN);
+		data += ETH_GSTRING_LEN;
+	}
+}
+
+static void ena_get_strings(struct net_device *netdev, u32 sset, u8 *data)
+{
+	struct ena_adapter *adapter = netdev_priv(netdev);
+
+	switch (sset) {
+	case ETH_SS_STATS:
+		get_stats_strings(adapter, data);
+		break;
+	case ETH_SS_PRIV_FLAGS:
+		get_private_flags_strings(adapter, data);
+		break;
+	default:
+		break;
+	}
 }
 
 static int ena_get_link_ksettings(struct net_device *netdev,
@@ -439,19 +479,39 @@ static void ena_get_drvinfo(struct net_device *dev,
 	strlcpy(info->version, DRV_MODULE_VERSION, sizeof(info->version));
 	strlcpy(info->bus_info, pci_name(adapter->pdev),
 		sizeof(info->bus_info));
+	info->n_priv_flags = adapter->ena_extra_properties_count;
 }
 
 static void ena_get_ringparam(struct net_device *netdev,
 			      struct ethtool_ringparam *ring)
 {
 	struct ena_adapter *adapter = netdev_priv(netdev);
-	struct ena_ring *tx_ring = &adapter->tx_ring[0];
-	struct ena_ring *rx_ring = &adapter->rx_ring[0];
 
-	ring->rx_max_pending = rx_ring->ring_size;
-	ring->tx_max_pending = tx_ring->ring_size;
-	ring->rx_pending = rx_ring->ring_size;
-	ring->tx_pending = tx_ring->ring_size;
+	ring->tx_max_pending = adapter->max_tx_ring_size;
+	ring->rx_max_pending = adapter->max_rx_ring_size;
+	ring->tx_pending = adapter->tx_ring[0].ring_size;
+	ring->rx_pending = adapter->rx_ring[0].ring_size;
+}
+
+static int ena_set_ringparam(struct net_device *netdev,
+			     struct ethtool_ringparam *ring)
+{
+	struct ena_adapter *adapter = netdev_priv(netdev);
+	u32 new_tx_size, new_rx_size;
+
+	new_tx_size = ring->tx_pending < ENA_MIN_RING_SIZE ?
+			ENA_MIN_RING_SIZE : ring->tx_pending;
+	new_tx_size = rounddown_pow_of_two(new_tx_size);
+
+	new_rx_size = ring->rx_pending < ENA_MIN_RING_SIZE ?
+			ENA_MIN_RING_SIZE : ring->rx_pending;
+	new_rx_size = rounddown_pow_of_two(new_rx_size);
+
+	if (new_tx_size == adapter->requested_tx_ring_size &&
+	    new_rx_size == adapter->requested_rx_ring_size)
+		return 0;
+
+	return ena_update_queue_sizes(adapter, new_tx_size, new_rx_size);
 }
 
 static u32 ena_flow_hash_to_flow_type(u16 hash_fields)
@@ -695,8 +755,8 @@ static int ena_set_rxfh(struct net_device *netdev, const u32 *indir,
 	if (indir) {
 		for (i = 0; i < ENA_RX_RSS_TABLE_SIZE; i++) {
 			rc = ena_com_indirect_table_fill_entry(ena_dev,
-							       ENA_IO_RXQ_IDX(indir[i]),
-							       i);
+							       i,
+							       ENA_IO_RXQ_IDX(indir[i]));
 			if (unlikely(rc)) {
 				netif_err(adapter, drv, netdev,
 					  "Cannot fill indirect table (index is too large)\n");
@@ -796,6 +856,20 @@ static int ena_set_tunable(struct net_device *netdev,
 	return ret;
 }
 
+static u32 ena_get_priv_flags(struct net_device *netdev)
+{
+	struct ena_adapter *adapter = netdev_priv(netdev);
+	struct ena_com_dev *ena_dev = adapter->ena_dev;
+	struct ena_admin_get_feat_resp get_resp;
+	u32 rc;
+
+	rc = ena_com_get_extra_properties_flags(ena_dev, &get_resp);
+	if (!rc)
+		return get_resp.u.extra_properties_flags.flags;
+
+	return 0;
+}
+
 static const struct ethtool_ops ena_ethtool_ops = {
 	.get_link_ksettings	= ena_get_link_ksettings,
 	.get_drvinfo		= ena_get_drvinfo,
@@ -805,6 +879,7 @@ static const struct ethtool_ops ena_ethtool_ops = {
 	.get_coalesce		= ena_get_coalesce,
 	.set_coalesce		= ena_set_coalesce,
 	.get_ringparam		= ena_get_ringparam,
+	.set_ringparam		= ena_set_ringparam,
 	.get_sset_count         = ena_get_sset_count,
 	.get_strings		= ena_get_strings,
 	.get_ethtool_stats      = ena_get_ethtool_stats,
@@ -817,6 +892,7 @@ static const struct ethtool_ops ena_ethtool_ops = {
 	.get_channels		= ena_get_channels,
 	.get_tunable		= ena_get_tunable,
 	.set_tunable		= ena_set_tunable,
+	.get_priv_flags		= ena_get_priv_flags,
 };
 
 void ena_set_ethtool_ops(struct net_device *netdev)
@@ -838,8 +914,8 @@ static void ena_dump_stats_ex(struct ena_adapter *adapter, u8 *buf)
 		return;
 	}
 
-	strings_buf = devm_kzalloc(&adapter->pdev->dev,
-				   strings_num * ETH_GSTRING_LEN,
+	strings_buf = devm_kcalloc(&adapter->pdev->dev,
+				   ETH_GSTRING_LEN, strings_num,
 				   GFP_ATOMIC);
 	if (!strings_buf) {
 		netif_err(adapter, drv, netdev,
@@ -847,8 +923,8 @@ static void ena_dump_stats_ex(struct ena_adapter *adapter, u8 *buf)
 		return;
 	}
 
-	data_buf = devm_kzalloc(&adapter->pdev->dev,
-				strings_num * sizeof(u64),
+	data_buf = devm_kcalloc(&adapter->pdev->dev,
+				strings_num, sizeof(u64),
 				GFP_ATOMIC);
 	if (!data_buf) {
 		netif_err(adapter, drv, netdev,

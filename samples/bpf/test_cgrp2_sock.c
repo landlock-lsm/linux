@@ -21,8 +21,9 @@
 #include <net/if.h>
 #include <inttypes.h>
 #include <linux/bpf.h>
+#include <bpf/bpf.h>
 
-#include "libbpf.h"
+#include "bpf_insn.h"
 
 char bpf_log_buf[BPF_LOG_BUF_SIZE];
 
@@ -115,7 +116,7 @@ static int prog_load(__u32 idx, __u32 mark, __u32 prio)
 	insns_cnt /= sizeof(struct bpf_insn);
 
 	ret = bpf_load_program(BPF_PROG_TYPE_CGROUP_SOCK, prog, insns_cnt,
-				"GPL", 0, bpf_log_buf, BPF_LOG_BUF_SIZE, NULL);
+				"GPL", 0, bpf_log_buf, BPF_LOG_BUF_SIZE);
 
 	free(prog);
 

@@ -53,6 +53,7 @@ obj-$(CONFIG_RC_MAP) += rc-adstech-dvb-t-pci.o \
 			rc-hisi-tv-demo.o \
 			rc-imon-mce.o \
 			rc-imon-pad.o \
+			rc-imon-rsc.o \
 			rc-iodata-bctv7e.o \
 			rc-it913x-v1.o \
 			rc-it913x-v2.o \
@@ -115,4 +116,5 @@ obj-$(CONFIG_RC_MAP) += rc-adstech-dvb-t-pci.o \
 			rc-winfast.o \
 			rc-winfast-usbii-deluxe.o \
 			rc-su3000.o \
+			rc-xbox-dvd.o \
 			rc-zx-irdec.o

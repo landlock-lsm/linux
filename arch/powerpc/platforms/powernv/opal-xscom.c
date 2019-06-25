@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * PowerNV LPC bus handling.
  *
  * Copyright 2013 IBM Corp.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 
 #include <linux/kernel.h>
@@ -46,7 +42,7 @@ static scom_map_t opal_scom_map(struct device_node *dev, u64 reg, u64 count)
 			__func__, dev);
 		return SCOM_MAP_INVALID;
 	}
-	m = kmalloc(sizeof(struct opal_scom_map), GFP_KERNEL);
+	m = kmalloc(sizeof(*m), GFP_KERNEL);
 	if (!m)
 		return NULL;
 	m->chip = be32_to_cpup(gcid);

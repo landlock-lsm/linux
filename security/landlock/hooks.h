@@ -1,12 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Landlock LSM - hooks helpers
  *
- * Copyright © 2016-2018 Mickaël Salaün <mic@digikod.net>
- * Copyright © 2018 ANSSI
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * Copyright © 2016-2019 Mickaël Salaün <mic@digikod.net>
+ * Copyright © 2018-2019 ANSSI
  */
 
 #include <asm/current.h>
@@ -19,7 +16,6 @@ struct landlock_hook_ctx {
 	union {
 		struct landlock_hook_ctx_fs_walk *fs_walk;
 		struct landlock_hook_ctx_fs_pick *fs_pick;
-		struct landlock_hook_ctx_fs_get *fs_get;
 	};
 };
 

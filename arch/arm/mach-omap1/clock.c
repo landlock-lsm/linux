@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/arch/arm/mach-omap1/clock.c
  *
@@ -6,10 +7,6 @@
  *
  *  Modified to use omap shared clock framework by
  *  Tony Lindgren <tony@atomide.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 #include <linux/kernel.h>
 #include <linux/export.h>
@@ -968,7 +965,7 @@ late_initcall(omap_clk_enable_autoidle_all);
 
 static struct dentry *clk_debugfs_root;
 
-static int clk_dbg_show_summary(struct seq_file *s, void *unused)
+static int debug_clock_show(struct seq_file *s, void *unused)
 {
 	struct clk *c;
 	struct clk *pa;
@@ -988,17 +985,7 @@ static int clk_dbg_show_summary(struct seq_file *s, void *unused)
 	return 0;
 }
 
-static int clk_dbg_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, clk_dbg_show_summary, inode->i_private);
-}
-
-static const struct file_operations debug_clock_fops = {
-	.open           = clk_dbg_open,
-	.read           = seq_read,
-	.llseek         = seq_lseek,
-	.release        = single_release,
-};
+DEFINE_SHOW_ATTRIBUTE(debug_clock);
 
 static int clk_debugfs_register_one(struct clk *c)
 {
@@ -1011,17 +998,17 @@ static int clk_debugfs_register_one(struct clk *c)
 		return -ENOMEM;
 	c->dent = d;
 
-	d = debugfs_create_u8("usecount", S_IRUGO, c->dent, (u8 *)&c->usecount);
+	d = debugfs_create_u8("usecount", S_IRUGO, c->dent, &c->usecount);
 	if (!d) {
 		err = -ENOMEM;
 		goto err_out;
 	}
-	d = debugfs_create_u32("rate", S_IRUGO, c->dent, (u32 *)&c->rate);
+	d = debugfs_create_ulong("rate", S_IRUGO, c->dent, &c->rate);
 	if (!d) {
 		err = -ENOMEM;
 		goto err_out;
 	}
-	d = debugfs_create_x32("flags", S_IRUGO, c->dent, (u32 *)&c->flags);
+	d = debugfs_create_x8("flags", S_IRUGO, c->dent, &c->flags);
 	if (!d) {
 		err = -ENOMEM;
 		goto err_out;

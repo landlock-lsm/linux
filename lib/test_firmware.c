@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * This module provides an interface to trigger and test firmware loading.
  *
@@ -21,6 +22,7 @@
 #include <linux/uaccess.h>
 #include <linux/delay.h>
 #include <linux/kthread.h>
+#include <linux/vmalloc.h>
 
 #define TEST_FIRMWARE_NAME	"test-firmware.bin"
 #define TEST_FIRMWARE_NUM_REQS	4
@@ -222,30 +224,30 @@ static ssize_t config_show(struct device *dev,
 
 	mutex_lock(&test_fw_mutex);
 
-	len += snprintf(buf, PAGE_SIZE,
+	len += scnprintf(buf, PAGE_SIZE - len,
 			"Custom trigger configuration for: %s\n",
 			dev_name(dev));
 
 	if (test_fw_config->name)
-		len += snprintf(buf+len, PAGE_SIZE,
+		len += scnprintf(buf+len, PAGE_SIZE - len,
 				"name:\t%s\n",
 				test_fw_config->name);
 	else
-		len += snprintf(buf+len, PAGE_SIZE,
+		len += scnprintf(buf+len, PAGE_SIZE - len,
 				"name:\tEMTPY\n");
 
-	len += snprintf(buf+len, PAGE_SIZE,
+	len += scnprintf(buf+len, PAGE_SIZE - len,
 			"num_requests:\t%u\n", test_fw_config->num_requests);
 
-	len += snprintf(buf+len, PAGE_SIZE,
+	len += scnprintf(buf+len, PAGE_SIZE - len,
 			"send_uevent:\t\t%s\n",
 			test_fw_config->send_uevent ?
 			"FW_ACTION_HOTPLUG" :
 			"FW_ACTION_NOHOTPLUG");
-	len += snprintf(buf+len, PAGE_SIZE,
+	len += scnprintf(buf+len, PAGE_SIZE - len,
 			"sync_direct:\t\t%s\n",
 			test_fw_config->sync_direct ? "true" : "false");
-	len += snprintf(buf+len, PAGE_SIZE,
+	len += scnprintf(buf+len, PAGE_SIZE - len,
 			"read_fw_idx:\t%u\n", test_fw_config->read_fw_idx);
 
 	mutex_unlock(&test_fw_mutex);
@@ -617,8 +619,9 @@ static ssize_t trigger_batched_requests_store(struct device *dev,
 
 	mutex_lock(&test_fw_mutex);
 
-	test_fw_config->reqs = vzalloc(sizeof(struct test_batched_req) *
-				       test_fw_config->num_requests * 2);
+	test_fw_config->reqs =
+		vzalloc(array3_size(sizeof(struct test_batched_req),
+				    test_fw_config->num_requests, 2));
 	if (!test_fw_config->reqs) {
 		rc = -ENOMEM;
 		goto out_unlock;
@@ -629,11 +632,6 @@ static ssize_t trigger_batched_requests_store(struct device *dev,
 
 	for (i = 0; i < test_fw_config->num_requests; i++) {
 		req = &test_fw_config->reqs[i];
-		if (!req) {
-			WARN_ON(1);
-			rc = -ENOMEM;
-			goto out_bail;
-		}
 		req->fw = NULL;
 		req->idx = i;
 		req->name = test_fw_config->name;
@@ -719,8 +717,9 @@ ssize_t trigger_batched_requests_async_store(struct device *dev,
 
 	mutex_lock(&test_fw_mutex);
 
-	test_fw_config->reqs = vzalloc(sizeof(struct test_batched_req) *
-				       test_fw_config->num_requests * 2);
+	test_fw_config->reqs =
+		vzalloc(array3_size(sizeof(struct test_batched_req),
+				    test_fw_config->num_requests, 2));
 	if (!test_fw_config->reqs) {
 		rc = -ENOMEM;
 		goto out;
@@ -734,10 +733,6 @@ ssize_t trigger_batched_requests_async_store(struct device *dev,
 
 	for (i = 0; i < test_fw_config->num_requests; i++) {
 		req = &test_fw_config->reqs[i];
-		if (!req) {
-			WARN_ON(1);
-			goto out_bail;
-		}
 		req->name = test_fw_config->name;
 		req->fw = NULL;
 		req->idx = i;
@@ -834,6 +829,7 @@ static ssize_t read_firmware_show(struct device *dev,
 	if (req->fw->size > PAGE_SIZE) {
 		pr_err("Testing interface must use PAGE_SIZE firmware for now\n");
 		rc = -EINVAL;
+		goto out;
 	}
 	memcpy(buf, req->fw->data, req->fw->size);
 

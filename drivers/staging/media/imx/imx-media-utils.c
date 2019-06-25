@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * V4L2 Media Controller Driver for Freescale i.MX5/6 SOC
  *
  * Copyright (c) 2016 Mentor Graphics Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 #include <linux/module.h>
 #include "imx-media.h"
@@ -78,6 +74,7 @@ static const struct imx_media_pixfmt rgb_formats[] = {
 		.codes  = {MEDIA_BUS_FMT_RGB565_2X8_LE},
 		.cs     = IPUV3_COLORSPACE_RGB,
 		.bpp    = 16,
+		.cycles = 2,
 	}, {
 		.fourcc	= V4L2_PIX_FMT_RGB24,
 		.codes  = {
@@ -87,13 +84,13 @@ static const struct imx_media_pixfmt rgb_formats[] = {
 		.cs     = IPUV3_COLORSPACE_RGB,
 		.bpp    = 24,
 	}, {
-		.fourcc	= V4L2_PIX_FMT_RGB32,
+		.fourcc	= V4L2_PIX_FMT_XRGB32,
 		.codes  = {MEDIA_BUS_FMT_ARGB8888_1X32},
 		.cs     = IPUV3_COLORSPACE_RGB,
 		.bpp    = 32,
 		.ipufmt = true,
 	},
-	/*** raw bayer formats start here ***/
+	/*** raw bayer and grayscale formats start here ***/
 	{
 		.fourcc = V4L2_PIX_FMT_SBGGR8,
 		.codes  = {MEDIA_BUS_FMT_SBGGR8_1X8},
@@ -162,6 +159,21 @@ static const struct imx_media_pixfmt rgb_formats[] = {
 		.cs     = IPUV3_COLORSPACE_RGB,
 		.bpp    = 16,
 		.bayer  = true,
+	}, {
+		.fourcc = V4L2_PIX_FMT_GREY,
+		.codes = {MEDIA_BUS_FMT_Y8_1X8},
+		.cs     = IPUV3_COLORSPACE_RGB,
+		.bpp    = 8,
+		.bayer  = true,
+	}, {
+		.fourcc = V4L2_PIX_FMT_Y16,
+		.codes = {
+			MEDIA_BUS_FMT_Y10_1X10,
+			MEDIA_BUS_FMT_Y12_1X12,
+		},
+		.cs     = IPUV3_COLORSPACE_RGB,
+		.bpp    = 16,
+		.bayer  = true,
 	},
 	/***
 	 * non-mbus RGB formats start here. NOTE! when adding non-mbus
@@ -196,7 +208,7 @@ static const struct imx_media_pixfmt ipu_yuv_formats[] = {
 
 static const struct imx_media_pixfmt ipu_rgb_formats[] = {
 	{
-		.fourcc	= V4L2_PIX_FMT_RGB32,
+		.fourcc	= V4L2_PIX_FMT_XRGB32,
 		.codes  = {MEDIA_BUS_FMT_ARGB8888_1X32},
 		.cs     = IPUV3_COLORSPACE_RGB,
 		.bpp    = 32,
@@ -219,58 +231,63 @@ static void init_mbus_colorimetry(struct v4l2_mbus_framefmt *mbus,
 					      mbus->ycbcr_enc);
 }
 
+static const
+struct imx_media_pixfmt *__find_format(u32 fourcc,
+				       u32 code,
+				       bool allow_non_mbus,
+				       bool allow_bayer,
+				       const struct imx_media_pixfmt *array,
+				       u32 array_size)
+{
+	const struct imx_media_pixfmt *fmt;
+	int i, j;
+
+	for (i = 0; i < array_size; i++) {
+		fmt = &array[i];
+
+		if ((!allow_non_mbus && !fmt->codes[0]) ||
+		    (!allow_bayer && fmt->bayer))
+			continue;
+
+		if (fourcc && fmt->fourcc == fourcc)
+			return fmt;
+
+		if (!code)
+			continue;
+
+		for (j = 0; fmt->codes[j]; j++) {
+			if (code == fmt->codes[j])
+				return fmt;
+		}
+	}
+	return NULL;
+}
+
 static const struct imx_media_pixfmt *find_format(u32 fourcc,
 						  u32 code,
 						  enum codespace_sel cs_sel,
 						  bool allow_non_mbus,
 						  bool allow_bayer)
 {
-	const struct imx_media_pixfmt *array, *fmt, *ret = NULL;
-	u32 array_size;
-	int i, j;
+	const struct imx_media_pixfmt *ret;
 
 	switch (cs_sel) {
 	case CS_SEL_YUV:
-		array_size = NUM_YUV_FORMATS;
-		array = yuv_formats;
-		break;
+		return __find_format(fourcc, code, allow_non_mbus, allow_bayer,
+				     yuv_formats, NUM_YUV_FORMATS);
 	case CS_SEL_RGB:
-		array_size = NUM_RGB_FORMATS;
-		array = rgb_formats;
-		break;
+		return __find_format(fourcc, code, allow_non_mbus, allow_bayer,
+				     rgb_formats, NUM_RGB_FORMATS);
 	case CS_SEL_ANY:
-		array_size = NUM_YUV_FORMATS + NUM_RGB_FORMATS;
-		array = yuv_formats;
-		break;
+		ret = __find_format(fourcc, code, allow_non_mbus, allow_bayer,
+				    yuv_formats, NUM_YUV_FORMATS);
+		if (ret)
+			return ret;
+		return __find_format(fourcc, code, allow_non_mbus, allow_bayer,
+				     rgb_formats, NUM_RGB_FORMATS);
 	default:
 		return NULL;
 	}
-
-	for (i = 0; i < array_size; i++) {
-		if (cs_sel == CS_SEL_ANY && i >= NUM_YUV_FORMATS)
-			fmt = &rgb_formats[i - NUM_YUV_FORMATS];
-		else
-			fmt = &array[i];
-
-		if ((!allow_non_mbus && fmt->codes[0] == 0) ||
-		    (!allow_bayer && fmt->bayer))
-			continue;
-
-		if (fourcc && fmt->fourcc == fourcc) {
-			ret = fmt;
-			goto out;
-		}
-
-		for (j = 0; code && fmt->codes[j]; j++) {
-			if (code == fmt->codes[j]) {
-				ret = fmt;
-				goto out;
-			}
-		}
-	}
-
-out:
-	return ret;
 }
 
 static int enum_format(u32 *fourcc, u32 *code, u32 index,
@@ -465,6 +482,35 @@ int imx_media_init_mbus_fmt(struct v4l2_mbus_framefmt *mbus,
 EXPORT_SYMBOL_GPL(imx_media_init_mbus_fmt);
 
 /*
+ * Initializes the TRY format to the ACTIVE format on all pads
+ * of a subdev. Can be used as the .init_cfg pad operation.
+ */
+int imx_media_init_cfg(struct v4l2_subdev *sd,
+		       struct v4l2_subdev_pad_config *cfg)
+{
+	struct v4l2_mbus_framefmt *mf_try;
+	struct v4l2_subdev_format format;
+	unsigned int pad;
+	int ret;
+
+	for (pad = 0; pad < sd->entity.num_pads; pad++) {
+		memset(&format, 0, sizeof(format));
+
+		format.pad = pad;
+		format.which = V4L2_SUBDEV_FORMAT_ACTIVE;
+		ret = v4l2_subdev_call(sd, pad, get_fmt, NULL, &format);
+		if (ret)
+			continue;
+
+		mf_try = v4l2_subdev_get_try_format(sd, cfg, pad);
+		*mf_try = format.format;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(imx_media_init_cfg);
+
+/*
  * Check whether the field and colorimetry parameters in tryfmt are
  * uninitialized, and if so fill them with the values from fmt,
  * or if tryfmt->colorspace has been initialized, all the default
@@ -527,9 +573,11 @@ void imx_media_fill_default_mbus_fields(struct v4l2_mbus_framefmt *tryfmt,
 EXPORT_SYMBOL_GPL(imx_media_fill_default_mbus_fields);
 
 int imx_media_mbus_fmt_to_pix_fmt(struct v4l2_pix_format *pix,
-				  struct v4l2_mbus_framefmt *mbus,
+				  struct v4l2_rect *compose,
+				  const struct v4l2_mbus_framefmt *mbus,
 				  const struct imx_media_pixfmt *cc)
 {
+	u32 width;
 	u32 stride;
 
 	if (!cc) {
@@ -552,9 +600,16 @@ int imx_media_mbus_fmt_to_pix_fmt(struct v4l2_pix_format *pix,
 		cc = imx_media_find_mbus_format(code, CS_SEL_YUV, false);
 	}
 
-	stride = cc->planar ? mbus->width : (mbus->width * cc->bpp) >> 3;
+	/* Round up width for minimum burst size */
+	width = round_up(mbus->width, 8);
 
-	pix->width = mbus->width;
+	/* Round up stride for IDMAC line start address alignment */
+	if (cc->planar)
+		stride = round_up(width, 16);
+	else
+		stride = round_up((width * cc->bpp) >> 3, 8);
+
+	pix->width = width;
 	pix->height = mbus->height;
 	pix->pixelformat = cc->fourcc;
 	pix->colorspace = mbus->colorspace;
@@ -563,7 +618,19 @@ int imx_media_mbus_fmt_to_pix_fmt(struct v4l2_pix_format *pix,
 	pix->quantization = mbus->quantization;
 	pix->field = mbus->field;
 	pix->bytesperline = stride;
-	pix->sizeimage = (pix->width * pix->height * cc->bpp) >> 3;
+	pix->sizeimage = cc->planar ? ((stride * pix->height * cc->bpp) >> 3) :
+			 stride * pix->height;
+
+	/*
+	 * set capture compose rectangle, which is fixed to the
+	 * source subdevice mbus format.
+	 */
+	if (compose) {
+		compose->left = 0;
+		compose->top = 0;
+		compose->width = mbus->width;
+		compose->height = mbus->height;
+	}
 
 	return 0;
 }
@@ -576,12 +643,10 @@ int imx_media_mbus_fmt_to_ipu_image(struct ipu_image *image,
 
 	memset(image, 0, sizeof(*image));
 
-	ret = imx_media_mbus_fmt_to_pix_fmt(&image->pix, mbus, NULL);
+	ret = imx_media_mbus_fmt_to_pix_fmt(&image->pix, &image->rect,
+					    mbus, NULL);
 	if (ret)
 		return ret;
-
-	image->rect.width = mbus->width;
-	image->rect.height = mbus->height;
 
 	return 0;
 }
@@ -646,20 +711,20 @@ void imx_media_grp_id_to_sd_name(char *sd_name, int sz, u32 grp_id, int ipu_id)
 	int id;
 
 	switch (grp_id) {
-	case IMX_MEDIA_GRP_ID_CSI0...IMX_MEDIA_GRP_ID_CSI1:
-		id = (grp_id >> IMX_MEDIA_GRP_ID_CSI_BIT) - 1;
+	case IMX_MEDIA_GRP_ID_IPU_CSI0...IMX_MEDIA_GRP_ID_IPU_CSI1:
+		id = (grp_id >> IMX_MEDIA_GRP_ID_IPU_CSI_BIT) - 1;
 		snprintf(sd_name, sz, "ipu%d_csi%d", ipu_id + 1, id);
 		break;
-	case IMX_MEDIA_GRP_ID_VDIC:
+	case IMX_MEDIA_GRP_ID_IPU_VDIC:
 		snprintf(sd_name, sz, "ipu%d_vdic", ipu_id + 1);
 		break;
-	case IMX_MEDIA_GRP_ID_IC_PRP:
+	case IMX_MEDIA_GRP_ID_IPU_IC_PRP:
 		snprintf(sd_name, sz, "ipu%d_ic_prp", ipu_id + 1);
 		break;
-	case IMX_MEDIA_GRP_ID_IC_PRPENC:
+	case IMX_MEDIA_GRP_ID_IPU_IC_PRPENC:
 		snprintf(sd_name, sz, "ipu%d_ic_prpenc", ipu_id + 1);
 		break;
-	case IMX_MEDIA_GRP_ID_IC_PRPVF:
+	case IMX_MEDIA_GRP_ID_IPU_IC_PRPVF:
 		snprintf(sd_name, sz, "ipu%d_ic_prpvf", ipu_id + 1);
 		break;
 	default:

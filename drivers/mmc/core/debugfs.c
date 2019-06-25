@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Debugfs support for hosts and cards
  *
  * Copyright (C) 2008 Atmel Corporation
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 #include <linux/moduleparam.h>
 #include <linux/export.h>
@@ -196,18 +193,7 @@ static int mmc_ios_show(struct seq_file *s, void *data)
 
 	return 0;
 }
-
-static int mmc_ios_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, mmc_ios_show, inode->i_private);
-}
-
-static const struct file_operations mmc_ios_fops = {
-	.open		= mmc_ios_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
+DEFINE_SHOW_ATTRIBUTE(mmc_ios);
 
 static int mmc_clock_opt_get(void *data, u64 *val)
 {
@@ -252,6 +238,12 @@ void mmc_add_host_debugfs(struct mmc_host *host)
 	host->debugfs_root = root;
 
 	if (!debugfs_create_file("ios", S_IRUSR, root, host, &mmc_ios_fops))
+		goto err_node;
+
+	if (!debugfs_create_x32("caps", S_IRUSR, root, &host->caps))
+		goto err_node;
+
+	if (!debugfs_create_x32("caps2", S_IRUSR, root, &host->caps2))
 		goto err_node;
 
 	if (!debugfs_create_file("clock", S_IRUSR | S_IWUSR, root, host,

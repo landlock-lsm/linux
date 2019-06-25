@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Device driver for MFD hi655x PMIC
  *
@@ -6,10 +7,6 @@
  * Authors:
  * Chen Feng <puck.chen@hisilicon.com>
  * Fei  Wang <w.f@huawei.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/gpio.h>
@@ -49,7 +46,7 @@ static struct regmap_config hi655x_regmap_config = {
 	.reg_bits = 32,
 	.reg_stride = HI655X_STRIDE,
 	.val_bits = 8,
-	.max_register = HI655X_BUS_ADDR(0xFFF),
+	.max_register = HI655X_BUS_ADDR(0x400) - HI655X_STRIDE,
 };
 
 static struct resource pwrkey_resources[] = {

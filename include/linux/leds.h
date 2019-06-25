@@ -1,13 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Driver model for leds and led triggers
  *
  * Copyright (C) 2005 John Lenz <lenz@cs.wisc.edu>
  * Copyright (C) 2005 Richard Purdie <rpurdie@openedhand.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
 #ifndef __LINUX_LEDS_H_INCLUDED
 #define __LINUX_LEDS_H_INCLUDED
@@ -22,6 +18,7 @@
 #include <linux/workqueue.h>
 
 struct device;
+struct led_pattern;
 /*
  * LED Core
  */
@@ -50,6 +47,7 @@ struct led_classdev {
 #define LED_PANIC_INDICATOR	BIT(20)
 #define LED_BRIGHT_HW_CHANGED	BIT(21)
 #define LED_RETAIN_AT_SHUTDOWN	BIT(22)
+#define LED_INIT_DEFAULT_TRIGGER BIT(23)
 
 	/* set_brightness_work / blink_timer flags, atomic, private. */
 	unsigned long		work_flags;
@@ -87,6 +85,10 @@ struct led_classdev {
 	int		(*blink_set)(struct led_classdev *led_cdev,
 				     unsigned long *delay_on,
 				     unsigned long *delay_off);
+
+	int (*pattern_set)(struct led_classdev *led_cdev,
+			   struct led_pattern *pattern, u32 len, int repeat);
+	int (*pattern_clear)(struct led_classdev *led_cdev);
 
 	struct device		*dev;
 	const struct attribute_group	**groups;
@@ -213,6 +215,19 @@ extern int led_set_brightness_sync(struct led_classdev *led_cdev,
 extern int led_update_brightness(struct led_classdev *led_cdev);
 
 /**
+ * led_get_default_pattern - return default pattern
+ *
+ * @led_cdev: the LED to get default pattern for
+ * @size:     pointer for storing the number of elements in returned array,
+ *            modified only if return != NULL
+ *
+ * Return:    Allocated array of integers with default pattern from device tree
+ *            or NULL.  Caller is responsible for kfree().
+ */
+extern u32 *led_get_default_pattern(struct led_classdev *led_cdev,
+				    unsigned int *size);
+
+/**
  * led_sysfs_disable - disable LED sysfs interface
  * @led_cdev: the LED to set
  *
@@ -253,7 +268,7 @@ static inline bool led_sysfs_is_disabled(struct led_classdev *led_cdev)
 struct led_trigger {
 	/* Trigger Properties */
 	const char	 *name;
-	void		(*activate)(struct led_classdev *led_cdev);
+	int		(*activate)(struct led_classdev *led_cdev);
 	void		(*deactivate)(struct led_classdev *led_cdev);
 
 	/* LEDs under control by this trigger (for simple triggers) */
@@ -262,7 +277,18 @@ struct led_trigger {
 
 	/* Link to next registered trigger */
 	struct list_head  next_trig;
+
+	const struct attribute_group **groups;
 };
+
+/*
+ * Currently the attributes in struct led_trigger::groups are added directly to
+ * the LED device. As this might change in the future, the following
+ * macros abstract getting the LED device and its trigger_data from the dev
+ * parameter passed to the attribute accessor functions.
+ */
+#define led_trigger_get_led(dev)	((struct led_classdev *)dev_get_drvdata((dev)))
+#define led_trigger_get_drvdata(dev)	(led_get_trigger_data(led_trigger_get_led(dev)))
 
 ssize_t led_trigger_store(struct device *dev, struct device_attribute *attr,
 			const char *buf, size_t count);
@@ -288,9 +314,15 @@ extern void led_trigger_blink_oneshot(struct led_trigger *trigger,
 				      unsigned long *delay_off,
 				      int invert);
 extern void led_trigger_set_default(struct led_classdev *led_cdev);
-extern void led_trigger_set(struct led_classdev *led_cdev,
-			struct led_trigger *trigger);
+extern int led_trigger_set(struct led_classdev *led_cdev,
+			   struct led_trigger *trigger);
 extern void led_trigger_remove(struct led_classdev *led_cdev);
+
+static inline void led_set_trigger_data(struct led_classdev *led_cdev,
+					void *trigger_data)
+{
+	led_cdev->trigger_data = trigger_data;
+}
 
 static inline void *led_get_trigger_data(struct led_classdev *led_cdev)
 {
@@ -315,6 +347,10 @@ static inline void *led_get_trigger_data(struct led_classdev *led_cdev)
 extern void led_trigger_rename_static(const char *name,
 				      struct led_trigger *trig);
 
+#define module_led_trigger(__led_trigger) \
+	module_driver(__led_trigger, led_trigger_register, \
+		      led_trigger_unregister)
+
 #else
 
 /* Trigger has no members */
@@ -334,9 +370,14 @@ static inline void led_trigger_blink_oneshot(struct led_trigger *trigger,
 				      unsigned long *delay_off,
 				      int invert) {}
 static inline void led_trigger_set_default(struct led_classdev *led_cdev) {}
-static inline void led_trigger_set(struct led_classdev *led_cdev,
-				struct led_trigger *trigger) {}
+static inline int led_trigger_set(struct led_classdev *led_cdev,
+				  struct led_trigger *trigger)
+{
+	return 0;
+}
+
 static inline void led_trigger_remove(struct led_classdev *led_cdev) {}
+static inline void led_set_trigger_data(struct led_classdev *led_cdev) {}
 static inline void *led_get_trigger_data(struct led_classdev *led_cdev)
 {
 	return NULL;
@@ -346,9 +387,9 @@ static inline void *led_get_trigger_data(struct led_classdev *led_cdev)
 
 /* Trigger specific functions */
 #ifdef CONFIG_LEDS_TRIGGER_DISK
-extern void ledtrig_disk_activity(void);
+extern void ledtrig_disk_activity(bool write);
 #else
-static inline void ledtrig_disk_activity(void) {}
+static inline void ledtrig_disk_activity(bool write) {}
 #endif
 
 #ifdef CONFIG_LEDS_TRIGGER_MTD
@@ -444,6 +485,36 @@ extern void led_classdev_notify_brightness_hw_changed(
 #else
 static inline void led_classdev_notify_brightness_hw_changed(
 	struct led_classdev *led_cdev, enum led_brightness brightness) { }
+#endif
+
+/**
+ * struct led_pattern - pattern interval settings
+ * @delta_t: pattern interval delay, in milliseconds
+ * @brightness: pattern interval brightness
+ */
+struct led_pattern {
+	u32 delta_t;
+	int brightness;
+};
+
+enum led_audio {
+	LED_AUDIO_MUTE,		/* master mute LED */
+	LED_AUDIO_MICMUTE,	/* mic mute LED */
+	NUM_AUDIO_LEDS
+};
+
+#if IS_ENABLED(CONFIG_LEDS_TRIGGER_AUDIO)
+enum led_brightness ledtrig_audio_get(enum led_audio type);
+void ledtrig_audio_set(enum led_audio type, enum led_brightness state);
+#else
+static inline enum led_brightness ledtrig_audio_get(enum led_audio type)
+{
+	return LED_OFF;
+}
+static inline void ledtrig_audio_set(enum led_audio type,
+				     enum led_brightness state)
+{
+}
 #endif
 
 #endif		/* __LINUX_LEDS_H_INCLUDED */

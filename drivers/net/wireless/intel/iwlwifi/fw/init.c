@@ -6,6 +6,7 @@
  * GPL LICENSE SUMMARY
  *
  * Copyright(c) 2017 Intel Deutschland GmbH
+ * Copyright(c) 2019 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of version 2 of the GNU General Public License as
@@ -26,6 +27,7 @@
  * BSD LICENSE
  *
  * Copyright(c) 2017 Intel Deutschland GmbH
+ * Copyright(c) 2019 Intel Corporation
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -74,11 +76,19 @@ void iwl_fw_runtime_init(struct iwl_fw_runtime *fwrt, struct iwl_trans *trans,
 	fwrt->ops_ctx = ops_ctx;
 	INIT_DELAYED_WORK(&fwrt->dump.wk, iwl_fw_error_dump_wk);
 	iwl_fwrt_dbgfs_register(fwrt, dbgfs_dir);
+	timer_setup(&fwrt->dump.periodic_trig,
+		    iwl_fw_dbg_periodic_trig_handler, 0);
 }
 IWL_EXPORT_SYMBOL(iwl_fw_runtime_init);
 
-void iwl_fw_runtime_exit(struct iwl_fw_runtime *fwrt)
+void iwl_fw_runtime_suspend(struct iwl_fw_runtime *fwrt)
 {
-	iwl_fw_cancel_timestamp(fwrt);
+	iwl_fw_suspend_timestamp(fwrt);
 }
-IWL_EXPORT_SYMBOL(iwl_fw_runtime_exit);
+IWL_EXPORT_SYMBOL(iwl_fw_runtime_suspend);
+
+void iwl_fw_runtime_resume(struct iwl_fw_runtime *fwrt)
+{
+	iwl_fw_resume_timestamp(fwrt);
+}
+IWL_EXPORT_SYMBOL(iwl_fw_runtime_resume);

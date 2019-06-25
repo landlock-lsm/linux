@@ -1,9 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2012-2016 Synaptics Incorporated
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
  */
 #include <linux/input.h>
 #include <linux/input/mt.h>
@@ -197,10 +194,10 @@ static void rmi_f12_process_objects(struct f12_data *f12, u8 *data1, int size)
 		rmi_2d_sensor_abs_report(sensor, &sensor->objs[i], i);
 }
 
-static int rmi_f12_attention(struct rmi_function *fn,
-			     unsigned long *irq_nr_regs)
+static irqreturn_t rmi_f12_attention(int irq, void *ctx)
 {
 	int retval;
+	struct rmi_function *fn = ctx;
 	struct rmi_device *rmi_dev = fn->rmi_dev;
 	struct rmi_driver_data *drvdata = dev_get_drvdata(&rmi_dev->dev);
 	struct f12_data *f12 = dev_get_drvdata(&fn->dev);
@@ -222,7 +219,7 @@ static int rmi_f12_attention(struct rmi_function *fn,
 		if (retval < 0) {
 			dev_err(&fn->dev, "Failed to read object data. Code: %d.\n",
 				retval);
-			return retval;
+			return IRQ_RETVAL(retval);
 		}
 	}
 
@@ -232,7 +229,7 @@ static int rmi_f12_attention(struct rmi_function *fn,
 
 	input_mt_sync_frame(sensor->input);
 
-	return 0;
+	return IRQ_HANDLED;
 }
 
 static int rmi_f12_write_control_regs(struct rmi_function *fn)
@@ -502,14 +499,15 @@ static int rmi_f12_probe(struct rmi_function *fn)
 	}
 
 	/* allocate the in-kernel tracking buffers */
-	sensor->tracking_pos = devm_kzalloc(&fn->dev,
-			sizeof(struct input_mt_pos) * sensor->nbr_fingers,
+	sensor->tracking_pos = devm_kcalloc(&fn->dev,
+			sensor->nbr_fingers, sizeof(struct input_mt_pos),
 			GFP_KERNEL);
-	sensor->tracking_slots = devm_kzalloc(&fn->dev,
-			sizeof(int) * sensor->nbr_fingers, GFP_KERNEL);
-	sensor->objs = devm_kzalloc(&fn->dev,
-			sizeof(struct rmi_2d_sensor_abs_object)
-			* sensor->nbr_fingers, GFP_KERNEL);
+	sensor->tracking_slots = devm_kcalloc(&fn->dev,
+			sensor->nbr_fingers, sizeof(int), GFP_KERNEL);
+	sensor->objs = devm_kcalloc(&fn->dev,
+			sensor->nbr_fingers,
+			sizeof(struct rmi_2d_sensor_abs_object),
+			GFP_KERNEL);
 	if (!sensor->tracking_pos || !sensor->tracking_slots || !sensor->objs)
 		return -ENOMEM;
 

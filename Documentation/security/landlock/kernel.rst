@@ -19,16 +19,15 @@ is then possible to do complex access checks without race conditions or
 inconsistent evaluation (i.e.  `incorrect mirroring of the OS code and state
 <https://www.ndss-symposium.org/ndss2003/traps-and-pitfalls-practical-problems-system-call-interposition-based-security-tools/>`_).
 
-A Landlock hook describes a particular access type.  For now, there is three
-hooks dedicated to filesystem related operations: LANDLOCK_HOOK_FS_PICK,
-LANDLOCK_HOOK_FS_WALK and LANDLOCK_HOOK_FS_GET.  A Landlock program is tied to
-one hook.  This makes it possible to statically check context accesses,
-potentially performed by such program, and hence prevents kernel address leaks
-and ensure the right use of hook arguments with eBPF functions.  Any user can
-add multiple Landlock programs per Landlock hook.  They are stacked and
-evaluated one after the other, starting from the most recent program, as
-seccomp-bpf does with its filters.  Underneath, a hook is an abstraction over a
-set of LSM hooks.
+A Landlock hook describes a particular access type.  For now, there is two
+hooks dedicated to filesystem related operations: LANDLOCK_HOOK_FS_PICK and
+LANDLOCK_HOOK_FS_WALK.  A Landlock program is tied to one hook.  This makes it
+possible to statically check context accesses, potentially performed by such
+program, and hence prevents kernel address leaks and ensure the right use of
+hook arguments with eBPF functions.  Any user can add multiple Landlock
+programs per Landlock hook.  They are stacked and evaluated one after the
+other, starting from the most recent program, as seccomp-bpf does with its
+filters.  Underneath, a hook is an abstraction over a set of LSM hooks.
 
 
 Guiding principles
@@ -54,7 +53,7 @@ Landlock hook and context
   safe.  Thus, the related Landlock context arguments shall always be of the
   same type for a particular hook.  For example, a network hook could share
   helpers with a file hook because of UNIX socket.  However, the same helpers
-  may not be compatible for a FS handle and a net handle.
+  may not be compatible for a file system handle and a net handle.
 * Multiple hooks may use the same context interface.
 
 

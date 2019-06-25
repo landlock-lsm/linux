@@ -1,16 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Huawei HiNIC PCI Express Linux driver
  * Copyright(c) 2017 Huawei Technologies Co., Ltd
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- * for more details.
- *
  */
 
 #include <linux/kernel.h>
@@ -43,6 +34,16 @@
 #define RX_IRQ_NO_LLI_TIMER             0
 #define RX_IRQ_NO_CREDIT                0
 #define RX_IRQ_NO_RESEND_TIMER          0
+#define HINIC_RX_BUFFER_WRITE           16
+
+#define HINIC_RX_IPV6_PKT		7
+#define LRO_PKT_HDR_LEN_IPV4		66
+#define LRO_PKT_HDR_LEN_IPV6		86
+#define LRO_REPLENISH_THLD		256
+
+#define LRO_PKT_HDR_LEN(cqe)		\
+	(HINIC_GET_RX_PKT_TYPE(be32_to_cpu((cqe)->offload_type)) == \
+	 HINIC_RX_IPV6_PKT ? LRO_PKT_HDR_LEN_IPV6 : LRO_PKT_HDR_LEN_IPV4)
 
 /**
  * hinic_rxq_clean_stats - Clean the statistics of specific queue
@@ -89,6 +90,22 @@ static void rxq_stats_init(struct hinic_rxq *rxq)
 	hinic_rxq_clean_stats(rxq);
 }
 
+static void rx_csum(struct hinic_rxq *rxq, u32 status,
+		    struct sk_buff *skb)
+{
+	struct net_device *netdev = rxq->netdev;
+	u32 csum_err;
+
+	csum_err = HINIC_RQ_CQE_STATUS_GET(status, CSUM_ERR);
+
+	if (!(netdev->features & NETIF_F_RXCSUM))
+		return;
+
+	if (!csum_err)
+		skb->ip_summed = CHECKSUM_UNNECESSARY;
+	else
+		skb->ip_summed = CHECKSUM_NONE;
+}
 /**
  * rx_alloc_skb - allocate skb and map it to dma address
  * @rxq: rx queue
@@ -209,7 +226,6 @@ skb_out:
 		hinic_rq_update(rxq->rq, prod_idx);
 	}
 
-	tasklet_schedule(&rxq->rx_task);
 	return i;
 }
 
@@ -234,17 +250,6 @@ static void free_all_rx_skbs(struct hinic_rxq *rxq)
 
 		rx_free_skb(rxq, rq->saved_skb[ci], hinic_sge_to_dma(&sge));
 	}
-}
-
-/**
- * rx_alloc_task - tasklet for queue allocation
- * @data: rx queue
- **/
-static void rx_alloc_task(unsigned long data)
-{
-	struct hinic_rxq *rxq = (struct hinic_rxq *)data;
-
-	(void)rx_alloc_pkts(rxq);
 }
 
 /**
@@ -310,11 +315,16 @@ static int rxq_recv(struct hinic_rxq *rxq, int budget)
 {
 	struct hinic_qp *qp = container_of(rxq->rq, struct hinic_qp, rq);
 	u64 pkt_len = 0, rx_bytes = 0;
+	struct hinic_rq *rq = rxq->rq;
 	struct hinic_rq_wqe *rq_wqe;
+	unsigned int free_wqebbs;
+	struct hinic_rq_cqe *cqe;
 	int num_wqes, pkts = 0;
 	struct hinic_sge sge;
+	unsigned int status;
 	struct sk_buff *skb;
-	u16 ci;
+	u16 ci, num_lro;
+	u16 num_wqe = 0;
 
 	while (pkts < budget) {
 		num_wqes = 0;
@@ -324,9 +334,13 @@ static int rxq_recv(struct hinic_rxq *rxq, int budget)
 		if (!rq_wqe)
 			break;
 
+		cqe = rq->cqe[ci];
+		status =  be32_to_cpu(cqe->status);
 		hinic_rq_get_sge(rxq->rq, rq_wqe, ci, &sge);
 
 		rx_unmap_skb(rxq, hinic_sge_to_dma(&sge));
+
+		rx_csum(rxq, status, skb);
 
 		prefetch(skb->data);
 
@@ -340,7 +354,7 @@ static int rxq_recv(struct hinic_rxq *rxq, int budget)
 						     HINIC_RX_BUF_SZ, ci);
 		}
 
-		hinic_rq_put_wqe(rxq->rq, ci,
+		hinic_rq_put_wqe(rq, ci,
 				 (num_wqes + 1) * HINIC_RQ_WQE_SIZE);
 
 		skb_record_rx_queue(skb, qp->q_id);
@@ -350,10 +364,26 @@ static int rxq_recv(struct hinic_rxq *rxq, int budget)
 
 		pkts++;
 		rx_bytes += pkt_len;
+
+		num_lro = HINIC_GET_RX_NUM_LRO(status);
+		if (num_lro) {
+			rx_bytes += ((num_lro - 1) *
+				     LRO_PKT_HDR_LEN(cqe));
+
+			num_wqe +=
+			(u16)(pkt_len >> rxq->rx_buff_shift) +
+			((pkt_len & (rxq->buf_len - 1)) ? 1 : 0);
+		}
+
+		cqe->status = 0;
+
+		if (num_wqe >= LRO_REPLENISH_THLD)
+			break;
 	}
 
-	if (pkts)
-		tasklet_schedule(&rxq->rx_task); /* rx_alloc_pkts */
+	free_wqebbs = hinic_get_rq_free_wqebbs(rxq->rq);
+	if (free_wqebbs > HINIC_RX_BUFFER_WRITE)
+		rx_alloc_pkts(rxq);
 
 	u64_stats_update_begin(&rxq->rxq_stats.syncp);
 	rxq->rxq_stats.pkts += pkts;
@@ -366,6 +396,7 @@ static int rxq_recv(struct hinic_rxq *rxq, int budget)
 static int rx_poll(struct napi_struct *napi, int budget)
 {
 	struct hinic_rxq *rxq = container_of(napi, struct hinic_rxq, napi);
+	struct hinic_dev *nic_dev = netdev_priv(rxq->netdev);
 	struct hinic_rq *rq = rxq->rq;
 	int pkts;
 
@@ -374,7 +405,10 @@ static int rx_poll(struct napi_struct *napi, int budget)
 		return budget;
 
 	napi_complete(napi);
-	enable_irq(rq->irq);
+	hinic_hwdev_set_msix_state(nic_dev->hwdev,
+				   rq->msix_entry,
+				   HINIC_MSIX_ENABLE);
+
 	return pkts;
 }
 
@@ -399,7 +433,10 @@ static irqreturn_t rx_irq(int irq, void *data)
 	struct hinic_dev *nic_dev;
 
 	/* Disable the interrupt until napi will be completed */
-	disable_irq_nosync(rq->irq);
+	nic_dev = netdev_priv(rxq->netdev);
+	hinic_hwdev_set_msix_state(nic_dev->hwdev,
+				   rq->msix_entry,
+				   HINIC_MSIX_DISABLE);
 
 	nic_dev = netdev_priv(rxq->netdev);
 	hinic_hwdev_msix_cnt_set(nic_dev->hwdev, rq->msix_entry);
@@ -439,6 +476,7 @@ static void rx_free_irq(struct hinic_rxq *rxq)
 {
 	struct hinic_rq *rq = rxq->rq;
 
+	irq_set_affinity_hint(rq->irq, NULL);
 	free_irq(rq->irq, rxq);
 	rx_del_napi(rxq);
 }
@@ -455,21 +493,19 @@ int hinic_init_rxq(struct hinic_rxq *rxq, struct hinic_rq *rq,
 		   struct net_device *netdev)
 {
 	struct hinic_qp *qp = container_of(rq, struct hinic_qp, rq);
-	int err, pkts, irqname_len;
+	int err, pkts;
 
 	rxq->netdev = netdev;
 	rxq->rq = rq;
+	rxq->buf_len = HINIC_RX_BUF_SZ;
+	rxq->rx_buff_shift = ilog2(HINIC_RX_BUF_SZ);
 
 	rxq_stats_init(rxq);
 
-	irqname_len = snprintf(NULL, 0, "hinic_rxq%d", qp->q_id) + 1;
-	rxq->irq_name = devm_kzalloc(&netdev->dev, irqname_len, GFP_KERNEL);
+	rxq->irq_name = devm_kasprintf(&netdev->dev, GFP_KERNEL,
+				       "hinic_rxq%d", qp->q_id);
 	if (!rxq->irq_name)
 		return -ENOMEM;
-
-	sprintf(rxq->irq_name, "hinic_rxq%d", qp->q_id);
-
-	tasklet_init(&rxq->rx_task, rx_alloc_task, (unsigned long)rxq);
 
 	pkts = rx_alloc_pkts(rxq);
 	if (!pkts) {
@@ -487,7 +523,6 @@ int hinic_init_rxq(struct hinic_rxq *rxq, struct hinic_rq *rq,
 
 err_req_rx_irq:
 err_rx_pkts:
-	tasklet_kill(&rxq->rx_task);
 	free_all_rx_skbs(rxq);
 	devm_kfree(&netdev->dev, rxq->irq_name);
 	return err;
@@ -503,7 +538,6 @@ void hinic_clean_rxq(struct hinic_rxq *rxq)
 
 	rx_free_irq(rxq);
 
-	tasklet_kill(&rxq->rx_task);
 	free_all_rx_skbs(rxq);
 	devm_kfree(&netdev->dev, rxq->irq_name);
 }

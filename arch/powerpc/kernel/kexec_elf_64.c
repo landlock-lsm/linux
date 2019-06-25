@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Load ELF vmlinux file for the kexec_file_load syscall.
  *
@@ -10,15 +11,6 @@
  * Based on kexec-tools' kexec-elf-exec.c and kexec-elf-ppc64.c.
  * Heavily modified for the kernel by
  * Thiago Jung Bauermann <bauerman@linux.vnet.ibm.com>.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation (version 2 of the License).
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #define pr_fmt(fmt)	"kexec_elf: " fmt
@@ -547,6 +539,7 @@ static int elf_exec_load(struct kimage *image, struct elfhdr *ehdr,
 		kbuf.memsz = phdr->p_memsz;
 		kbuf.buf_align = phdr->p_align;
 		kbuf.buf_min = phdr->p_paddr + base;
+		kbuf.mem = KEXEC_BUF_MEM_UNKNOWN;
 		ret = kexec_add_buffer(&kbuf);
 		if (ret)
 			goto out;
@@ -572,7 +565,7 @@ static void *elf64_load(struct kimage *image, char *kernel_buf,
 {
 	int ret;
 	unsigned int fdt_size;
-	unsigned long kernel_load_addr, purgatory_load_addr;
+	unsigned long kernel_load_addr;
 	unsigned long initrd_load_addr = 0, fdt_load_addr;
 	void *fdt;
 	const void *slave_code;
@@ -580,6 +573,9 @@ static void *elf64_load(struct kimage *image, char *kernel_buf,
 	struct elf_info elf_info;
 	struct kexec_buf kbuf = { .image = image, .buf_min = 0,
 				  .buf_max = ppc64_rma_size };
+	struct kexec_buf pbuf = { .image = image, .buf_min = 0,
+				  .buf_max = ppc64_rma_size, .top_down = true,
+				  .mem = KEXEC_BUF_MEM_UNKNOWN };
 
 	ret = build_elf_exec_info(kernel_buf, kernel_len, &ehdr, &elf_info);
 	if (ret)
@@ -591,20 +587,20 @@ static void *elf64_load(struct kimage *image, char *kernel_buf,
 
 	pr_debug("Loaded the kernel at 0x%lx\n", kernel_load_addr);
 
-	ret = kexec_load_purgatory(image, 0, ppc64_rma_size, true,
-				   &purgatory_load_addr);
+	ret = kexec_load_purgatory(image, &pbuf);
 	if (ret) {
 		pr_err("Loading purgatory failed.\n");
 		goto out;
 	}
 
-	pr_debug("Loaded purgatory at 0x%lx\n", purgatory_load_addr);
+	pr_debug("Loaded purgatory at 0x%lx\n", pbuf.mem);
 
 	if (initrd != NULL) {
 		kbuf.buffer = initrd;
 		kbuf.bufsz = kbuf.memsz = initrd_len;
 		kbuf.buf_align = PAGE_SIZE;
 		kbuf.top_down = false;
+		kbuf.mem = KEXEC_BUF_MEM_UNKNOWN;
 		ret = kexec_add_buffer(&kbuf);
 		if (ret)
 			goto out;
@@ -637,6 +633,7 @@ static void *elf64_load(struct kimage *image, char *kernel_buf,
 	kbuf.bufsz = kbuf.memsz = fdt_size;
 	kbuf.buf_align = PAGE_SIZE;
 	kbuf.top_down = true;
+	kbuf.mem = KEXEC_BUF_MEM_UNKNOWN;
 	ret = kexec_add_buffer(&kbuf);
 	if (ret)
 		goto out;
@@ -657,7 +654,7 @@ out:
 	return ret ? ERR_PTR(ret) : fdt;
 }
 
-struct kexec_file_ops kexec_elf64_ops = {
+const struct kexec_file_ops kexec_elf64_ops = {
 	.probe = elf64_probe,
 	.load = elf64_load,
 };

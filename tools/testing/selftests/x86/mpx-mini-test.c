@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * mpx-mini-test.c: routines to test Intel MPX (Memory Protection eXtentions)
  *
@@ -5,10 +6,6 @@
  * "Ren, Qiaowei" <qiaowei.ren@intel.com>
  * "Wei, Gang" <gang.wei@intel.com>
  * "Hansen, Dave" <dave.hansen@intel.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2.
  */
 
 /*
@@ -315,11 +312,39 @@ static inline void *__si_bounds_upper(siginfo_t *si)
 	return si->si_upper;
 }
 #else
+
+/*
+ * This deals with old version of _sigfault in some distros:
+ *
+
+old _sigfault:
+        struct {
+            void *si_addr;
+	} _sigfault;
+
+new _sigfault:
+	struct {
+		void __user *_addr;
+		int _trapno;
+		short _addr_lsb;
+		union {
+			struct {
+				void __user *_lower;
+				void __user *_upper;
+			} _addr_bnd;
+			__u32 _pkey;
+		};
+	} _sigfault;
+ *
+ */
+
 static inline void **__si_bounds_hack(siginfo_t *si)
 {
 	void *sigfault = &si->_sifields._sigfault;
 	void *end_sigfault = sigfault + sizeof(si->_sifields._sigfault);
-	void **__si_lower = end_sigfault;
+	int *trapno = (int*)end_sigfault;
+	/* skip _trapno and _addr_lsb */
+	void **__si_lower = (void**)(trapno + 2);
 
 	return __si_lower;
 }
@@ -331,7 +356,7 @@ static inline void *__si_bounds_lower(siginfo_t *si)
 
 static inline void *__si_bounds_upper(siginfo_t *si)
 {
-	return (*__si_bounds_hack(si)) + sizeof(void *);
+	return *(__si_bounds_hack(si) + 1);
 }
 #endif
 
@@ -339,6 +364,11 @@ static int br_count;
 static int expected_bnd_index = -1;
 uint64_t shadow_plb[NR_MPX_BOUNDS_REGISTERS][2]; /* shadow MPX bound registers */
 unsigned long shadow_map[NR_MPX_BOUNDS_REGISTERS];
+
+/* Failed address bound checks: */
+#ifndef SEGV_BNDERR
+# define SEGV_BNDERR	3
+#endif
 
 /*
  * The kernel is supposed to provide some information about the bounds
@@ -390,8 +420,6 @@ void handler(int signum, siginfo_t *si, void *vucontext)
 
 		br_count++;
 		dprintf1("#BR 0x%jx (total seen: %d)\n", status, br_count);
-
-#define SEGV_BNDERR     3  /* failed address bound checks */
 
 		dprintf2("Saw a #BR! status 0x%jx at %016lx br_reason: %jx\n",
 				status, ip, br_reason);
@@ -1472,7 +1500,7 @@ exit:
 		exit(20);
 	}
 	if (successes != total_nr_tests) {
-		eprintf("ERROR: succeded fewer than number of tries (%d != %d)\n",
+		eprintf("ERROR: succeeded fewer than number of tries (%d != %d)\n",
 				successes, total_nr_tests);
 		exit(21);
 	}

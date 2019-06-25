@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  Copyright 2007, Google Inc.
  *  Copyright 2012, Intel Inc.
@@ -7,10 +8,6 @@
  *  Written by Tuukka Tikkanen and Juha Yrjölä <juha.yrjola@nokia.com>
  *  Misc hacks here and there by Tony Lindgren <tony@atomide.com>
  *  Other hacks (DMA, SD, etc) by David Brownell
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/module.h>
@@ -217,8 +214,8 @@ static void goldfish_mmc_xfer_done(struct goldfish_mmc_host *host,
 			 * We don't really have DMA, so we need
 			 * to copy from our platform driver buffer
 			 */
-			uint8_t *dest = (uint8_t *)sg_virt(data->sg);
-			memcpy(dest, host->virt_base, data->sg->length);
+			sg_copy_from_buffer(data->sg, 1, host->virt_base,
+					data->sg->length);
 		}
 		host->data->bytes_xfered += data->sg->length;
 		dma_unmap_sg(mmc_dev(host->mmc), data->sg, host->sg_len,
@@ -393,8 +390,8 @@ static void goldfish_mmc_prepare_data(struct goldfish_mmc_host *host,
 		 * We don't really have DMA, so we need to copy to our
 		 * platform driver buffer
 		 */
-		const uint8_t *src = (uint8_t *)sg_virt(data->sg);
-		memcpy(host->virt_base, src, data->sg->length);
+		sg_copy_to_buffer(data->sg, 1, host->virt_base,
+				data->sg->length);
 	}
 }
 

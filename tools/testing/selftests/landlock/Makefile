@@ -1,16 +1,24 @@
 LIBDIR := ../../../lib
-OBJDIR := ../../../lib/bpf
-BPFOBJS := $(OBJDIR)/bpf.o $(OBJDIR)/nlattr.o
+BPFDIR := $(LIBDIR)/bpf
+APIDIR := ../../../include/uapi
+GENDIR := ../../../../include/generated
+GENHDR := $(GENDIR)/autoconf.h
+
+ifneq ($(wildcard $(GENHDR)),)
+  GENFLAGS := -DHAVE_GENHDR
+endif
+
+BPFOBJS := $(BPFDIR)/bpf.o $(BPFDIR)/nlattr.o
 LOADOBJ := ../../../../samples/bpf/bpf_load.o
 
-CFLAGS += -Wl,-no-as-needed -Wall -O2 -I../../../include/uapi -I$(LIBDIR)
+CFLAGS += -Wl,-no-as-needed -Wall -O2 -I$(APIDIR) -I$(LIBDIR) -I$(BPFDIR) -I$(GENDIR) $(GENFLAGS) -I../../../include
 LDFLAGS += -lelf
 
 test_src = $(wildcard test_*.c)
 
 test_objs := $(test_src:.c=)
 
-TEST_PROGS := $(test_objs)
+TEST_GEN_PROGS := $(test_objs)
 
 .PHONY: all clean force
 
@@ -21,7 +29,7 @@ force:
 
 # rebuild bpf.o as a workaround for the samples/bpf bug
 $(BPFOBJS): $(LOADOBJ) force
-	$(MAKE) -C $(OBJDIR)
+	$(MAKE) -C $(BPFDIR)
 
 $(LOADOBJ): force
 	$(MAKE) -C $(dir $(LOADOBJ))
@@ -29,7 +37,3 @@ $(LOADOBJ): force
 $(test_objs): $(BPFOBJS) $(LOADOBJ) ../kselftest_harness.h
 
 include ../lib.mk
-
-clean:
-	$(RM) $(test_objs)
-

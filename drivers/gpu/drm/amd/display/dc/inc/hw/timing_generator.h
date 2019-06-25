@@ -92,6 +92,36 @@ struct crtc_stereo_flags {
 	uint8_t DISABLE_STEREO_DP_SYNC : 1;
 };
 
+enum crc_selection {
+	/* Order must match values expected by hardware */
+	UNION_WINDOW_A_B = 0,
+	UNION_WINDOW_A_NOT_B,
+	UNION_WINDOW_NOT_A_B,
+	UNION_WINDOW_NOT_A_NOT_B,
+	INTERSECT_WINDOW_A_B,
+	INTERSECT_WINDOW_A_NOT_B,
+	INTERSECT_WINDOW_NOT_A_B,
+	INTERSECT_WINDOW_NOT_A_NOT_B,
+};
+
+struct crc_params {
+	/* Regions used to calculate CRC*/
+	uint16_t windowa_x_start;
+	uint16_t windowa_x_end;
+	uint16_t windowa_y_start;
+	uint16_t windowa_y_end;
+
+	uint16_t windowb_x_start;
+	uint16_t windowb_x_end;
+	uint16_t windowb_y_start;
+	uint16_t windowb_y_end;
+
+	enum crc_selection selection;
+
+	bool continuous_mode;
+	bool enable;
+};
+
 struct timing_generator {
 	const struct timing_generator_funcs *funcs;
 	struct dc_bios *bp;
@@ -104,12 +134,24 @@ struct dc_crtc_timing;
 
 struct drr_params;
 
+
 struct timing_generator_funcs {
 	bool (*validate_timing)(struct timing_generator *tg,
 							const struct dc_crtc_timing *timing);
 	void (*program_timing)(struct timing_generator *tg,
 							const struct dc_crtc_timing *timing,
 							bool use_vbios);
+	void (*setup_vertical_interrupt0)(
+			struct timing_generator *optc,
+			uint32_t start_line,
+			uint32_t end_line);
+	void (*setup_vertical_interrupt1)(
+			struct timing_generator *optc,
+			uint32_t start_line);
+	void (*setup_vertical_interrupt2)(
+			struct timing_generator *optc,
+			uint32_t start_line);
+
 	bool (*enable_crtc)(struct timing_generator *tg);
 	bool (*disable_crtc)(struct timing_generator *tg);
 	bool (*is_counter_moving)(struct timing_generator *tg);
@@ -123,6 +165,11 @@ struct timing_generator_funcs {
 		uint32_t *v_blank_end,
 		uint32_t *h_position,
 		uint32_t *v_position);
+	bool (*get_otg_active_size)(struct timing_generator *optc,
+			uint32_t *otg_active_width,
+			uint32_t *otg_active_height);
+	bool (*is_matching_timing)(struct timing_generator *tg,
+			const struct dc_crtc_timing *otg_timing);
 	void (*set_early_control)(struct timing_generator *tg,
 							   uint32_t early_cntl);
 	void (*wait_for_state)(struct timing_generator *tg,
@@ -140,8 +187,10 @@ struct timing_generator_funcs {
 	bool (*did_triggered_reset_occur)(struct timing_generator *tg);
 	void (*setup_global_swap_lock)(struct timing_generator *tg,
 							const struct dcp_gsl_params *gsl_params);
+	void (*setup_global_lock)(struct timing_generator *tg);
 	void (*unlock)(struct timing_generator *tg);
 	void (*lock)(struct timing_generator *tg);
+	void (*lock_global)(struct timing_generator *tg);
 	void (*enable_reset_trigger)(struct timing_generator *tg,
 				     int source_tg_inst);
 	void (*enable_crtc_reset)(struct timing_generator *tg,
@@ -173,6 +222,21 @@ struct timing_generator_funcs {
 	bool (*is_tg_enabled)(struct timing_generator *tg);
 	bool (*is_optc_underflow_occurred)(struct timing_generator *tg);
 	void (*clear_optc_underflow)(struct timing_generator *tg);
+
+	/**
+	 * Configure CRCs for the given timing generator. Return false if TG is
+	 * not on.
+	 */
+	bool (*configure_crc)(struct timing_generator *tg,
+			       const struct crc_params *params);
+
+	/**
+	 * Get CRCs for the given timing generator. Return false if CRCs are
+	 * not enabled (via configure_crc).
+	 */
+	bool (*get_crc)(struct timing_generator *tg,
+			uint32_t *r_cr, uint32_t *g_y, uint32_t *b_cb);
+
 };
 
 #endif

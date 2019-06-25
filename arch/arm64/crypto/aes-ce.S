@@ -1,12 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * linux/arch/arm64/crypto/aes-ce.S - AES cipher for ARMv8 with
  *                                    Crypto Extensions
  *
  * Copyright (C) 2013 - 2017 Linaro Ltd <ard.biesheuvel@linaro.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/linkage.h>
@@ -16,6 +13,11 @@
 #define AES_ENDPROC(func)	ENDPROC(ce_ ## func)
 
 	.arch		armv8-a+crypto
+
+	xtsmask		.req	v16
+
+	.macro		xts_reload_mask, tmp
+	.endm
 
 	/* preload all round keys */
 	.macro		load_round_keys, rounds, rk
@@ -30,18 +32,21 @@
 	.endm
 
 	/* prepare for encryption with key in rk[] */
-	.macro		enc_prepare, rounds, rk, ignore
-	load_round_keys	\rounds, \rk
+	.macro		enc_prepare, rounds, rk, temp
+	mov		\temp, \rk
+	load_round_keys	\rounds, \temp
 	.endm
 
 	/* prepare for encryption (again) but with new key in rk[] */
-	.macro		enc_switch_key, rounds, rk, ignore
-	load_round_keys	\rounds, \rk
+	.macro		enc_switch_key, rounds, rk, temp
+	mov		\temp, \rk
+	load_round_keys	\rounds, \temp
 	.endm
 
 	/* prepare for decryption with key in rk[] */
-	.macro		dec_prepare, rounds, rk, ignore
-	load_round_keys	\rounds, \rk
+	.macro		dec_prepare, rounds, rk, temp
+	mov		\temp, \rk
+	load_round_keys	\rounds, \temp
 	.endm
 
 	.macro		do_enc_Nx, de, mc, k, i0, i1, i2, i3

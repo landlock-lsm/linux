@@ -1,13 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* Copyright (c) 2010-2011,2013-2015 The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  *
  * max98357a.c -- MAX98357A ALSA SoC Codec driver
  */
@@ -59,27 +51,29 @@ static const struct snd_soc_dapm_route max98357a_dapm_routes[] = {
 	{"Speaker", NULL, "HiFi Playback"},
 };
 
-static int max98357a_codec_probe(struct snd_soc_codec *codec)
+static int max98357a_component_probe(struct snd_soc_component *component)
 {
 	struct gpio_desc *sdmode;
 
-	sdmode = devm_gpiod_get_optional(codec->dev, "sdmode", GPIOD_OUT_LOW);
+	sdmode = devm_gpiod_get_optional(component->dev, "sdmode", GPIOD_OUT_LOW);
 	if (IS_ERR(sdmode))
 		return PTR_ERR(sdmode);
 
-	snd_soc_codec_set_drvdata(codec, sdmode);
+	snd_soc_component_set_drvdata(component, sdmode);
 
 	return 0;
 }
 
-static const struct snd_soc_codec_driver max98357a_codec_driver = {
-	.probe			= max98357a_codec_probe,
-	.component_driver = {
-		.dapm_widgets		= max98357a_dapm_widgets,
-		.num_dapm_widgets	= ARRAY_SIZE(max98357a_dapm_widgets),
-		.dapm_routes		= max98357a_dapm_routes,
-		.num_dapm_routes	= ARRAY_SIZE(max98357a_dapm_routes),
-	},
+static const struct snd_soc_component_driver max98357a_component_driver = {
+	.probe			= max98357a_component_probe,
+	.dapm_widgets		= max98357a_dapm_widgets,
+	.num_dapm_widgets	= ARRAY_SIZE(max98357a_dapm_widgets),
+	.dapm_routes		= max98357a_dapm_routes,
+	.num_dapm_routes	= ARRAY_SIZE(max98357a_dapm_routes),
+	.idle_bias_on		= 1,
+	.use_pmdown_time	= 1,
+	.endianness		= 1,
+	.non_legacy_dai_naming	= 1,
 };
 
 static const struct snd_soc_dai_ops max98357a_dai_ops = {
@@ -95,7 +89,10 @@ static struct snd_soc_dai_driver max98357a_dai_driver = {
 					SNDRV_PCM_FMTBIT_S32,
 		.rates		= SNDRV_PCM_RATE_8000 |
 					SNDRV_PCM_RATE_16000 |
+					SNDRV_PCM_RATE_32000 |
+					SNDRV_PCM_RATE_44100 |
 					SNDRV_PCM_RATE_48000 |
+					SNDRV_PCM_RATE_88200 |
 					SNDRV_PCM_RATE_96000,
 		.rate_min	= 8000,
 		.rate_max	= 96000,
@@ -107,14 +104,13 @@ static struct snd_soc_dai_driver max98357a_dai_driver = {
 
 static int max98357a_platform_probe(struct platform_device *pdev)
 {
-	return snd_soc_register_codec(&pdev->dev, &max98357a_codec_driver,
+	return devm_snd_soc_register_component(&pdev->dev,
+			&max98357a_component_driver,
 			&max98357a_dai_driver, 1);
 }
 
 static int max98357a_platform_remove(struct platform_device *pdev)
 {
-	snd_soc_unregister_codec(&pdev->dev);
-
 	return 0;
 }
 

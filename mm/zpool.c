@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * zpool memory storage api
  *
@@ -360,7 +361,7 @@ u64 zpool_get_total_size(struct zpool *zpool)
 
 /**
  * zpool_evictable() - Test if zpool is potentially evictable
- * @pool	The zpool to test
+ * @zpool:	The zpool to test
  *
  * Zpool is only potentially evictable when it's created with struct
  * zpool_ops.evict and its driver implements struct zpool_driver.shrink.

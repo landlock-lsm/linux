@@ -26,7 +26,6 @@
  */
 
 #include <drm/drm_dp_helper.h>
-#include <drm/drmP.h>
 #include <drm/i915_drm.h>
 #include "i915_drv.h"
 
@@ -267,8 +266,6 @@ parse_lfp_panel_data(struct drm_i915_private *dev_priv,
 	if (!lvds_lfp_data_ptrs)
 		return;
 
-	dev_priv->vbt.lvds_vbt = 1;
-
 	panel_dvo_timing = get_lvds_dvo_timing(lvds_lfp_data,
 					       lvds_lfp_data_ptrs,
 					       panel_type);
@@ -391,7 +388,7 @@ parse_sdvo_panel_data(struct drm_i915_private *dev_priv,
 static int intel_bios_ssc_frequency(struct drm_i915_private *dev_priv,
 				    bool alternate)
 {
-	switch (INTEL_INFO(dev_priv)->gen) {
+	switch (INTEL_GEN(dev_priv)) {
 	case 2:
 		return alternate ? 66667 : 48000;
 	case 3:
@@ -422,6 +419,13 @@ parse_general_features(struct drm_i915_private *dev_priv,
 		intel_bios_ssc_frequency(dev_priv, general->ssc_freq);
 	dev_priv->vbt.display_clock_mode = general->display_clock_mode;
 	dev_priv->vbt.fdi_rx_polarity_inverted = general->fdi_rx_polarity_inverted;
+	if (bdb->version >= 181) {
+		dev_priv->vbt.orientation = general->rotate_180 ?
+			DRM_MODE_PANEL_ORIENTATION_BOTTOM_UP :
+			DRM_MODE_PANEL_ORIENTATION_NORMAL;
+	} else {
+		dev_priv->vbt.orientation = DRM_MODE_PANEL_ORIENTATION_UNKNOWN;
+	}
 	DRM_DEBUG_KMS("BDB_GENERAL_FEATURES int_tv_support %d int_crt_support %d lvds_use_ssc %d lvds_ssc_freq %d display_clock_mode %d fdi_rx_polarity_inverted %d\n",
 		      dev_priv->vbt.int_tv_support,
 		      dev_priv->vbt.int_crt_support,
@@ -448,7 +452,7 @@ parse_sdvo_device_mapping(struct drm_i915_private *dev_priv, u8 bdb_version)
 	 * Only parse SDVO mappings on gens that could have SDVO. This isn't
 	 * accurate and doesn't have to be, as long as it's not too strict.
 	 */
-	if (!IS_GEN(dev_priv, 3, 7)) {
+	if (!IS_GEN_RANGE(dev_priv, 3, 7)) {
 		DRM_DEBUG_KMS("Skipping SDVO device mapping\n");
 		return;
 	}
@@ -518,8 +522,31 @@ parse_driver_features(struct drm_i915_private *dev_priv,
 	if (!driver)
 		return;
 
-	if (driver->lvds_config == BDB_DRIVER_FEATURE_EDP)
-		dev_priv->vbt.edp.support = 1;
+	if (INTEL_GEN(dev_priv) >= 5) {
+		/*
+		 * Note that we consider BDB_DRIVER_FEATURE_INT_SDVO_LVDS
+		 * to mean "eDP". The VBT spec doesn't agree with that
+		 * interpretation, but real world VBTs seem to.
+		 */
+		if (driver->lvds_config != BDB_DRIVER_FEATURE_INT_LVDS)
+			dev_priv->vbt.int_lvds_support = 0;
+	} else {
+		/*
+		 * FIXME it's not clear which BDB version has the LVDS config
+		 * bits defined. Revision history in the VBT spec says:
+		 * "0.92 | Add two definitions for VBT value of LVDS Active
+		 *  Config (00b and 11b values defined) | 06/13/2005"
+		 * but does not the specify the BDB version.
+		 *
+		 * So far version 134 (on i945gm) is the oldest VBT observed
+		 * in the wild with the bits correctly populated. Version
+		 * 108 (on i85x) does not have the bits correctly populated.
+		 */
+		if (bdb->version >= 134 &&
+		    driver->lvds_config != BDB_DRIVER_FEATURE_INT_LVDS &&
+		    driver->lvds_config != BDB_DRIVER_FEATURE_INT_SDVO_LVDS)
+			dev_priv->vbt.int_lvds_support = 0;
+	}
 
 	DRM_DEBUG_KMS("DRRS State Enabled:%d\n", driver->drrs_enabled);
 	/*
@@ -530,6 +557,7 @@ parse_driver_features(struct drm_i915_private *dev_priv,
 	 */
 	if (!driver->drrs_enabled)
 		dev_priv->vbt.drrs_type = DRRS_NOT_SUPPORTED;
+	dev_priv->vbt.psr.enable = driver->psr_enabled;
 }
 
 static void
@@ -541,11 +569,8 @@ parse_edp(struct drm_i915_private *dev_priv, const struct bdb_header *bdb)
 	int panel_type = dev_priv->vbt.panel_type;
 
 	edp = find_section(bdb, BDB_EDP);
-	if (!edp) {
-		if (dev_priv->vbt.edp.support)
-			DRM_DEBUG_KMS("No eDP BDB found but eDP panel supported.\n");
+	if (!edp)
 		return;
-	}
 
 	switch ((edp->color_depth >> (panel_type * 2)) & 3) {
 	case EDP_18BPP:
@@ -633,7 +658,7 @@ parse_edp(struct drm_i915_private *dev_priv, const struct bdb_header *bdb)
 	}
 
 	if (bdb->version >= 173) {
-		uint8_t vswing;
+		u8 vswing;
 
 		/* Don't read from VBT if module parameter has valid value*/
 		if (i915_modparams.edp_vswing) {
@@ -687,8 +712,79 @@ parse_psr(struct drm_i915_private *dev_priv, const struct bdb_header *bdb)
 		break;
 	}
 
-	dev_priv->vbt.psr.tp1_wakeup_time = psr_table->tp1_wakeup_time;
-	dev_priv->vbt.psr.tp2_tp3_wakeup_time = psr_table->tp2_tp3_wakeup_time;
+	/*
+	 * New psr options 0=500us, 1=100us, 2=2500us, 3=0us
+	 * Old decimal value is wake up time in multiples of 100 us.
+	 */
+	if (bdb->version >= 205 &&
+	    (IS_GEN9_BC(dev_priv) || IS_GEMINILAKE(dev_priv) ||
+	     INTEL_GEN(dev_priv) >= 10)) {
+		switch (psr_table->tp1_wakeup_time) {
+		case 0:
+			dev_priv->vbt.psr.tp1_wakeup_time_us = 500;
+			break;
+		case 1:
+			dev_priv->vbt.psr.tp1_wakeup_time_us = 100;
+			break;
+		case 3:
+			dev_priv->vbt.psr.tp1_wakeup_time_us = 0;
+			break;
+		default:
+			DRM_DEBUG_KMS("VBT tp1 wakeup time value %d is outside range[0-3], defaulting to max value 2500us\n",
+					psr_table->tp1_wakeup_time);
+			/* fallthrough */
+		case 2:
+			dev_priv->vbt.psr.tp1_wakeup_time_us = 2500;
+			break;
+		}
+
+		switch (psr_table->tp2_tp3_wakeup_time) {
+		case 0:
+			dev_priv->vbt.psr.tp2_tp3_wakeup_time_us = 500;
+			break;
+		case 1:
+			dev_priv->vbt.psr.tp2_tp3_wakeup_time_us = 100;
+			break;
+		case 3:
+			dev_priv->vbt.psr.tp2_tp3_wakeup_time_us = 0;
+			break;
+		default:
+			DRM_DEBUG_KMS("VBT tp2_tp3 wakeup time value %d is outside range[0-3], defaulting to max value 2500us\n",
+					psr_table->tp2_tp3_wakeup_time);
+			/* fallthrough */
+		case 2:
+			dev_priv->vbt.psr.tp2_tp3_wakeup_time_us = 2500;
+		break;
+		}
+	} else {
+		dev_priv->vbt.psr.tp1_wakeup_time_us = psr_table->tp1_wakeup_time * 100;
+		dev_priv->vbt.psr.tp2_tp3_wakeup_time_us = psr_table->tp2_tp3_wakeup_time * 100;
+	}
+
+	if (bdb->version >= 226) {
+		u32 wakeup_time = psr_table->psr2_tp2_tp3_wakeup_time;
+
+		wakeup_time = (wakeup_time >> (2 * panel_type)) & 0x3;
+		switch (wakeup_time) {
+		case 0:
+			wakeup_time = 500;
+			break;
+		case 1:
+			wakeup_time = 100;
+			break;
+		case 3:
+			wakeup_time = 50;
+			break;
+		default:
+		case 2:
+			wakeup_time = 2500;
+			break;
+		}
+		dev_priv->vbt.psr.psr2_tp2_tp3_wakeup_time_us = wakeup_time;
+	} else {
+		/* Reusing PSR1 wakeup time for PSR2 in older VBTs */
+		dev_priv->vbt.psr.psr2_tp2_tp3_wakeup_time_us = dev_priv->vbt.psr.tp2_tp3_wakeup_time_us;
+	}
 }
 
 static void parse_dsi_backlight_ports(struct drm_i915_private *dev_priv,
@@ -786,6 +882,30 @@ parse_mipi_config(struct drm_i915_private *dev_priv,
 	}
 
 	parse_dsi_backlight_ports(dev_priv, bdb->version, port);
+
+	/* FIXME is the 90 vs. 270 correct? */
+	switch (config->rotation) {
+	case ENABLE_ROTATION_0:
+		/*
+		 * Most (all?) VBTs claim 0 degrees despite having
+		 * an upside down panel, thus we do not trust this.
+		 */
+		dev_priv->vbt.dsi.orientation =
+			DRM_MODE_PANEL_ORIENTATION_UNKNOWN;
+		break;
+	case ENABLE_ROTATION_90:
+		dev_priv->vbt.dsi.orientation =
+			DRM_MODE_PANEL_ORIENTATION_RIGHT_UP;
+		break;
+	case ENABLE_ROTATION_180:
+		dev_priv->vbt.dsi.orientation =
+			DRM_MODE_PANEL_ORIENTATION_BOTTOM_UP;
+		break;
+	case ENABLE_ROTATION_270:
+		dev_priv->vbt.dsi.orientation =
+			DRM_MODE_PANEL_ORIENTATION_LEFT_UP;
+		break;
+	}
 
 	/* We have mandatory mipi config blocks. Initialize as generic panel */
 	dev_priv->vbt.dsi.panel_id = MIPI_DSI_GENERIC_PANEL_ID;
@@ -901,7 +1021,7 @@ static int goto_next_sequence_v3(const u8 *data, int index, int total)
 	 * includes MIPI_SEQ_ELEM_END byte, excludes the final MIPI_SEQ_END
 	 * byte.
 	 */
-	size_of_sequence = *((const uint32_t *)(data + index));
+	size_of_sequence = *((const u32 *)(data + index));
 	index += 4;
 
 	seq_end = index + size_of_sequence;
@@ -945,6 +1065,86 @@ static int goto_next_sequence_v3(const u8 *data, int index, int total)
 	}
 
 	return 0;
+}
+
+/*
+ * Get len of pre-fixed deassert fragment from a v1 init OTP sequence,
+ * skip all delay + gpio operands and stop at the first DSI packet op.
+ */
+static int get_init_otp_deassert_fragment_len(struct drm_i915_private *dev_priv)
+{
+	const u8 *data = dev_priv->vbt.dsi.sequence[MIPI_SEQ_INIT_OTP];
+	int index, len;
+
+	if (WARN_ON(!data || dev_priv->vbt.dsi.seq_version != 1))
+		return 0;
+
+	/* index = 1 to skip sequence byte */
+	for (index = 1; data[index] != MIPI_SEQ_ELEM_END; index += len) {
+		switch (data[index]) {
+		case MIPI_SEQ_ELEM_SEND_PKT:
+			return index == 1 ? 0 : index;
+		case MIPI_SEQ_ELEM_DELAY:
+			len = 5; /* 1 byte for operand + uint32 */
+			break;
+		case MIPI_SEQ_ELEM_GPIO:
+			len = 3; /* 1 byte for op, 1 for gpio_nr, 1 for value */
+			break;
+		default:
+			return 0;
+		}
+	}
+
+	return 0;
+}
+
+/*
+ * Some v1 VBT MIPI sequences do the deassert in the init OTP sequence.
+ * The deassert must be done before calling intel_dsi_device_ready, so for
+ * these devices we split the init OTP sequence into a deassert sequence and
+ * the actual init OTP part.
+ */
+static void fixup_mipi_sequences(struct drm_i915_private *dev_priv)
+{
+	u8 *init_otp;
+	int len;
+
+	/* Limit this to VLV for now. */
+	if (!IS_VALLEYVIEW(dev_priv))
+		return;
+
+	/* Limit this to v1 vid-mode sequences */
+	if (dev_priv->vbt.dsi.config->is_cmd_mode ||
+	    dev_priv->vbt.dsi.seq_version != 1)
+		return;
+
+	/* Only do this if there are otp and assert seqs and no deassert seq */
+	if (!dev_priv->vbt.dsi.sequence[MIPI_SEQ_INIT_OTP] ||
+	    !dev_priv->vbt.dsi.sequence[MIPI_SEQ_ASSERT_RESET] ||
+	    dev_priv->vbt.dsi.sequence[MIPI_SEQ_DEASSERT_RESET])
+		return;
+
+	/* The deassert-sequence ends at the first DSI packet */
+	len = get_init_otp_deassert_fragment_len(dev_priv);
+	if (!len)
+		return;
+
+	DRM_DEBUG_KMS("Using init OTP fragment to deassert reset\n");
+
+	/* Copy the fragment, update seq byte and terminate it */
+	init_otp = (u8 *)dev_priv->vbt.dsi.sequence[MIPI_SEQ_INIT_OTP];
+	dev_priv->vbt.dsi.deassert_seq = kmemdup(init_otp, len + 1, GFP_KERNEL);
+	if (!dev_priv->vbt.dsi.deassert_seq)
+		return;
+	dev_priv->vbt.dsi.deassert_seq[0] = MIPI_SEQ_DEASSERT_RESET;
+	dev_priv->vbt.dsi.deassert_seq[len] = MIPI_SEQ_ELEM_END;
+	/* Use the copy for deassert */
+	dev_priv->vbt.dsi.sequence[MIPI_SEQ_DEASSERT_RESET] =
+		dev_priv->vbt.dsi.deassert_seq;
+	/* Replace the last byte of the fragment with init OTP seq byte */
+	init_otp[len - 1] = MIPI_SEQ_INIT_OTP;
+	/* And make MIPI_MIPI_SEQ_INIT_OTP point to it */
+	dev_priv->vbt.dsi.sequence[MIPI_SEQ_INIT_OTP] = init_otp + len - 1;
 }
 
 static void
@@ -1016,6 +1216,8 @@ parse_mipi_sequence(struct drm_i915_private *dev_priv,
 	dev_priv->vbt.dsi.size = seq_size;
 	dev_priv->vbt.dsi.seq_version = sequence->version;
 
+	fixup_mipi_sequences(dev_priv);
+
 	DRM_DEBUG_DRIVER("MIPI related VBT parsing complete\n");
 	return;
 
@@ -1045,10 +1247,11 @@ static void sanitize_ddc_pin(struct drm_i915_private *dev_priv,
 	if (!info->alternate_ddc_pin)
 		return;
 
-	for_each_port_masked(p, (1 << port) - 1) {
+	for (p = PORT_A; p < I915_MAX_PORTS; p++) {
 		struct ddi_vbt_port_info *i = &dev_priv->vbt.ddi_port_info[p];
 
-		if (info->alternate_ddc_pin != i->alternate_ddc_pin)
+		if (p == port || !i->present ||
+		    info->alternate_ddc_pin != i->alternate_ddc_pin)
 			continue;
 
 		DRM_DEBUG_KMS("port %c trying to use the same DDC pin (0x%x) as port %c, "
@@ -1062,8 +1265,8 @@ static void sanitize_ddc_pin(struct drm_i915_private *dev_priv,
 		 * port. Otherwise they share the same ddc bin and
 		 * system couldn't communicate with them separately.
 		 *
-		 * Due to parsing the ports in alphabetical order,
-		 * a higher port will always clobber a lower one.
+		 * Due to parsing the ports in child device order,
+		 * a later device will always clobber an earlier one.
 		 */
 		i->supports_dvi = false;
 		i->supports_hdmi = false;
@@ -1081,10 +1284,11 @@ static void sanitize_aux_ch(struct drm_i915_private *dev_priv,
 	if (!info->alternate_aux_channel)
 		return;
 
-	for_each_port_masked(p, (1 << port) - 1) {
+	for (p = PORT_A; p < I915_MAX_PORTS; p++) {
 		struct ddi_vbt_port_info *i = &dev_priv->vbt.ddi_port_info[p];
 
-		if (info->alternate_aux_channel != i->alternate_aux_channel)
+		if (p == port || !i->present ||
+		    info->alternate_aux_channel != i->alternate_aux_channel)
 			continue;
 
 		DRM_DEBUG_KMS("port %c trying to use the same AUX CH (0x%x) as port %c, "
@@ -1098,8 +1302,8 @@ static void sanitize_aux_ch(struct drm_i915_private *dev_priv,
 		 * port. Otherwise they share the same aux channel
 		 * and system couldn't communicate with them separately.
 		 *
-		 * Due to parsing the ports in alphabetical order,
-		 * a higher port will always clobber a lower one.
+		 * Due to parsing the ports in child device order,
+		 * a later device will always clobber an earlier one.
 		 */
 		i->supports_dp = false;
 		i->alternate_aux_channel = 0;
@@ -1114,66 +1318,90 @@ static const u8 cnp_ddc_pin_map[] = {
 	[DDC_BUS_DDI_F] = GMBUS_PIN_3_BXT, /* sic */
 };
 
+static const u8 icp_ddc_pin_map[] = {
+	[ICL_DDC_BUS_DDI_A] = GMBUS_PIN_1_BXT,
+	[ICL_DDC_BUS_DDI_B] = GMBUS_PIN_2_BXT,
+	[ICL_DDC_BUS_PORT_1] = GMBUS_PIN_9_TC1_ICP,
+	[ICL_DDC_BUS_PORT_2] = GMBUS_PIN_10_TC2_ICP,
+	[ICL_DDC_BUS_PORT_3] = GMBUS_PIN_11_TC3_ICP,
+	[ICL_DDC_BUS_PORT_4] = GMBUS_PIN_12_TC4_ICP,
+};
+
 static u8 map_ddc_pin(struct drm_i915_private *dev_priv, u8 vbt_pin)
 {
-	if (HAS_PCH_CNP(dev_priv)) {
-		if (vbt_pin < ARRAY_SIZE(cnp_ddc_pin_map)) {
-			return cnp_ddc_pin_map[vbt_pin];
-		} else {
-			DRM_DEBUG_KMS("Ignoring alternate pin: VBT claims DDC pin %d, which is not valid for this platform\n", vbt_pin);
-			return 0;
-		}
+	const u8 *ddc_pin_map;
+	int n_entries;
+
+	if (HAS_PCH_ICP(dev_priv)) {
+		ddc_pin_map = icp_ddc_pin_map;
+		n_entries = ARRAY_SIZE(icp_ddc_pin_map);
+	} else if (HAS_PCH_CNP(dev_priv)) {
+		ddc_pin_map = cnp_ddc_pin_map;
+		n_entries = ARRAY_SIZE(cnp_ddc_pin_map);
+	} else {
+		/* Assuming direct map */
+		return vbt_pin;
 	}
 
-	return vbt_pin;
+	if (vbt_pin < n_entries && ddc_pin_map[vbt_pin] != 0)
+		return ddc_pin_map[vbt_pin];
+
+	DRM_DEBUG_KMS("Ignoring alternate pin: VBT claims DDC pin %d, which is not valid for this platform\n",
+		      vbt_pin);
+	return 0;
 }
 
-static void parse_ddi_port(struct drm_i915_private *dev_priv, enum port port,
-			   u8 bdb_version)
+static enum port dvo_port_to_port(u8 dvo_port)
 {
-	struct child_device_config *it, *child = NULL;
-	struct ddi_vbt_port_info *info = &dev_priv->vbt.ddi_port_info[port];
-	uint8_t hdmi_level_shift;
-	int i, j;
-	bool is_dvi, is_hdmi, is_dp, is_edp, is_crt;
-	uint8_t aux_channel, ddc_pin;
-	/* Each DDI port can have more than one value on the "DVO Port" field,
+	/*
+	 * Each DDI port can have more than one value on the "DVO Port" field,
 	 * so look for all the possible values for each port.
 	 */
-	int dvo_ports[][3] = {
-		{DVO_PORT_HDMIA, DVO_PORT_DPA, -1},
-		{DVO_PORT_HDMIB, DVO_PORT_DPB, -1},
-		{DVO_PORT_HDMIC, DVO_PORT_DPC, -1},
-		{DVO_PORT_HDMID, DVO_PORT_DPD, -1},
-		{DVO_PORT_CRT, DVO_PORT_HDMIE, DVO_PORT_DPE},
+	static const int dvo_ports[][3] = {
+		[PORT_A] = { DVO_PORT_HDMIA, DVO_PORT_DPA, -1},
+		[PORT_B] = { DVO_PORT_HDMIB, DVO_PORT_DPB, -1},
+		[PORT_C] = { DVO_PORT_HDMIC, DVO_PORT_DPC, -1},
+		[PORT_D] = { DVO_PORT_HDMID, DVO_PORT_DPD, -1},
+		[PORT_E] = { DVO_PORT_CRT, DVO_PORT_HDMIE, DVO_PORT_DPE},
+		[PORT_F] = { DVO_PORT_HDMIF, DVO_PORT_DPF, -1},
 	};
+	enum port port;
+	int i;
 
-	/*
-	 * Find the first child device to reference the port, report if more
-	 * than one found.
-	 */
-	for (i = 0; i < dev_priv->vbt.child_dev_num; i++) {
-		it = dev_priv->vbt.child_dev + i;
-
-		for (j = 0; j < 3; j++) {
-			if (dvo_ports[port][j] == -1)
+	for (port = PORT_A; port < ARRAY_SIZE(dvo_ports); port++) {
+		for (i = 0; i < ARRAY_SIZE(dvo_ports[port]); i++) {
+			if (dvo_ports[port][i] == -1)
 				break;
 
-			if (it->dvo_port == dvo_ports[port][j]) {
-				if (child) {
-					DRM_DEBUG_KMS("More than one child device for port %c in VBT, using the first.\n",
-						      port_name(port));
-				} else {
-					child = it;
-				}
-			}
+			if (dvo_port == dvo_ports[port][i])
+				return port;
 		}
 	}
-	if (!child)
+
+	return PORT_NONE;
+}
+
+static void parse_ddi_port(struct drm_i915_private *dev_priv,
+			   const struct child_device_config *child,
+			   u8 bdb_version)
+{
+	struct ddi_vbt_port_info *info;
+	bool is_dvi, is_hdmi, is_dp, is_edp, is_crt;
+	enum port port;
+
+	port = dvo_port_to_port(child->dvo_port);
+	if (port == PORT_NONE)
 		return;
 
-	aux_channel = child->aux_channel;
-	ddc_pin = child->ddc_pin;
+	info = &dev_priv->vbt.ddi_port_info[port];
+
+	if (info->present) {
+		DRM_DEBUG_KMS("More than one child device for port %c in VBT, using the first.\n",
+			      port_name(port));
+		return;
+	}
+
+	info->present = true;
 
 	is_dvi = child->device_type & DEVICE_TYPE_TMDS_DVI_SIGNALING;
 	is_dp = child->device_type & DEVICE_TYPE_DISPLAYPORT_OUTPUT;
@@ -1188,20 +1416,20 @@ static void parse_ddi_port(struct drm_i915_private *dev_priv, enum port port,
 		is_hdmi = false;
 	}
 
-	if (port == PORT_A && is_dvi) {
-		DRM_DEBUG_KMS("VBT claims port A supports DVI%s, ignoring\n",
-			      is_hdmi ? "/HDMI" : "");
-		is_dvi = false;
-		is_hdmi = false;
-	}
-
 	info->supports_dvi = is_dvi;
 	info->supports_hdmi = is_hdmi;
 	info->supports_dp = is_dp;
 	info->supports_edp = is_edp;
 
-	DRM_DEBUG_KMS("Port %c VBT info: DP:%d HDMI:%d DVI:%d EDP:%d CRT:%d\n",
-		      port_name(port), is_dp, is_hdmi, is_dvi, is_edp, is_crt);
+	if (bdb_version >= 195)
+		info->supports_typec_usb = child->dp_usb_type_c;
+
+	if (bdb_version >= 209)
+		info->supports_tbt = child->tbt;
+
+	DRM_DEBUG_KMS("Port %c VBT info: DP:%d HDMI:%d DVI:%d EDP:%d CRT:%d TCUSB:%d TBT:%d\n",
+		      port_name(port), is_dp, is_hdmi, is_dvi, is_edp, is_crt,
+		      info->supports_typec_usb, info->supports_tbt);
 
 	if (is_edp && is_dvi)
 		DRM_DEBUG_KMS("Internal DP port %c is TMDS compatible\n",
@@ -1220,20 +1448,28 @@ static void parse_ddi_port(struct drm_i915_private *dev_priv, enum port port,
 		DRM_DEBUG_KMS("Port %c is internal DP\n", port_name(port));
 
 	if (is_dvi) {
-		info->alternate_ddc_pin = map_ddc_pin(dev_priv, ddc_pin);
+		u8 ddc_pin;
 
-		sanitize_ddc_pin(dev_priv, port);
+		ddc_pin = map_ddc_pin(dev_priv, child->ddc_pin);
+		if (intel_gmbus_is_valid_pin(dev_priv, ddc_pin)) {
+			info->alternate_ddc_pin = ddc_pin;
+			sanitize_ddc_pin(dev_priv, port);
+		} else {
+			DRM_DEBUG_KMS("Port %c has invalid DDC pin %d, "
+				      "sticking to defaults\n",
+				      port_name(port), ddc_pin);
+		}
 	}
 
 	if (is_dp) {
-		info->alternate_aux_channel = aux_channel;
+		info->alternate_aux_channel = child->aux_channel;
 
 		sanitize_aux_ch(dev_priv, port);
 	}
 
 	if (bdb_version >= 158) {
 		/* The VBT HDMI level shift values match the table we have. */
-		hdmi_level_shift = child->hdmi_level_shifter_value;
+		u8 hdmi_level_shift = child->hdmi_level_shifter_value;
 		DRM_DEBUG_KMS("VBT HDMI level shift for port %c: %d\n",
 			      port_name(port),
 			      hdmi_level_shift);
@@ -1273,23 +1509,45 @@ static void parse_ddi_port(struct drm_i915_private *dev_priv, enum port port,
 		DRM_DEBUG_KMS("VBT HDMI boost level for port %c: %d\n",
 			      port_name(port), info->hdmi_boost_level);
 	}
+
+	/* DP max link rate for CNL+ */
+	if (bdb_version >= 216) {
+		switch (child->dp_max_link_rate) {
+		default:
+		case VBT_DP_MAX_LINK_RATE_HBR3:
+			info->dp_max_link_rate = 810000;
+			break;
+		case VBT_DP_MAX_LINK_RATE_HBR2:
+			info->dp_max_link_rate = 540000;
+			break;
+		case VBT_DP_MAX_LINK_RATE_HBR:
+			info->dp_max_link_rate = 270000;
+			break;
+		case VBT_DP_MAX_LINK_RATE_LBR:
+			info->dp_max_link_rate = 162000;
+			break;
+		}
+		DRM_DEBUG_KMS("VBT DP max link rate for port %c: %d\n",
+			      port_name(port), info->dp_max_link_rate);
+	}
 }
 
 static void parse_ddi_ports(struct drm_i915_private *dev_priv, u8 bdb_version)
 {
-	enum port port;
+	const struct child_device_config *child;
+	int i;
 
 	if (!HAS_DDI(dev_priv) && !IS_CHERRYVIEW(dev_priv))
-		return;
-
-	if (!dev_priv->vbt.child_dev_num)
 		return;
 
 	if (bdb_version < 155)
 		return;
 
-	for (port = PORT_A; port < I915_MAX_PORTS; port++)
-		parse_ddi_port(dev_priv, port, bdb_version);
+	for (i = 0; i < dev_priv->vbt.child_dev_num; i++) {
+		child = dev_priv->vbt.child_dev + i;
+
+		parse_ddi_port(dev_priv, child, bdb_version);
+	}
 }
 
 static void
@@ -1403,7 +1661,6 @@ init_vbt_defaults(struct drm_i915_private *dev_priv)
 
 	/* LFP panel data */
 	dev_priv->vbt.lvds_dither = 1;
-	dev_priv->vbt.lvds_vbt = 0;
 
 	/* SDVO panel data */
 	dev_priv->vbt.sdvo_lvds_vbt_mode = NULL;
@@ -1411,6 +1668,9 @@ init_vbt_defaults(struct drm_i915_private *dev_priv)
 	/* general features */
 	dev_priv->vbt.int_tv_support = 1;
 	dev_priv->vbt.int_crt_support = 1;
+
+	/* driver features */
+	dev_priv->vbt.int_lvds_support = 1;
 
 	/* Default to using SSC */
 	dev_priv->vbt.lvds_use_ssc = 1;
@@ -1440,9 +1700,17 @@ init_vbt_missing_defaults(struct drm_i915_private *dev_priv)
 		struct ddi_vbt_port_info *info =
 			&dev_priv->vbt.ddi_port_info[port];
 
+		/*
+		 * VBT has the TypeC mode (native,TBT/USB) and we don't want
+		 * to detect it.
+		 */
+		if (intel_port_is_tc(dev_priv, port))
+			continue;
+
 		info->supports_dvi = (port != PORT_A && port != PORT_E);
 		info->supports_hdmi = info->supports_dvi;
 		info->supports_dp = (port != PORT_E);
+		info->supports_edp = (port == PORT_A);
 	}
 }
 
@@ -1535,7 +1803,7 @@ void intel_bios_init(struct drm_i915_private *dev_priv)
 	const struct bdb_header *bdb;
 	u8 __iomem *bios = NULL;
 
-	if (HAS_PCH_NOP(dev_priv)) {
+	if (!HAS_DISPLAY(dev_priv)) {
 		DRM_DEBUG_KMS("Skipping VBT init due to disabled display.\n");
 		return;
 	}
@@ -1586,6 +1854,29 @@ out:
 
 	if (bios)
 		pci_unmap_rom(pdev, bios);
+}
+
+/**
+ * intel_bios_cleanup - Free any resources allocated by intel_bios_init()
+ * @dev_priv: i915 device instance
+ */
+void intel_bios_cleanup(struct drm_i915_private *dev_priv)
+{
+	kfree(dev_priv->vbt.child_dev);
+	dev_priv->vbt.child_dev = NULL;
+	dev_priv->vbt.child_dev_num = 0;
+	kfree(dev_priv->vbt.sdvo_lvds_vbt_mode);
+	dev_priv->vbt.sdvo_lvds_vbt_mode = NULL;
+	kfree(dev_priv->vbt.lfp_lvds_vbt_mode);
+	dev_priv->vbt.lfp_lvds_vbt_mode = NULL;
+	kfree(dev_priv->vbt.dsi.data);
+	dev_priv->vbt.dsi.data = NULL;
+	kfree(dev_priv->vbt.dsi.pps);
+	dev_priv->vbt.dsi.pps = NULL;
+	kfree(dev_priv->vbt.dsi.config);
+	dev_priv->vbt.dsi.config = NULL;
+	kfree(dev_priv->vbt.dsi.deassert_seq);
+	dev_priv->vbt.dsi.deassert_seq = NULL;
 }
 
 /**
@@ -1696,8 +1987,18 @@ bool intel_bios_is_port_present(struct drm_i915_private *dev_priv, enum port por
 		[PORT_C] = { DVO_PORT_DPC, DVO_PORT_HDMIC, },
 		[PORT_D] = { DVO_PORT_DPD, DVO_PORT_HDMID, },
 		[PORT_E] = { DVO_PORT_DPE, DVO_PORT_HDMIE, },
+		[PORT_F] = { DVO_PORT_DPF, DVO_PORT_HDMIF, },
 	};
 	int i;
+
+	if (HAS_DDI(dev_priv)) {
+		const struct ddi_vbt_port_info *port_info =
+			&dev_priv->vbt.ddi_port_info[port];
+
+		return port_info->supports_dp ||
+		       port_info->supports_dvi ||
+		       port_info->supports_hdmi;
+	}
 
 	/* FIXME maybe deal with port A as well? */
 	if (WARN_ON(port == PORT_A) || port >= ARRAY_SIZE(port_mapping))
@@ -1734,6 +2035,7 @@ bool intel_bios_is_port_edp(struct drm_i915_private *dev_priv, enum port port)
 		[PORT_C] = DVO_PORT_DPC,
 		[PORT_D] = DVO_PORT_DPD,
 		[PORT_E] = DVO_PORT_DPE,
+		[PORT_F] = DVO_PORT_DPF,
 	};
 	int i;
 
@@ -1769,6 +2071,7 @@ static bool child_dev_is_dp_dual_mode(const struct child_device_config *child,
 		[PORT_C] = { DVO_PORT_DPC, DVO_PORT_HDMIC, },
 		[PORT_D] = { DVO_PORT_DPD, DVO_PORT_HDMID, },
 		[PORT_E] = { DVO_PORT_DPE, DVO_PORT_HDMIE, },
+		[PORT_F] = { DVO_PORT_DPF, DVO_PORT_HDMIF, },
 	};
 
 	if (port == PORT_A || port >= ARRAY_SIZE(port_mapping))
@@ -1827,17 +2130,17 @@ bool intel_bios_is_dsi_present(struct drm_i915_private *dev_priv,
 
 		dvo_port = child->dvo_port;
 
-		switch (dvo_port) {
-		case DVO_PORT_MIPIA:
-		case DVO_PORT_MIPIC:
+		if (dvo_port == DVO_PORT_MIPIA ||
+		    (dvo_port == DVO_PORT_MIPIB && INTEL_GEN(dev_priv) >= 11) ||
+		    (dvo_port == DVO_PORT_MIPIC && INTEL_GEN(dev_priv) < 11)) {
 			if (port)
 				*port = dvo_port - DVO_PORT_MIPIA;
 			return true;
-		case DVO_PORT_MIPIB:
-		case DVO_PORT_MIPID:
+		} else if (dvo_port == DVO_PORT_MIPIB ||
+			   dvo_port == DVO_PORT_MIPIC ||
+			   dvo_port == DVO_PORT_MIPID) {
 			DRM_DEBUG_KMS("VBT has unsupported DSI port %c\n",
 				      port_name(dvo_port - DVO_PORT_MIPIA));
-			break;
 		}
 	}
 
@@ -1935,10 +2238,61 @@ intel_bios_is_lspcon_present(struct drm_i915_private *dev_priv,
 			if (port == PORT_D)
 				return true;
 			break;
+		case DVO_PORT_DPF:
+		case DVO_PORT_HDMIF:
+			if (port == PORT_F)
+				return true;
+			break;
 		default:
 			break;
 		}
 	}
 
 	return false;
+}
+
+enum aux_ch intel_bios_port_aux_ch(struct drm_i915_private *dev_priv,
+				   enum port port)
+{
+	const struct ddi_vbt_port_info *info =
+		&dev_priv->vbt.ddi_port_info[port];
+	enum aux_ch aux_ch;
+
+	if (!info->alternate_aux_channel) {
+		aux_ch = (enum aux_ch)port;
+
+		DRM_DEBUG_KMS("using AUX %c for port %c (platform default)\n",
+			      aux_ch_name(aux_ch), port_name(port));
+		return aux_ch;
+	}
+
+	switch (info->alternate_aux_channel) {
+	case DP_AUX_A:
+		aux_ch = AUX_CH_A;
+		break;
+	case DP_AUX_B:
+		aux_ch = AUX_CH_B;
+		break;
+	case DP_AUX_C:
+		aux_ch = AUX_CH_C;
+		break;
+	case DP_AUX_D:
+		aux_ch = AUX_CH_D;
+		break;
+	case DP_AUX_E:
+		aux_ch = AUX_CH_E;
+		break;
+	case DP_AUX_F:
+		aux_ch = AUX_CH_F;
+		break;
+	default:
+		MISSING_CASE(info->alternate_aux_channel);
+		aux_ch = AUX_CH_A;
+		break;
+	}
+
+	DRM_DEBUG_KMS("using AUX %c for port %c (VBT)\n",
+		      aux_ch_name(aux_ch), port_name(port));
+
+	return aux_ch;
 }

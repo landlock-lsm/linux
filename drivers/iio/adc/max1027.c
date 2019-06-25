@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
  /*
   * iio/adc/max1027.c
   * Copyright (C) 2014 Philippe Reynes
@@ -5,10 +6,6 @@
   * based on linux/drivers/iio/ad7923.c
   * Copyright 2011 Analog Devices Inc (from AD7923 Driver)
   * Copyright 2012 CS Systemes d'Information
-  *
-  * This program is free software; you can redistribute it and/or modify
-  * it under the terms of the GNU General Public License version 2 as
-  * published by the Free Software Foundation.
   *
   * max1027.c
   *
@@ -422,8 +419,8 @@ static int max1027_probe(struct spi_device *spi)
 	indio_dev->num_channels = st->info->num_channels;
 	indio_dev->available_scan_masks = st->info->available_scan_masks;
 
-	st->buffer = devm_kmalloc(&indio_dev->dev,
-				  indio_dev->num_channels * 2,
+	st->buffer = devm_kmalloc_array(&indio_dev->dev,
+				  indio_dev->num_channels, 2,
 				  GFP_KERNEL);
 	if (st->buffer == NULL) {
 		dev_err(&indio_dev->dev, "Can't allocate buffer\n");

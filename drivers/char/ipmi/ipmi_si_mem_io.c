@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 
 #include <linux/io.h>
 #include "ipmi_si.h"
@@ -50,7 +51,7 @@ static unsigned char mem_inq(const struct si_sm_io *io, unsigned int offset)
 static void mem_outq(const struct si_sm_io *io, unsigned int offset,
 		     unsigned char b)
 {
-	writeq(b << io->regshift, (io->addr)+(offset * io->regspacing));
+	writeq((u64)b << io->regshift, (io->addr)+(offset * io->regspacing));
 }
 #endif
 
@@ -79,8 +80,6 @@ int ipmi_si_mem_setup(struct si_sm_io *io)
 
 	if (!addr)
 		return -ENODEV;
-
-	io->io_cleanup = mem_cleanup;
 
 	/*
 	 * Figure out the actual readb/readw/readl/etc routine to use based
@@ -140,5 +139,8 @@ int ipmi_si_mem_setup(struct si_sm_io *io)
 		mem_region_cleanup(io, io->io_size);
 		return -EIO;
 	}
+
+	io->io_cleanup = mem_cleanup;
+
 	return 0;
 }

@@ -1,16 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Landlock sample 1 - partial read-only filesystem
+ * Landlock sample 1 - deny access to a set of directories (blacklisting)
  *
- * Copyright © 2017-2018 Mickaël Salaün <mic@digikod.net>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
+ * Copyright © 2017-2019 Mickaël Salaün <mic@digikod.net>
  */
 
+#include "bpf/libbpf.h"
 #include "bpf_load.h"
-#include "landlock1.h" /* MAP_MARK_* */
-#include "libbpf.h"
+#include "landlock1.h" /* MAP_FLAG_DENY */
 
 #define _GNU_SOURCE
 #include <errno.h>
@@ -54,8 +51,7 @@ static int apply_sandbox(int prog_fd)
 	return ret;
 }
 
-#define ENV_FS_PATH_RO_NAME "LL_PATH_RO"
-#define ENV_FS_PATH_RW_NAME "LL_PATH_RW"
+#define ENV_FS_PATH_DENY_NAME "LL_PATH_DENY"
 #define ENV_PATH_TOKEN ":"
 
 static int parse_path(char *env_path, const char ***path_list)
@@ -114,21 +110,18 @@ int main(int argc, char * const argv[], char * const *envp)
 	char filename[256];
 	char *cmd_path;
 	char * const *cmd_argv;
-	int ll_prog;
+	int ll_prog_walk, ll_prog_pick;
 
 	if (argc < 2) {
 		fprintf(stderr, "usage: %s <cmd> [args]...\n\n", argv[0]);
-		fprintf(stderr, "Launch a command in a restricted environment.\n");
+		fprintf(stderr, "Launch a command in a restricted environment.\n\n");
 		fprintf(stderr, "Environment variables containing paths, each separated by a colon:\n");
-		fprintf(stderr, "* %s: whitelist of allowed files and directories to be read\n",
-				ENV_FS_PATH_RO_NAME);
-		fprintf(stderr, "* %s: whitelist of allowed files and directories to be modified\n",
-				ENV_FS_PATH_RW_NAME);
+		fprintf(stderr, "* %s: list of files and directories which are denied\n",
+				ENV_FS_PATH_DENY_NAME);
 		fprintf(stderr, "\nexample:\n"
-				"%s=\"/bin:/lib:/lib64:/usr:${HOME}\" "
-				"%s=\"/tmp:/dev/urandom:/dev/random:/dev/null\" "
+				"%s=\"${HOME}/.ssh:${HOME}/Images\" "
 				"%s /bin/sh -i\n",
-				ENV_FS_PATH_RO_NAME, ENV_FS_PATH_RW_NAME, argv[0]);
+				ENV_FS_PATH_DENY_NAME, argv[0]);
 		return 1;
 	}
 
@@ -137,8 +130,9 @@ int main(int argc, char * const argv[], char * const *envp)
 		printf("%s", bpf_log_buf);
 		return 1;
 	}
-	ll_prog = prog_fd[3]; /* fs_get */
-	if (!ll_prog) {
+	ll_prog_walk = prog_fd[0]; /* fs_walk */
+	ll_prog_pick = prog_fd[1]; /* fs_pick */
+	if (!ll_prog_walk || !ll_prog_pick) {
 		if (errno)
 			printf("load_bpf_file: %s\n", strerror(errno));
 		else
@@ -146,15 +140,14 @@ int main(int argc, char * const argv[], char * const *envp)
 		return 1;
 	}
 
-	if (populate_map(ENV_FS_PATH_RO_NAME, MAP_MARK_READ, map_fd[0]))
-		return 1;
-	if (populate_map(ENV_FS_PATH_RW_NAME, MAP_MARK_READ | MAP_MARK_WRITE,
-				map_fd[0]))
+	if (populate_map(ENV_FS_PATH_DENY_NAME, MAP_FLAG_DENY, map_fd[0]))
 		return 1;
 	close(map_fd[0]);
 
 	fprintf(stderr, "Launching a new sandboxed process\n");
-	if (apply_sandbox(ll_prog))
+	if (apply_sandbox(ll_prog_walk))
+		return 1;
+	if (apply_sandbox(ll_prog_pick))
 		return 1;
 	cmd_path = argv[1];
 	cmd_argv = argv + 1;
