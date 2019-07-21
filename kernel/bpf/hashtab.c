@@ -1,13 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright (c) 2011-2014 PLUMgrid, http://plumgrid.com
  * Copyright (c) 2016 Facebook
+ * Copyright (c) 2017-2019 Mickaël Salaün <mic@digikod.net>
+ * Copyright (c) 2019 ANSSI
  */
+#include <asm/resource.h> /* RLIMIT_NOFILE */
 #include <linux/bpf.h>
 #include <linux/btf.h>
+#include <linux/err.h>
 #include <linux/jhash.h>
+#include <linux/fs.h> /* iput() */
 #include <linux/filter.h>
+#include <linux/landlock.h>
+#include <linux/mount.h> /* MNT_INTERNAL */
 #include <linux/rculist_nulls.h>
 #include <linux/random.h>
+#include <linux/sched/signal.h> /* rlimit() */
 #include <uapi/linux/btf.h>
 #include "percpu_freelist.h"
 #include "bpf_lru_list.h"
@@ -684,6 +692,8 @@ static void free_htab_elem(struct bpf_htab *htab, struct htab_elem *l)
 
 		map->ops->map_fd_put_ptr(ptr);
 	}
+	if (map->ops->map_put_key)
+		map->ops->map_put_key(l->key);
 
 	if (htab_is_prealloc(htab)) {
 		__pcpu_freelist_push(&htab->freelist, &l->fnode);
@@ -1513,4 +1523,247 @@ const struct bpf_map_ops htab_of_maps_map_ops = {
 	.map_fd_sys_lookup_elem = bpf_map_fd_sys_lookup_elem,
 	.map_gen_lookup = htab_of_map_gen_lookup,
 	.map_check_btf = map_check_no_btf,
+};
+
+/* inode_htab */
+
+static int inode_htab_map_alloc_check(union bpf_attr *attr)
+{
+	/* only allow root to create this type of map (for now), should be
+	 * removed when Landlock will be usable by unprivileged users */
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+
+	/* the key is a file descriptor */
+	if (attr->max_entries == 0 || attr->key_size != sizeof(int) ||
+	    (attr->map_flags & ~(BPF_F_RDONLY | BPF_F_WRONLY |
+				 BPF_F_RDONLY_PROG)) ||
+	    /* for now, force read-only map for eBPF programs because only
+	     * bpf_inode_map_lookup_elem() enable to access them */
+	    !(attr->map_flags & BPF_F_RDONLY_PROG) ||
+	    bpf_map_attr_numa_node(attr) != NUMA_NO_NODE)
+		return -EINVAL;
+
+	/*
+	 * Limit number of entries in an inode map to the maximum number of
+	 * open files for the current process. The maximum number of file
+	 * references (including all inode maps) for a process is then
+	 * (RLIMIT_NOFILE - 1) * RLIMIT_NOFILE. If the process' RLIMIT_NOFILE
+	 * is 0, then any entry update is forbidden.
+	 *
+	 * An eBPF program can inherit all the inode map FD. The worse case is
+	 * to fill a bunch of arraymaps, create an eBPF program, close the
+	 * inode map FDs, and start again. The maximum number of inode map
+	 * entries can then be close to RLIMIT_NOFILE^3.
+	 */
+	if (attr->max_entries > rlimit(RLIMIT_NOFILE))
+		return -EMFILE;
+
+	/* decorelate UAPI from kernel API */
+	attr->key_size = sizeof(struct inode *);
+
+	return htab_map_alloc_check(attr);
+}
+
+static void inode_htab_put_key(void *key)
+{
+	struct inode **inode = key;
+
+	if ((*inode)->i_state & I_FREEING)
+		return;
+	iput(*inode);
+}
+
+/* called from syscall or (never) from eBPF program */
+static int map_get_next_no_key(struct bpf_map *map, void *key, void *next_key)
+{
+	/* do not leak a file descriptor */
+	return -ENOTSUPP;
+}
+
+/* must call iput(inode) after this call */
+static struct inode *inode_from_fd(int ufd, bool check_access)
+{
+	struct inode *ret;
+	struct fd f;
+	int deny;
+
+	f = fdget(ufd);
+	if (unlikely(!f.file))
+		return ERR_PTR(-EBADF);
+	/* TODO?: add this check when called from an eBPF program too (already
+	* checked by the LSM parent hooks anyway) */
+	if (unlikely(IS_PRIVATE(file_inode(f.file)))) {
+		ret = ERR_PTR(-EINVAL);
+		goto put_fd;
+	}
+	/* check if the FD is tied to a mount point */
+	/* TODO?: add this check when called from an eBPF program too */
+	if (unlikely(f.file->f_path.mnt->mnt_flags & MNT_INTERNAL)) {
+		ret = ERR_PTR(-EINVAL);
+		goto put_fd;
+	}
+	if (check_access) {
+		/*
+		* must be allowed to access attributes from this file to then
+		* be able to compare an inode to its map entry
+		*/
+		deny = security_inode_getattr(&f.file->f_path);
+		if (deny) {
+			ret = ERR_PTR(deny);
+			goto put_fd;
+		}
+	}
+	ret = file_inode(f.file);
+	ihold(ret);
+
+put_fd:
+	fdput(f);
+	return ret;
+}
+
+/*
+ * The key is a FD when called from a syscall, but an inode address when called
+ * from an eBPF program.
+ */
+
+/* called from syscall */
+int bpf_inode_fd_htab_map_lookup_elem(struct bpf_map *map, int *key, void *value)
+{
+	void *ptr;
+	struct inode *inode;
+	int ret;
+
+	/* check inode access */
+	inode = inode_from_fd(*key, true);
+	if (IS_ERR(inode))
+		return PTR_ERR(inode);
+
+	rcu_read_lock();
+	ptr = htab_map_lookup_elem(map, &inode);
+	iput(inode);
+	if (IS_ERR(ptr)) {
+		ret = PTR_ERR(ptr);
+	} else if (!ptr) {
+		ret = -ENOENT;
+	} else {
+		ret = 0;
+		copy_map_value(map, value, ptr);
+	}
+	rcu_read_unlock();
+	return ret;
+}
+
+/* called from kernel */
+int bpf_inode_ptr_locked_htab_map_delete_elem(struct bpf_map *map,
+		struct inode **key, bool remove_in_inode)
+{
+	if (remove_in_inode)
+		landlock_inode_remove_map(*key, map);
+	return htab_map_delete_elem(map, key);
+}
+
+/* called from syscall */
+int bpf_inode_fd_htab_map_delete_elem(struct bpf_map *map, int *key)
+{
+	struct inode *inode;
+	int ret;
+
+	/* do not check inode access (similar to directory check) */
+	inode = inode_from_fd(*key, false);
+	if (IS_ERR(inode))
+		return PTR_ERR(inode);
+	ret = bpf_inode_ptr_locked_htab_map_delete_elem(map, &inode, true);
+	iput(inode);
+	return ret;
+}
+
+/* called from syscall */
+int bpf_inode_fd_htab_map_update_elem(struct bpf_map *map, int *key, void *value,
+		u64 map_flags)
+{
+	struct inode *inode;
+	int ret;
+
+	WARN_ON_ONCE(!rcu_read_lock_held());
+
+	/* check inode access */
+	inode = inode_from_fd(*key, true);
+	if (IS_ERR(inode))
+		return PTR_ERR(inode);
+	ret = htab_map_update_elem(map, &inode, value, map_flags);
+	if (!ret)
+		ret = landlock_inode_add_map(inode, map);
+	iput(inode);
+	return ret;
+}
+
+static void inode_htab_map_free(struct bpf_map *map)
+{
+	struct bpf_htab *htab = container_of(map, struct bpf_htab, map);
+	struct hlist_nulls_node *n;
+	struct hlist_nulls_head *head;
+	struct htab_elem *l;
+	int i;
+
+	for (i = 0; i < htab->n_buckets; i++) {
+		head = select_bucket(htab, i);
+		hlist_nulls_for_each_entry_safe(l, n, head, hash_node) {
+			landlock_inode_remove_map(*((struct inode **)l->key), map);
+		}
+	}
+	htab_map_free(map);
+}
+
+/* use the map_inode_lookup_elem() helper instead */
+static void *map_lookup_no_elem(struct bpf_map *map, void *key)
+{
+	WARN_ON_ONCE(1);
+	return NULL;
+}
+
+static int map_delete_no_elem(struct bpf_map *map, void *key)
+{
+	WARN_ON_ONCE(1);
+	return -ENOTSUPP;
+}
+
+static int map_update_no_elem(struct bpf_map *map, void *key, void *value,
+		u64 flags)
+{
+	WARN_ON_ONCE(1);
+	return -ENOTSUPP;
+}
+
+const struct bpf_map_ops htab_inode_ops = {
+	.map_alloc_check = inode_htab_map_alloc_check,
+	.map_alloc = htab_map_alloc,
+	.map_free = inode_htab_map_free,
+	.map_put_key = inode_htab_put_key,
+	.map_get_next_key = map_get_next_no_key,
+	.map_lookup_elem = map_lookup_no_elem,
+	.map_delete_elem = map_delete_no_elem,
+	.map_update_elem = map_update_no_elem,
+	.map_check_btf = map_check_no_btf,
+};
+
+/*
+ * We need a dedicated helper to deal with inode maps because the key is a
+ * pointer to an opaque data, only provided by the kernel.  This really act
+ * like a (physical or cryptographic) key, which is why it is also not allowed
+ * to get the next key with map_get_next_key().
+ */
+BPF_CALL_2(bpf_inode_map_lookup_elem, struct bpf_map *, map, void *, key)
+{
+	WARN_ON_ONCE(!rcu_read_lock_held());
+	return (unsigned long)htab_map_lookup_elem(map, &key);
+}
+
+const struct bpf_func_proto bpf_inode_map_lookup_elem_proto = {
+	.func		= bpf_inode_map_lookup_elem,
+	.gpl_only	= false,
+	.pkt_access	= true,
+	.ret_type	= RET_PTR_TO_MAP_VALUE_OR_NULL,
+	.arg1_type	= ARG_CONST_MAP_PTR,
+	.arg2_type	= ARG_PTR_TO_INODE,
 };

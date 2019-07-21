@@ -19,13 +19,11 @@ static bool bpf_landlock_is_valid_access(int off, int size,
 		enum bpf_access_type type, const struct bpf_prog *prog,
 		struct bpf_insn_access_aux *info)
 {
-	const union bpf_prog_subtype *prog_subtype;
 	enum bpf_reg_type reg_type = NOT_INIT;
 	int max_size = 0;
 
-	if (WARN_ON(!prog->aux->extra))
+	if (WARN_ON(!prog->expected_attach_type))
 		return false;
-	prog_subtype = &prog->aux->extra->subtype;
 
 	if (off < 0)
 		return false;
@@ -33,7 +31,7 @@ static bool bpf_landlock_is_valid_access(int off, int size,
 		return false;
 
 	/* set register type and max size */
-	switch (prog_subtype->landlock_hook.type) {
+	switch (get_hook_type(prog)) {
 	case LANDLOCK_HOOK_FS_PICK:
 		if (!landlock_is_valid_access_fs_pick(off, type, &reg_type,
 					&max_size))
@@ -44,9 +42,6 @@ static bool bpf_landlock_is_valid_access(int off, int size,
 					&max_size))
 			return false;
 		break;
-	default:
-		WARN_ON(1);
-		return false;
 	}
 
 	/* check memory range access */
@@ -69,29 +64,24 @@ static bool bpf_landlock_is_valid_access(int off, int size,
 	return true;
 }
 
-static bool bpf_landlock_is_valid_subtype(struct bpf_prog_extra *prog_extra)
+static bool bpf_landlock_is_valid_triggers(const struct bpf_prog *prog)
 {
-	const union bpf_prog_subtype *subtype;
+	u64 triggers;
 
-	if (!prog_extra)
+	if (!prog)
 		return false;
-	subtype = &prog_extra->subtype;
+	triggers = prog->aux->expected_attach_triggers;
 
-	switch (subtype->landlock_hook.type) {
+	switch (get_hook_type(prog)) {
 	case LANDLOCK_HOOK_FS_PICK:
-		if (!subtype->landlock_hook.triggers ||
-				subtype->landlock_hook.triggers &
-				~_LANDLOCK_TRIGGER_FS_PICK_MASK)
+		if (!triggers || triggers & ~_LANDLOCK_TRIGGER_FS_PICK_MASK)
 			return false;
 		break;
 	case LANDLOCK_HOOK_FS_WALK:
-		if (subtype->landlock_hook.triggers)
+		if (triggers)
 			return false;
 		break;
-	default:
-		return false;
 	}
-
 	return true;
 }
 
@@ -99,11 +89,8 @@ static const struct bpf_func_proto *bpf_landlock_func_proto(
 		enum bpf_func_id func_id,
 		const struct bpf_prog *prog)
 {
-	u64 hook_type;
-
-	if (WARN_ON(!prog->aux->extra))
+	if (WARN_ON(!prog->expected_attach_type))
 		return NULL;
-	hook_type = prog->aux->extra->subtype.landlock_hook.type;
 
 	/* generic functions */
 	/* TODO: do we need/want update/delete functions for every LL prog?
@@ -119,12 +106,12 @@ static const struct bpf_func_proto *bpf_landlock_func_proto(
 		break;
 	}
 
-	switch (hook_type) {
+	switch (get_hook_type(prog)) {
 	case LANDLOCK_HOOK_FS_WALK:
 	case LANDLOCK_HOOK_FS_PICK:
 		switch (func_id) {
-		case BPF_FUNC_inode_map_lookup:
-			return &bpf_inode_map_lookup_proto;
+		case BPF_FUNC_inode_map_lookup_elem:
+			return &bpf_inode_map_lookup_elem_proto;
 		default:
 			break;
 		}
@@ -136,7 +123,7 @@ static const struct bpf_func_proto *bpf_landlock_func_proto(
 const struct bpf_verifier_ops landlock_verifier_ops = {
 	.get_func_proto	= bpf_landlock_func_proto,
 	.is_valid_access = bpf_landlock_is_valid_access,
-	.is_valid_subtype = bpf_landlock_is_valid_subtype,
+	.is_valid_triggers = bpf_landlock_is_valid_triggers,
 };
 
 const struct bpf_prog_ops landlock_prog_ops = {};
@@ -149,7 +136,9 @@ static int __init landlock_init(void)
 	return 0;
 }
 
-struct lsm_blob_sizes landlock_blob_sizes __lsm_ro_after_init = {};
+struct lsm_blob_sizes landlock_blob_sizes __lsm_ro_after_init = {
+	.lbs_inode = sizeof(struct list_head),
+};
 
 DEFINE_LSM(LANDLOCK_NAME) = {
 	.name = LANDLOCK_NAME,

@@ -91,13 +91,13 @@ static int store_landlock_prog(struct landlock_prog_set *init_prog_set,
 	/* allocate all the memory we need */
 	struct landlock_prog_list *new_list;
 
-	last_type = get_type(new);
+	last_type = get_hook_type(new);
 
 	/* ignore duplicate programs */
 	if (ref_prog_set) {
 		struct landlock_prog_list *ref;
 
-		hook_idx = get_index(get_type(new));
+		hook_idx = get_hook_index(get_hook_type(new));
 		for (ref = ref_prog_set->programs[hook_idx];
 				ref; ref = ref->prev) {
 			if (ref->prog == new)
@@ -133,7 +133,7 @@ static int store_landlock_prog(struct landlock_prog_set *init_prog_set,
 		new_list = tmp_list;
 		tmp_list = tmp_list->prev;
 		/* do not increment the previous prog list usage */
-		hook_idx = get_index(get_type(new_list->prog));
+		hook_idx = get_hook_index(get_hook_type(new_list->prog));
 		new_list->prev = init_prog_set->programs[hook_idx];
 		/* no need to add from the last program to the first because
 		 * each of them are a different Landlock type */

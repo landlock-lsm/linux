@@ -9,11 +9,11 @@
 #ifndef _SECURITY_LANDLOCK_COMMON_H
 #define _SECURITY_LANDLOCK_COMMON_H
 
-#include <linux/bpf.h> /* enum bpf_prog_aux */
+#include <linux/bpf.h> /* enum bpf_attach_type */
 #include <linux/filter.h> /* bpf_prog */
 #include <linux/lsm_hooks.h> /* lsm_blob_sizes */
 #include <linux/refcount.h> /* refcount_t */
-#include <uapi/linux/landlock.h> /* enum landlock_hook_type */
+#include <uapi/linux/landlock.h> /* LANDLOCK_TRIGGER_* */
 
 #define LANDLOCK_NAME "landlock"
 
@@ -25,6 +25,11 @@
 #define _LANDLOCK_TRIGGER_FS_PICK_MASK	((_LANDLOCK_TRIGGER_FS_PICK_LAST << 1ULL) - 1)
 
 extern struct lsm_blob_sizes landlock_blob_sizes;
+
+enum landlock_hook_type {
+	LANDLOCK_HOOK_FS_PICK = 1,
+	LANDLOCK_HOOK_FS_WALK,
+};
 
 struct landlock_prog_list {
 	struct landlock_prog_list *prev;
@@ -53,20 +58,39 @@ struct landlock_prog_set {
 	refcount_t usage;
 };
 
+struct landlock_inode_map {
+	struct list_head list;
+	struct rcu_head rcu_put;
+	struct bpf_map *map;
+	/*
+	 * It would be nice to remove the inode field, but it is necessary for
+	 * call_rcu() .
+	 */
+	struct inode *inode;
+};
+
 /**
- * get_index - get an index for the programs of struct landlock_prog_set
+ * get_hook_index - get an index for the programs of struct landlock_prog_set
  *
  * @type: a Landlock hook type
  */
-static inline int get_index(enum landlock_hook_type type)
+static inline int get_hook_index(enum landlock_hook_type type)
 {
 	/* type ID > 0 for loaded programs */
 	return type - 1;
 }
 
-static inline enum landlock_hook_type get_type(struct bpf_prog *prog)
+static inline enum landlock_hook_type get_hook_type(const struct bpf_prog *prog)
 {
-	return prog->aux->extra->subtype.landlock_hook.type;
+	switch (prog->expected_attach_type) {
+	case BPF_LANDLOCK_FS_PICK:
+		return LANDLOCK_HOOK_FS_PICK;
+	case BPF_LANDLOCK_FS_WALK:
+		return LANDLOCK_HOOK_FS_WALK;
+	default:
+		WARN_ON(1);
+		return BPF_LANDLOCK_FS_PICK;
+	}
 }
 
 __maybe_unused
@@ -75,7 +99,7 @@ static bool current_has_prog_type(enum landlock_hook_type hook_type)
 	struct landlock_prog_set *prog_set;
 
 	prog_set = current->seccomp.landlock_prog_set;
-	return (prog_set && prog_set->programs[get_index(hook_type)]);
+	return (prog_set && prog_set->programs[get_hook_index(hook_type)]);
 }
 
 #endif /* _SECURITY_LANDLOCK_COMMON_H */

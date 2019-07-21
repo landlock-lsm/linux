@@ -24,13 +24,6 @@ struct bpf_map_data {
 	struct bpf_load_map_def def;
 };
 
-struct bpf_subtype_data {
-	char *name;
-	int prog_id;
-	int prog_fd;
-	union bpf_prog_subtype subtype;
-};
-
 typedef void (*fixup_map_cb)(struct bpf_map_data *map, int idx);
 
 extern int prog_fd[MAX_PROGS];

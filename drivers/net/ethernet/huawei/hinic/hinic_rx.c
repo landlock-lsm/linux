@@ -18,6 +18,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/prefetch.h>
 #include <linux/cpumask.h>
+#include <linux/if_vlan.h>
 #include <asm/barrier.h>
 
 #include "hinic_common.h"
@@ -56,6 +57,9 @@ void hinic_rxq_clean_stats(struct hinic_rxq *rxq)
 	u64_stats_update_begin(&rxq_stats->syncp);
 	rxq_stats->pkts  = 0;
 	rxq_stats->bytes = 0;
+	rxq_stats->errors = 0;
+	rxq_stats->csum_errors = 0;
+	rxq_stats->other_errors = 0;
 	u64_stats_update_end(&rxq_stats->syncp);
 }
 
@@ -74,6 +78,10 @@ void hinic_rxq_get_stats(struct hinic_rxq *rxq, struct hinic_rxq_stats *stats)
 		start = u64_stats_fetch_begin(&rxq_stats->syncp);
 		stats->pkts = rxq_stats->pkts;
 		stats->bytes = rxq_stats->bytes;
+		stats->errors = rxq_stats->csum_errors +
+				rxq_stats->other_errors;
+		stats->csum_errors = rxq_stats->csum_errors;
+		stats->other_errors = rxq_stats->other_errors;
 	} while (u64_stats_fetch_retry(&rxq_stats->syncp, start));
 	u64_stats_update_end(&stats->syncp);
 }
@@ -101,10 +109,14 @@ static void rx_csum(struct hinic_rxq *rxq, u32 status,
 	if (!(netdev->features & NETIF_F_RXCSUM))
 		return;
 
-	if (!csum_err)
+	if (!csum_err) {
 		skb->ip_summed = CHECKSUM_UNNECESSARY;
-	else
+	} else {
+		if (!(csum_err & (HINIC_RX_CSUM_HW_CHECK_NONE |
+			HINIC_RX_CSUM_IPSU_OTHER_ERR)))
+			rxq->rxq_stats.csum_errors++;
 		skb->ip_summed = CHECKSUM_NONE;
+	}
 }
 /**
  * rx_alloc_skb - allocate skb and map it to dma address
@@ -314,6 +326,7 @@ static int rx_recv_jumbo_pkt(struct hinic_rxq *rxq, struct sk_buff *head_skb,
 static int rxq_recv(struct hinic_rxq *rxq, int budget)
 {
 	struct hinic_qp *qp = container_of(rxq->rq, struct hinic_qp, rq);
+	struct net_device *netdev = rxq->netdev;
 	u64 pkt_len = 0, rx_bytes = 0;
 	struct hinic_rq *rq = rxq->rq;
 	struct hinic_rq_wqe *rq_wqe;
@@ -323,8 +336,11 @@ static int rxq_recv(struct hinic_rxq *rxq, int budget)
 	struct hinic_sge sge;
 	unsigned int status;
 	struct sk_buff *skb;
+	u32 offload_type;
 	u16 ci, num_lro;
 	u16 num_wqe = 0;
+	u32 vlan_len;
+	u16 vid;
 
 	while (pkts < budget) {
 		num_wqes = 0;
@@ -356,6 +372,14 @@ static int rxq_recv(struct hinic_rxq *rxq, int budget)
 
 		hinic_rq_put_wqe(rq, ci,
 				 (num_wqes + 1) * HINIC_RQ_WQE_SIZE);
+
+		offload_type = be32_to_cpu(cqe->offload_type);
+		vlan_len = be32_to_cpu(cqe->len);
+		if ((netdev->features & NETIF_F_HW_VLAN_CTAG_RX) &&
+		    HINIC_GET_RX_VLAN_OFFLOAD_EN(offload_type)) {
+			vid = HINIC_GET_RX_VLAN_TAG(vlan_len);
+			__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q), vid);
+		}
 
 		skb_record_rx_queue(skb, qp->q_id);
 		skb->protocol = eth_type_trans(skb, rxq->netdev);

@@ -5,6 +5,7 @@
  * Copyright © 2018-2019 Mickaël Salaün <mic@digikod.net>
  */
 
+#include <bpf/bpf.h> /* bpf_create_map() */
 #include <fcntl.h> /* O_DIRECTORY */
 #include <sys/stat.h> /* statbuf */
 #include <unistd.h> /* faccessat() */
@@ -69,7 +70,7 @@ static int create_denied_inode_map(struct __test_metadata *_metadata,
 	/* get the number of dir entries */
 	for (dirs_len = 0; dirs[dirs_len]; dirs_len++);
 	map = bpf_create_map(BPF_MAP_TYPE_INODE, sizeof(key), sizeof(value),
-			dirs_len, 0);
+			dirs_len, BPF_F_RDONLY_PROG);
 	ASSERT_NE(-1, map) {
 		TH_LOG("Failed to create a map of %d elements: %s\n", dirs_len,
 				strerror(errno));
@@ -100,24 +101,24 @@ static void enforce_map(struct __test_metadata *_metadata, int map,
 			offsetof(struct landlock_ctx_fs_walk, inode)),
 		BPF_LD_MAP_FD(BPF_REG_1, map), /* 2 instructions */
 		BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 0, 0,
-				BPF_FUNC_inode_map_lookup),
-		/* if it is there, then deny access to the inode, otherwise
-		 * allow it */
-		BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, MAP_VALUE_DENY, 2),
+				BPF_FUNC_inode_map_lookup_elem),
+		/* if there is no mark, then allow access to this inode */
+		BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, 0, 2),
+		BPF_LDX_MEM(BPF_DW, BPF_REG_1, BPF_REG_0, 0),
+		/* otherwise, deny access to this inode */
+		BPF_JMP_IMM(BPF_JEQ, BPF_REG_1, MAP_VALUE_DENY, 2),
 		BPF_MOV32_IMM(BPF_REG_0, LANDLOCK_RET_ALLOW),
 		BPF_EXIT_INSN(),
 		BPF_MOV32_IMM(BPF_REG_0, LANDLOCK_RET_DENY),
 		BPF_EXIT_INSN(),
 	};
-	union bpf_prog_subtype subtype = {};
 	int fd_walk = -1, fd_pick;
 	char log[1024] = "";
 
 	if (subpath) {
-		subtype.landlock_hook.type = LANDLOCK_HOOK_FS_WALK;
 		fd_walk = ll_bpf_load_program((const struct bpf_insn *)&prog_deny,
 				sizeof(prog_deny) / sizeof(struct bpf_insn),
-				log, sizeof(log), &subtype);
+				log, sizeof(log), BPF_LANDLOCK_FS_WALK, 0);
 		ASSERT_NE(-1, fd_walk) {
 			TH_LOG("Failed to load fs_walk program: %s\n%s",
 					strerror(errno), log);
@@ -128,11 +129,9 @@ static void enforce_map(struct __test_metadata *_metadata, int map,
 		EXPECT_EQ(0, close(fd_walk));
 	}
 
-	subtype.landlock_hook.type = LANDLOCK_HOOK_FS_PICK;
-	subtype.landlock_hook.triggers = TEST_PATH_TRIGGERS;
 	fd_pick = ll_bpf_load_program((const struct bpf_insn *)&prog_deny,
 			sizeof(prog_deny) / sizeof(struct bpf_insn), log,
-			sizeof(log), &subtype);
+			sizeof(log), BPF_LANDLOCK_FS_PICK, TEST_PATH_TRIGGERS);
 	ASSERT_NE(-1, fd_pick) {
 		TH_LOG("Failed to load fs_pick program: %s\n%s",
 				strerror(errno), log);

@@ -80,7 +80,7 @@ static int sja1105_init_mac_settings(struct sja1105_private *priv)
 		.maxage = 0xFF,
 		/* Internal VLAN (pvid) to apply to untagged ingress */
 		.vlanprio = 0,
-		.vlanid = 0,
+		.vlanid = 1,
 		.ing_mirr = false,
 		.egr_mirr = false,
 		/* Don't drop traffic with other EtherType than ETH_P_IP */
@@ -203,6 +203,7 @@ static int sja1105_init_static_fdb(struct sja1105_private *priv)
 static int sja1105_init_l2_lookup_params(struct sja1105_private *priv)
 {
 	struct sja1105_table *table;
+	u64 max_fdb_entries = SJA1105_MAX_L2_LOOKUP_COUNT / SJA1105_NUM_PORTS;
 	struct sja1105_l2_lookup_params_entry default_l2_lookup_params = {
 		/* Learned FDB entries are forgotten after 300 seconds */
 		.maxage = SJA1105_AGEING_TIME_MS(300000),
@@ -210,6 +211,8 @@ static int sja1105_init_l2_lookup_params(struct sja1105_private *priv)
 		.dyn_tbsz = SJA1105ET_FDB_BIN_SIZE,
 		/* And the P/Q/R/S equivalent setting: */
 		.start_dynspc = 0,
+		.maxaddrp = {max_fdb_entries, max_fdb_entries, max_fdb_entries,
+			     max_fdb_entries, max_fdb_entries, },
 		/* 2^8 + 2^5 + 2^3 + 2^2 + 2^1 + 1 in Koopman notation */
 		.poly = 0x97,
 		/* This selects between Independent VLAN Learning (IVL) and
@@ -264,20 +267,15 @@ static int sja1105_init_static_vlan(struct sja1105_private *priv)
 		.vmemb_port = 0,
 		.vlan_bc = 0,
 		.tag_port = 0,
-		.vlanid = 0,
+		.vlanid = 1,
 	};
 	int i;
 
 	table = &priv->static_config.tables[BLK_IDX_VLAN_LOOKUP];
 
-	/* The static VLAN table will only contain the initial pvid of 0.
+	/* The static VLAN table will only contain the initial pvid of 1.
 	 * All other VLANs are to be configured through dynamic entries,
 	 * and kept in the static configuration table as backing memory.
-	 * The pvid of 0 is sufficient to pass traffic while the ports are
-	 * standalone and when vlan_filtering is disabled. When filtering
-	 * gets enabled, the switchdev core sets up the VLAN ID 1 and sets
-	 * it as the new pvid. Actually 'pvid 1' still comes up in 'bridge
-	 * vlan' even when vlan_filtering is off, but it has no effect.
 	 */
 	if (table->entry_count) {
 		kfree(table->entries);
@@ -291,7 +289,7 @@ static int sja1105_init_static_vlan(struct sja1105_private *priv)
 
 	table->entry_count = 1;
 
-	/* VLAN ID 0: all DT-defined ports are members; no restrictions on
+	/* VLAN 1: all DT-defined ports are members; no restrictions on
 	 * forwarding; always transmit priority-tagged frames as untagged.
 	 */
 	for (i = 0; i < SJA1105_NUM_PORTS; i++) {
@@ -717,7 +715,13 @@ static int sja1105_adjust_port_config(struct sja1105_private *priv, int port,
 
 	switch (speed_mbps) {
 	case SPEED_UNKNOWN:
-		/* No speed update requested */
+		/* PHYLINK called sja1105_mac_config() to inform us about
+		 * the state->interface, but AN has not completed and the
+		 * speed is not yet valid. UM10944.pdf says that setting
+		 * SJA1105_SPEED_AUTO at runtime disables the port, so that is
+		 * ok for power consumption in case AN will never complete -
+		 * otherwise PHYLINK should come back with a new update.
+		 */
 		speed = SJA1105_SPEED_AUTO;
 		break;
 	case SPEED_10:
@@ -762,14 +766,50 @@ static int sja1105_adjust_port_config(struct sja1105_private *priv, int port,
 	return sja1105_clocking_setup_port(priv, port);
 }
 
+/* The SJA1105 MAC programming model is through the static config (the xMII
+ * Mode table cannot be dynamically reconfigured), and we have to program
+ * that early (earlier than PHYLINK calls us, anyway).
+ * So just error out in case the connected PHY attempts to change the initial
+ * system interface MII protocol from what is defined in the DT, at least for
+ * now.
+ */
+static bool sja1105_phy_mode_mismatch(struct sja1105_private *priv, int port,
+				      phy_interface_t interface)
+{
+	struct sja1105_xmii_params_entry *mii;
+	sja1105_phy_interface_t phy_mode;
+
+	mii = priv->static_config.tables[BLK_IDX_XMII_PARAMS].entries;
+	phy_mode = mii->xmii_mode[port];
+
+	switch (interface) {
+	case PHY_INTERFACE_MODE_MII:
+		return (phy_mode != XMII_MODE_MII);
+	case PHY_INTERFACE_MODE_RMII:
+		return (phy_mode != XMII_MODE_RMII);
+	case PHY_INTERFACE_MODE_RGMII:
+	case PHY_INTERFACE_MODE_RGMII_ID:
+	case PHY_INTERFACE_MODE_RGMII_RXID:
+	case PHY_INTERFACE_MODE_RGMII_TXID:
+		return (phy_mode != XMII_MODE_RGMII);
+	default:
+		return true;
+	}
+}
+
 static void sja1105_mac_config(struct dsa_switch *ds, int port,
 			       unsigned int link_an_mode,
 			       const struct phylink_link_state *state)
 {
 	struct sja1105_private *priv = ds->priv;
 
-	if (!state->link)
+	if (sja1105_phy_mode_mismatch(priv, port, state->interface))
 		return;
+
+	if (link_an_mode == MLO_AN_INBAND) {
+		dev_err(ds->dev, "In-band AN not supported!\n");
+		return;
+	}
 
 	sja1105_adjust_port_config(priv, port, state->speed);
 }
@@ -803,6 +843,16 @@ static void sja1105_phylink_validate(struct dsa_switch *ds, int port,
 
 	mii = priv->static_config.tables[BLK_IDX_XMII_PARAMS].entries;
 
+	/* include/linux/phylink.h says:
+	 *     When @state->interface is %PHY_INTERFACE_MODE_NA, phylink
+	 *     expects the MAC driver to return all supported link modes.
+	 */
+	if (state->interface != PHY_INTERFACE_MODE_NA &&
+	    sja1105_phy_mode_mismatch(priv, port, state->interface)) {
+		bitmap_zero(supported, __ETHTOOL_LINK_MODE_MASK_NBITS);
+		return;
+	}
+
 	/* The MAC does not support pause frames, and also doesn't
 	 * support half-duplex traffic modes.
 	 */
@@ -816,6 +866,77 @@ static void sja1105_phylink_validate(struct dsa_switch *ds, int port,
 	bitmap_and(supported, supported, mask, __ETHTOOL_LINK_MODE_MASK_NBITS);
 	bitmap_and(state->advertising, state->advertising, mask,
 		   __ETHTOOL_LINK_MODE_MASK_NBITS);
+}
+
+static int
+sja1105_find_static_fdb_entry(struct sja1105_private *priv, int port,
+			      const struct sja1105_l2_lookup_entry *requested)
+{
+	struct sja1105_l2_lookup_entry *l2_lookup;
+	struct sja1105_table *table;
+	int i;
+
+	table = &priv->static_config.tables[BLK_IDX_L2_LOOKUP];
+	l2_lookup = table->entries;
+
+	for (i = 0; i < table->entry_count; i++)
+		if (l2_lookup[i].macaddr == requested->macaddr &&
+		    l2_lookup[i].vlanid == requested->vlanid &&
+		    l2_lookup[i].destports & BIT(port))
+			return i;
+
+	return -1;
+}
+
+/* We want FDB entries added statically through the bridge command to persist
+ * across switch resets, which are a common thing during normal SJA1105
+ * operation. So we have to back them up in the static configuration tables
+ * and hence apply them on next static config upload... yay!
+ */
+static int
+sja1105_static_fdb_change(struct sja1105_private *priv, int port,
+			  const struct sja1105_l2_lookup_entry *requested,
+			  bool keep)
+{
+	struct sja1105_l2_lookup_entry *l2_lookup;
+	struct sja1105_table *table;
+	int rc, match;
+
+	table = &priv->static_config.tables[BLK_IDX_L2_LOOKUP];
+
+	match = sja1105_find_static_fdb_entry(priv, port, requested);
+	if (match < 0) {
+		/* Can't delete a missing entry. */
+		if (!keep)
+			return 0;
+
+		/* No match => new entry */
+		rc = sja1105_table_resize(table, table->entry_count + 1);
+		if (rc)
+			return rc;
+
+		match = table->entry_count - 1;
+	}
+
+	/* Assign pointer after the resize (it may be new memory) */
+	l2_lookup = table->entries;
+
+	/* We have a match.
+	 * If the job was to add this FDB entry, it's already done (mostly
+	 * anyway, since the port forwarding mask may have changed, case in
+	 * which we update it).
+	 * Otherwise we have to delete it.
+	 */
+	if (keep) {
+		l2_lookup[match] = *requested;
+		return 0;
+	}
+
+	/* To remove, the strategy is to overwrite the element with
+	 * the last one, and then reduce the array size by 1
+	 */
+	l2_lookup[match] = l2_lookup[table->entry_count - 1];
+	return sja1105_table_resize(table, table->entry_count - 1);
 }
 
 /* First-generation switches have a 4-way set associative TCAM that
@@ -868,7 +989,7 @@ int sja1105et_fdb_add(struct dsa_switch *ds, int port,
 	struct sja1105_private *priv = ds->priv;
 	struct device *dev = ds->dev;
 	int last_unused = -1;
-	int bin, way;
+	int bin, way, rc;
 
 	bin = sja1105et_fdb_hash(priv, addr, vid);
 
@@ -912,9 +1033,13 @@ int sja1105et_fdb_add(struct dsa_switch *ds, int port,
 	}
 	l2_lookup.index = sja1105et_fdb_index(bin, way);
 
-	return sja1105_dynamic_config_write(priv, BLK_IDX_L2_LOOKUP,
-					    l2_lookup.index, &l2_lookup,
-					    true);
+	rc = sja1105_dynamic_config_write(priv, BLK_IDX_L2_LOOKUP,
+					  l2_lookup.index, &l2_lookup,
+					  true);
+	if (rc < 0)
+		return rc;
+
+	return sja1105_static_fdb_change(priv, port, &l2_lookup, true);
 }
 
 int sja1105et_fdb_del(struct dsa_switch *ds, int port,
@@ -922,7 +1047,7 @@ int sja1105et_fdb_del(struct dsa_switch *ds, int port,
 {
 	struct sja1105_l2_lookup_entry l2_lookup = {0};
 	struct sja1105_private *priv = ds->priv;
-	int index, bin, way;
+	int index, bin, way, rc;
 	bool keep;
 
 	bin = sja1105et_fdb_hash(priv, addr, vid);
@@ -944,8 +1069,12 @@ int sja1105et_fdb_del(struct dsa_switch *ds, int port,
 	else
 		keep = false;
 
-	return sja1105_dynamic_config_write(priv, BLK_IDX_L2_LOOKUP,
-					    index, &l2_lookup, keep);
+	rc = sja1105_dynamic_config_write(priv, BLK_IDX_L2_LOOKUP,
+					  index, &l2_lookup, keep);
+	if (rc < 0)
+		return rc;
+
+	return sja1105_static_fdb_change(priv, port, &l2_lookup, keep);
 }
 
 int sja1105pqrs_fdb_add(struct dsa_switch *ds, int port,
@@ -993,12 +1122,17 @@ int sja1105pqrs_fdb_add(struct dsa_switch *ds, int port,
 		dev_err(ds->dev, "FDB is full, cannot add entry.\n");
 		return -EINVAL;
 	}
+	l2_lookup.lockeds = true;
 	l2_lookup.index = i;
 
 skip_finding_an_index:
-	return sja1105_dynamic_config_write(priv, BLK_IDX_L2_LOOKUP,
-					    l2_lookup.index, &l2_lookup,
-					    true);
+	rc = sja1105_dynamic_config_write(priv, BLK_IDX_L2_LOOKUP,
+					  l2_lookup.index, &l2_lookup,
+					  true);
+	if (rc < 0)
+		return rc;
+
+	return sja1105_static_fdb_change(priv, port, &l2_lookup, true);
 }
 
 int sja1105pqrs_fdb_del(struct dsa_switch *ds, int port,
@@ -1032,52 +1166,72 @@ int sja1105pqrs_fdb_del(struct dsa_switch *ds, int port,
 	else
 		keep = false;
 
-	return sja1105_dynamic_config_write(priv, BLK_IDX_L2_LOOKUP,
-					    l2_lookup.index, &l2_lookup, keep);
+	rc = sja1105_dynamic_config_write(priv, BLK_IDX_L2_LOOKUP,
+					  l2_lookup.index, &l2_lookup, keep);
+	if (rc < 0)
+		return rc;
+
+	return sja1105_static_fdb_change(priv, port, &l2_lookup, keep);
 }
 
 static int sja1105_fdb_add(struct dsa_switch *ds, int port,
 			   const unsigned char *addr, u16 vid)
 {
 	struct sja1105_private *priv = ds->priv;
-	int rc;
+	u16 rx_vid, tx_vid;
+	int rc, i;
+
+	if (dsa_port_is_vlan_filtering(&ds->ports[port]))
+		return priv->info->fdb_add_cmd(ds, port, addr, vid);
 
 	/* Since we make use of VLANs even when the bridge core doesn't tell us
 	 * to, translate these FDB entries into the correct dsa_8021q ones.
+	 * The basic idea (also repeats for removal below) is:
+	 * - Each of the other front-panel ports needs to be able to forward a
+	 *   pvid-tagged (aka tagged with their rx_vid) frame that matches this
+	 *   DMAC.
+	 * - The CPU port (aka the tx_vid of this port) needs to be able to
+	 *   send a frame matching this DMAC to the specified port.
+	 * For a better picture see net/dsa/tag_8021q.c.
 	 */
-	if (!dsa_port_is_vlan_filtering(&ds->ports[port])) {
-		unsigned int upstream = dsa_upstream_port(priv->ds, port);
-		u16 tx_vid = dsa_8021q_tx_vid(ds, port);
-		u16 rx_vid = dsa_8021q_rx_vid(ds, port);
+	for (i = 0; i < SJA1105_NUM_PORTS; i++) {
+		if (i == port)
+			continue;
+		if (i == dsa_upstream_port(priv->ds, port))
+			continue;
 
-		rc = priv->info->fdb_add_cmd(ds, port, addr, tx_vid);
+		rx_vid = dsa_8021q_rx_vid(ds, i);
+		rc = priv->info->fdb_add_cmd(ds, port, addr, rx_vid);
 		if (rc < 0)
 			return rc;
-		return priv->info->fdb_add_cmd(ds, upstream, addr, rx_vid);
 	}
-	return priv->info->fdb_add_cmd(ds, port, addr, vid);
+	tx_vid = dsa_8021q_tx_vid(ds, port);
+	return priv->info->fdb_add_cmd(ds, port, addr, tx_vid);
 }
 
 static int sja1105_fdb_del(struct dsa_switch *ds, int port,
 			   const unsigned char *addr, u16 vid)
 {
 	struct sja1105_private *priv = ds->priv;
-	int rc;
+	u16 rx_vid, tx_vid;
+	int rc, i;
 
-	/* Since we make use of VLANs even when the bridge core doesn't tell us
-	 * to, translate these FDB entries into the correct dsa_8021q ones.
-	 */
-	if (!dsa_port_is_vlan_filtering(&ds->ports[port])) {
-		unsigned int upstream = dsa_upstream_port(priv->ds, port);
-		u16 tx_vid = dsa_8021q_tx_vid(ds, port);
-		u16 rx_vid = dsa_8021q_rx_vid(ds, port);
+	if (dsa_port_is_vlan_filtering(&ds->ports[port]))
+		return priv->info->fdb_del_cmd(ds, port, addr, vid);
 
-		rc = priv->info->fdb_del_cmd(ds, port, addr, tx_vid);
+	for (i = 0; i < SJA1105_NUM_PORTS; i++) {
+		if (i == port)
+			continue;
+		if (i == dsa_upstream_port(priv->ds, port))
+			continue;
+
+		rx_vid = dsa_8021q_rx_vid(ds, i);
+		rc = priv->info->fdb_del_cmd(ds, port, addr, rx_vid);
 		if (rc < 0)
 			return rc;
-		return priv->info->fdb_del_cmd(ds, upstream, addr, rx_vid);
 	}
-	return priv->info->fdb_del_cmd(ds, port, addr, vid);
+	tx_vid = dsa_8021q_tx_vid(ds, port);
+	return priv->info->fdb_del_cmd(ds, port, addr, tx_vid);
 }
 
 static int sja1105_fdb_dump(struct dsa_switch *ds, int port,
@@ -1085,7 +1239,11 @@ static int sja1105_fdb_dump(struct dsa_switch *ds, int port,
 {
 	struct sja1105_private *priv = ds->priv;
 	struct device *dev = ds->dev;
+	u16 rx_vid, tx_vid;
 	int i;
+
+	rx_vid = dsa_8021q_rx_vid(ds, port);
+	tx_vid = dsa_8021q_tx_vid(ds, port);
 
 	for (i = 0; i < SJA1105_MAX_L2_LOOKUP_COUNT; i++) {
 		struct sja1105_l2_lookup_entry l2_lookup = {0};
@@ -1112,15 +1270,40 @@ static int sja1105_fdb_dump(struct dsa_switch *ds, int port,
 			continue;
 		u64_to_ether_addr(l2_lookup.macaddr, macaddr);
 
-		/* We need to hide the dsa_8021q VLAN from the user.
-		 * Convert the TX VID into the pvid that is active in
-		 * standalone and non-vlan_filtering modes, aka 1.
-		 * The RX VID is applied on the CPU port, which is not seen by
-		 * the bridge core anyway, so there's nothing to hide.
+		/* On SJA1105 E/T, the switch doesn't implement the LOCKEDS
+		 * bit, so it doesn't tell us whether a FDB entry is static
+		 * or not.
+		 * But, of course, we can find out - we're the ones who added
+		 * it in the first place.
 		 */
-		if (!dsa_port_is_vlan_filtering(&ds->ports[port]))
-			l2_lookup.vlanid = 1;
-		cb(macaddr, l2_lookup.vlanid, false, data);
+		if (priv->info->device_id == SJA1105E_DEVICE_ID ||
+		    priv->info->device_id == SJA1105T_DEVICE_ID) {
+			int match;
+
+			match = sja1105_find_static_fdb_entry(priv, port,
+							      &l2_lookup);
+			l2_lookup.lockeds = (match >= 0);
+		}
+
+		/* We need to hide the dsa_8021q VLANs from the user. This
+		 * basically means hiding the duplicates and only showing
+		 * the pvid that is supposed to be active in standalone and
+		 * non-vlan_filtering modes (aka 1).
+		 * - For statically added FDB entries (bridge fdb add), we
+		 *   can convert the TX VID (coming from the CPU port) into the
+		 *   pvid and ignore the RX VIDs of the other ports.
+		 * - For dynamically learned FDB entries, a single entry with
+		 *   no duplicates is learned - that which has the real port's
+		 *   pvid, aka RX VID.
+		 */
+		if (!dsa_port_is_vlan_filtering(&ds->ports[port])) {
+			if (l2_lookup.vlanid == tx_vid ||
+			    l2_lookup.vlanid == rx_vid)
+				l2_lookup.vlanid = 1;
+			else
+				continue;
+		}
+		cb(macaddr, l2_lookup.vlanid, l2_lookup.lockeds, data);
 	}
 	return 0;
 }

@@ -341,7 +341,7 @@ config HP_ACCEL
 
 	  Support for a led indicating disk protection will be provided as
 	  hp::hddprotect. For more information on the feature, refer to
-	  Documentation/misc-devices/lis3lv02d.
+	  Documentation/misc-devices/lis3lv02d.rst.
 
 	  To compile this driver as a module, choose M here: the module will
 	  be called hp_accel.
@@ -432,9 +432,6 @@ config COMPAL_LAPTOP
 
 	  It adds support for rfkill, Bluetooth, WLAN, LCD brightness, hwmon
 	  and battery charging level control.
-
-	  For a (possibly incomplete) list of supported laptops, please refer
-	  to: Documentation/platform/x86-laptop-drivers.txt
 
 config SONY_LAPTOP
 	tristate "Sony Laptop Extras"

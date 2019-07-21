@@ -33,13 +33,15 @@ static int __attribute__((unused)) seccomp(unsigned int op, unsigned int flags,
 /* bpf_load_program() with subtype */
 static int __attribute__((unused)) ll_bpf_load_program(
 		const struct bpf_insn *insns, size_t insns_cnt, char *log_buf,
-		size_t log_buf_sz, const union bpf_prog_subtype *subtype)
+		size_t log_buf_sz, const enum bpf_attach_type attach_type,
+		__u64 attach_triggers)
 {
 	struct bpf_load_program_attr load_attr;
 
 	memset(&load_attr, 0, sizeof(struct bpf_load_program_attr));
 	load_attr.prog_type = BPF_PROG_TYPE_LANDLOCK_HOOK;
-	load_attr.prog_subtype = subtype;
+	load_attr.expected_attach_type = attach_type;
+	load_attr.expected_attach_triggers = attach_triggers;
 	load_attr.insns = insns;
 	load_attr.insns_cnt = insns_cnt;
 	load_attr.license = "GPL";

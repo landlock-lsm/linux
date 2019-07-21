@@ -21,29 +21,25 @@ compile such programs.  Files *samples/bpf/landlock1_kern.c* and those in
 *tools/testing/selftests/landlock/* can be used as examples.
 
 Once the eBPF program is created, the next step is to create the metadata
-describing the Landlock program.  This metadata includes a subtype which
-contains the hook type to which the program is tied and some options.
+describing the Landlock program.  This metadata includes an expected attach type which
+contains the hook type to which the program is tied, and expected attach
+triggers which identify the actions for which the program should be run.
 
-.. code-block:: c
-
-    union bpf_prog_subtype subtype = {
-        .landlock_hook = {
-            .type = LANDLOCK_HOOK_FS_PICK,
-            .triggers = LANDLOCK_TRIGGER_FS_PICK_OPEN,
-        }
-    };
+A hook is a policy decision point which exposes the same context type for
+each program evaluation.
 
 A Landlock hook describes the kind of kernel object for which a program will be
 triggered to allow or deny an action.  For example, the hook
-LANDLOCK_HOOK_FS_PICK can be triggered every time a landlocked thread performs
-a set of action related to the filesystem (e.g. open, read, write, mount...).
+BPF_LANDLOCK_FS_PICK can be triggered every time a landlocked thread performs a
+set of action related to the filesystem (e.g. open, read, write, mount...).
 This actions are identified by the `triggers` bitfield.
 
-The next step is to fill a :c:type:`union bpf_attr <bpf_attr>` with
-BPF_PROG_TYPE_LANDLOCK_HOOK, the previously created subtype and other BPF
-program metadata.  This bpf_attr must then be passed to the :manpage:`bpf(2)`
-syscall alongside the BPF_PROG_LOAD command.  If everything is deemed correct
-by the kernel, the thread gets a file descriptor referring to this program.
+The next step is to fill a :c:type:`struct bpf_load_program_attr
+<bpf_load_program_attr>` with BPF_PROG_TYPE_LANDLOCK_HOOK, the expected attach
+type and other BPF program metadata.  This bpf_attr must then be passed to the
+:manpage:`bpf(2)` syscall alongside the BPF_PROG_LOAD command.  If everything
+is deemed correct by the kernel, the thread gets a file descriptor referring to
+this program.
 
 In the following code, the *insn* variable is an array of BPF instructions
 which can be extracted from an ELF file as is done in bpf_load_file() from
@@ -51,16 +47,19 @@ which can be extracted from an ELF file as is done in bpf_load_file() from
 
 .. code-block:: c
 
-    union bpf_attr attr = {
-        .prog_type = BPF_PROG_TYPE_LANDLOCK_HOOK,
-        .insn_cnt = sizeof(insn) / sizeof(struct bpf_insn),
-        .insns = (__u64) (unsigned long) insn,
-        .license = (__u64) (unsigned long) "GPL",
-        .prog_subtype = &subtype,
-        .prog_subtype_size = sizeof(subtype),
-    };
-    int fd = bpf(BPF_PROG_LOAD, &attr, sizeof(attr));
-    if (fd == -1)
+    int prog_fd;
+    struct bpf_load_program_attr load_attr;
+
+    memset(&load_attr, 0, sizeof(struct bpf_load_program_attr));
+    load_attr.prog_type = BPF_PROG_TYPE_LANDLOCK_HOOK;
+    load_attr.expected_attach_type = BPF_LANDLOCK_FS_PICK;
+    load_attr.expected_attach_triggers = LANDLOCK_TRIGGER_FS_PICK_OPEN;
+    load_attr.insns = insns;
+    load_attr.insns_cnt = sizeof(insn) / sizeof(struct bpf_insn);
+    load_attr.license = "GPL";
+
+    prog_fd = bpf_load_program_xattr(&load_attr, log_buf, log_buf_sz);
+    if (prog_fd == -1)
         exit(1);
 
 

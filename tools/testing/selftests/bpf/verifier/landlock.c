@@ -1,18 +1,12 @@
 {
-	"landlock/fs_pick: always accept",
+	"landlock/fs_walk: always accept",
 	.insns = {
 		BPF_MOV32_IMM(BPF_REG_0, 0),
 		BPF_EXIT_INSN(),
 	},
 	.result = ACCEPT,
 	.prog_type = BPF_PROG_TYPE_LANDLOCK_HOOK,
-	.has_prog_subtype = true,
-	.prog_subtype = {
-		.landlock_hook = {
-			.type = LANDLOCK_HOOK_FS_PICK,
-			.triggers = LANDLOCK_TRIGGER_FS_PICK_READ,
-		}
-	},
+	.expected_attach_type = BPF_LANDLOCK_FS_WALK,
 },
 {
 	"landlock/fs_pick: read context",
@@ -25,11 +19,6 @@
 	},
 	.result = ACCEPT,
 	.prog_type = BPF_PROG_TYPE_LANDLOCK_HOOK,
-	.has_prog_subtype = true,
-	.prog_subtype = {
-		.landlock_hook = {
-			.type = LANDLOCK_HOOK_FS_PICK,
-			.triggers = LANDLOCK_TRIGGER_FS_PICK_READ,
-		}
-	},
+	.expected_attach_type = BPF_LANDLOCK_FS_PICK,
+	.expected_attach_triggers = LANDLOCK_TRIGGER_FS_PICK_READ,
 },

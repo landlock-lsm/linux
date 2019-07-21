@@ -107,7 +107,6 @@ struct tipc_stats {
  * @backlogq: queue for messages waiting to be sent
  * @snt_nxt: next sequence number to use for outbound messages
  * @prev_from: sequence number of most previous retransmission request
- * @stale_cnt: counter for number of identical retransmit attempts
  * @stale_limit: time when repeated identical retransmits must force link reset
  * @ackers: # of peers that needs to ack each packet before it can be released
  * @acked: # last packet acked by a certain peer. Used for broadcast.
@@ -167,7 +166,6 @@ struct tipc_link {
 	u16 snd_nxt;
 	u16 prev_from;
 	u16 window;
-	u16 stale_cnt;
 	unsigned long stale_limit;
 
 	/* Reception */
@@ -209,7 +207,7 @@ enum {
 	BC_NACK_SND_SUPPRESS,
 };
 
-#define TIPC_BC_RETR_LIM msecs_to_jiffies(10)   /* [ms] */
+#define TIPC_BC_RETR_LIM  (jiffies + msecs_to_jiffies(10))
 #define TIPC_UC_RETR_TIME (jiffies + msecs_to_jiffies(1))
 
 /*
@@ -734,7 +732,7 @@ static void link_profile_stats(struct tipc_link *l)
 	if (msg_user(msg) == MSG_FRAGMENTER) {
 		if (msg_type(msg) != FIRST_FRAGMENT)
 			return;
-		length = msg_size(msg_get_wrapped(msg));
+		length = msg_size(msg_inner_hdr(msg));
 	}
 	l->stats.msg_lengths_total += length;
 	l->stats.msg_length_counts++;
@@ -910,7 +908,6 @@ void tipc_link_reset(struct tipc_link *l)
 	l->acked = 0;
 	l->silent_intv_cnt = 0;
 	l->rst_cnt = 0;
-	l->stale_cnt = 0;
 	l->bc_peer_is_up = false;
 	memset(&l->mon_state, 0, sizeof(l->mon_state));
 	tipc_link_reset_stats(l);
@@ -979,8 +976,7 @@ int tipc_link_xmit(struct tipc_link *l, struct sk_buff_head *list,
 			__skb_queue_tail(transmq, skb);
 			/* next retransmit attempt */
 			if (link_is_bc_sndlink(l))
-				TIPC_SKB_CB(skb)->nxt_retr =
-					jiffies + TIPC_BC_RETR_LIM;
+				TIPC_SKB_CB(skb)->nxt_retr = TIPC_BC_RETR_LIM;
 			__skb_queue_tail(xmitq, _skb);
 			TIPC_SKB_CB(skb)->ackers = l->ackers;
 			l->rcv_unacked = 0;
@@ -1030,7 +1026,7 @@ static void tipc_link_advance_backlog(struct tipc_link *l,
 		__skb_queue_tail(&l->transmq, skb);
 		/* next retransmit attempt */
 		if (link_is_bc_sndlink(l))
-			TIPC_SKB_CB(skb)->nxt_retr = jiffies + TIPC_BC_RETR_LIM;
+			TIPC_SKB_CB(skb)->nxt_retr = TIPC_BC_RETR_LIM;
 
 		__skb_queue_tail(xmitq, _skb);
 		TIPC_SKB_CB(skb)->ackers = l->ackers;
@@ -1068,8 +1064,7 @@ static bool link_retransmit_failure(struct tipc_link *l, struct tipc_link *r,
 	if (r->prev_from != from) {
 		r->prev_from = from;
 		r->stale_limit = jiffies + msecs_to_jiffies(r->tolerance);
-		r->stale_cnt = 0;
-	} else if (++r->stale_cnt > 99 && time_after(jiffies, r->stale_limit)) {
+	} else if (time_after(jiffies, r->stale_limit)) {
 		pr_warn("Retransmission failure on link <%s>\n", l->name);
 		link_print(l, "State of link ");
 		pr_info("Failed msg: usr %u, typ %u, len %u, err %u\n",
@@ -1127,9 +1122,9 @@ static int tipc_link_bc_retrans(struct tipc_link *l, struct tipc_link *r,
 		if (link_is_bc_sndlink(l)) {
 			if (time_before(jiffies, TIPC_SKB_CB(skb)->nxt_retr))
 				continue;
-			TIPC_SKB_CB(skb)->nxt_retr = jiffies + TIPC_BC_RETR_LIM;
+			TIPC_SKB_CB(skb)->nxt_retr = TIPC_BC_RETR_LIM;
 		}
-		_skb = __pskb_copy(skb, MIN_H_SIZE, GFP_ATOMIC);
+		_skb = __pskb_copy(skb, LL_MAX_HEADER + MIN_H_SIZE, GFP_ATOMIC);
 		if (!_skb)
 			return 0;
 		hdr = buf_msg(_skb);
@@ -1515,7 +1510,6 @@ int tipc_link_rcv(struct tipc_link *l, struct sk_buff *skb,
 
 		/* Forward queues and wake up waiting users */
 		if (likely(tipc_link_release_pkts(l, msg_ack(hdr)))) {
-			l->stale_cnt = 0;
 			tipc_link_advance_backlog(l, xmitq);
 			if (unlikely(!skb_queue_empty(&l->wakeupq)))
 				link_prepare_wakeup(l);
@@ -2584,7 +2578,7 @@ int tipc_link_dump(struct tipc_link *l, u16 dqueues, char *buf)
 	i += scnprintf(buf + i, sz - i, " %u", l->silent_intv_cnt);
 	i += scnprintf(buf + i, sz - i, " %u", l->rst_cnt);
 	i += scnprintf(buf + i, sz - i, " %u", l->prev_from);
-	i += scnprintf(buf + i, sz - i, " %u", l->stale_cnt);
+	i += scnprintf(buf + i, sz - i, " %u", 0);
 	i += scnprintf(buf + i, sz - i, " %u", l->acked);
 
 	list = &l->transmq;

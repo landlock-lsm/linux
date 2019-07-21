@@ -20,18 +20,12 @@ static void apply_null_sandbox(struct __test_metadata *_metadata)
 		BPF_MOV32_IMM(BPF_REG_0, 0),
 		BPF_EXIT_INSN(),
 	};
-	const union bpf_prog_subtype subtype = {
-		.landlock_hook = {
-			.type = LANDLOCK_HOOK_FS_PICK,
-			.triggers = LANDLOCK_TRIGGER_FS_PICK_OPEN,
-		}
-	};
 	int prog;
 	char log[256] = "";
 
 	prog = ll_bpf_load_program((const struct bpf_insn *)&prog_accept,
 			sizeof(prog_accept) / sizeof(struct bpf_insn), log,
-			sizeof(log), &subtype);
+			sizeof(log), BPF_LANDLOCK_FS_PICK, LANDLOCK_TRIGGER_FS_PICK_OPEN);
 	ASSERT_NE(-1, prog) {
 		TH_LOG("Failed to load minimal rule: %s\n%s",
 				strerror(errno), log);

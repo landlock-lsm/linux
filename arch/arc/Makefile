@@ -5,6 +5,10 @@
 
 KBUILD_DEFCONFIG := nsim_hs_defconfig
 
+ifeq ($(CROSS_COMPILE),)
+CROSS_COMPILE := $(call cc-cross-prefix, arc-linux- arceb-linux-)
+endif
+
 cflags-y	+= -fno-common -pipe -fno-builtin -mmedium-calls -D__linux__
 cflags-$(CONFIG_ISA_ARCOMPACT)	+= -mA7
 cflags-$(CONFIG_ISA_ARCV2)	+= -mcpu=hs38
@@ -15,7 +19,7 @@ ifdef CONFIG_ARC_CURR_IN_REG
 # any kernel headers, and missing the r25 global register
 # Can't do unconditionally because of recursive include issues
 # due to <linux/thread_info.h>
-LINUXINCLUDE	+=  -include ${src}/arch/arc/include/asm/current.h
+LINUXINCLUDE	+=  -include $(srctree)/arch/arc/include/asm/current.h
 endif
 
 cflags-y				+= -fsection-anchors

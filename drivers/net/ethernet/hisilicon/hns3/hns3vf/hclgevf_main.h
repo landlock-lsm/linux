@@ -4,6 +4,7 @@
 #ifndef __HCLGEVF_MAIN_H
 #define __HCLGEVF_MAIN_H
 #include <linux/fs.h>
+#include <linux/if_vlan.h>
 #include <linux/types.h>
 #include "hclge_mbx.h"
 #include "hclgevf_cmd.h"
@@ -225,6 +226,7 @@ struct hclgevf_rst_stats {
 	u32 vf_rst_cnt;			/* the number of VF reset */
 	u32 rst_done_cnt;		/* the number of reset completed */
 	u32 hw_rst_done_cnt;		/* the number of HW reset completed */
+	u32 rst_fail_cnt;		/* the number of VF reset fail */
 };
 
 struct hclgevf_dev {
@@ -269,6 +271,8 @@ struct hclgevf_dev {
 	u32 base_msi_vector;
 	u16 *vector_status;
 	int *vector_irq;
+
+	unsigned long vlan_del_fail_bmap[BITS_TO_LONGS(VLAN_N_VID)];
 
 	bool mbx_event_pending;
 	struct hclgevf_mbx_resp_status mbx_resp; /* mailbox response */

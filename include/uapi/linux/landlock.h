@@ -15,21 +15,6 @@
 #define LANDLOCK_RET_DENY	1
 
 /**
- * enum landlock_hook_type - hook type for which a Landlock program is called
- *
- * A hook is a policy decision point which exposes the same context type for
- * each program evaluation.
- *
- * @LANDLOCK_HOOK_FS_PICK: called for the last element of a file path
- * @LANDLOCK_HOOK_FS_WALK: called for each directory of a file path (excluding
- *			   the directory passed to fs_pick, if any)
- */
-enum landlock_hook_type {
-	LANDLOCK_HOOK_FS_PICK = 1,
-	LANDLOCK_HOOK_FS_WALK,
-};
-
-/**
  * DOC: landlock_triggers
  *
  * A landlock trigger is used as a bitmask in subtype.landlock_hook.triggers

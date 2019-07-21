@@ -105,12 +105,113 @@ static int populate_map(const char *env_var, unsigned long long value,
 	return 0;
 }
 
+/* need to call bpf_object__close(obj) once every FD is used */
+static int ll_load_file(const char *filename, struct bpf_object **obj,
+		int *ll_map, int *ll_prog_walk, int *ll_prog_pick)
+{
+	int first_bpf_prog, map_fd, prog_walk_fd, prog_pick_fd, err;
+	struct bpf_map *map;
+	struct bpf_program *prog;
+	struct bpf_object *tmp_obj;
+	struct bpf_prog_load_attr prog_load_attr = {
+		.prog_type = BPF_PROG_TYPE_UNSPEC,
+		.file = filename,
+	};
+
+	/*
+	 * allowed:
+	 * - LANDLOCK_TRIGGER_FS_PICK_LINK
+	 * - LANDLOCK_TRIGGER_FS_PICK_LINKTO
+	 * - LANDLOCK_TRIGGER_FS_PICK_RECEIVE
+	 * - LANDLOCK_TRIGGER_FS_PICK_MOUNTON
+	 */
+	prog_load_attr.expected_attach_triggers =
+		LANDLOCK_TRIGGER_FS_PICK_APPEND |
+		LANDLOCK_TRIGGER_FS_PICK_CHDIR |
+		LANDLOCK_TRIGGER_FS_PICK_CHROOT |
+		LANDLOCK_TRIGGER_FS_PICK_CREATE |
+		LANDLOCK_TRIGGER_FS_PICK_EXECUTE |
+		LANDLOCK_TRIGGER_FS_PICK_FCNTL |
+		LANDLOCK_TRIGGER_FS_PICK_GETATTR |
+		LANDLOCK_TRIGGER_FS_PICK_IOCTL |
+		LANDLOCK_TRIGGER_FS_PICK_LOCK |
+		LANDLOCK_TRIGGER_FS_PICK_MAP |
+		LANDLOCK_TRIGGER_FS_PICK_OPEN |
+		LANDLOCK_TRIGGER_FS_PICK_READ |
+		LANDLOCK_TRIGGER_FS_PICK_READDIR |
+		LANDLOCK_TRIGGER_FS_PICK_RENAME |
+		LANDLOCK_TRIGGER_FS_PICK_RENAMETO |
+		LANDLOCK_TRIGGER_FS_PICK_RMDIR |
+		LANDLOCK_TRIGGER_FS_PICK_SETATTR |
+		LANDLOCK_TRIGGER_FS_PICK_TRANSFER |
+		LANDLOCK_TRIGGER_FS_PICK_UNLINK |
+		LANDLOCK_TRIGGER_FS_PICK_WRITE;
+
+	if (access(filename, O_RDONLY) < 0) {
+		printf("Failed to access file %s: %s\n", filename,
+				strerror(errno));
+		return 1;
+	}
+	err = bpf_prog_load_xattr(&prog_load_attr, &tmp_obj, &first_bpf_prog);
+	if (err) {
+		printf("Failed to parse file %s: %s\n", filename, strerror(err));
+		goto error_load;
+	}
+
+	map = bpf_object__find_map_by_name(tmp_obj, "inode_map");
+	map_fd = bpf_map__fd(map);
+	if (map_fd < 0) {
+		printf("Map not found: %s\n", strerror(map_fd));
+		goto put_obj;
+	}
+
+	prog = bpf_object__find_program_by_title(tmp_obj, "landlock/fs_walk");
+	if (!prog) {
+		printf("Program for FS_WALK not found in file %s\n", filename);
+		goto put_obj;
+	}
+	prog_walk_fd = bpf_program__fd(prog);
+	if (prog_walk_fd < 0) {
+		printf("Failed to load the FS_WALK program from file %s\n",
+				strerror(prog_walk_fd));
+		goto put_obj;
+	}
+
+	prog = bpf_object__find_program_by_title(tmp_obj, "landlock/fs_pick");
+	if (!prog) {
+		printf("Failed to get a file descriptor for program %s from file %s\n",
+				bpf_program__title(prog, false), filename);
+		goto put_obj;
+	}
+	prog_pick_fd = bpf_program__fd(prog);
+	if (prog_pick_fd < 0) {
+		printf("Failed to get a file descriptor for program %s from file %s\n",
+				bpf_program__title(prog, false), filename);
+		goto put_obj;
+	}
+
+	*obj = tmp_obj;
+	*ll_prog_walk = prog_walk_fd;
+	*ll_prog_pick = prog_pick_fd;
+	*ll_map = map_fd;
+	return 0;
+
+put_obj:
+	/* All FDs are closed with bpf_object__close() */
+	bpf_object__close(tmp_obj);
+error_load:
+	printf("ERROR: load_bpf_file failed for: %s\n", filename);
+	printf("  Output from verifier:\n%s\n------\n", bpf_log_buf);
+	return 1;
+}
+
 int main(int argc, char * const argv[], char * const *envp)
 {
 	char filename[256];
 	char *cmd_path;
 	char * const *cmd_argv;
-	int ll_prog_walk, ll_prog_pick;
+	struct bpf_object *obj;
+	int ll_map, ll_prog_walk, ll_prog_pick;
 
 	if (argc < 2) {
 		fprintf(stderr, "usage: %s <cmd> [args]...\n\n", argv[0]);
@@ -126,29 +227,21 @@ int main(int argc, char * const argv[], char * const *envp)
 	}
 
 	snprintf(filename, sizeof(filename), "%s_kern.o", argv[0]);
-	if (load_bpf_file(filename)) {
-		printf("%s", bpf_log_buf);
+	if (ll_load_file(filename, &obj, &ll_map, &ll_prog_walk, &ll_prog_pick))
 		return 1;
-	}
-	ll_prog_walk = prog_fd[0]; /* fs_walk */
-	ll_prog_pick = prog_fd[1]; /* fs_pick */
-	if (!ll_prog_walk || !ll_prog_pick) {
-		if (errno)
-			printf("load_bpf_file: %s\n", strerror(errno));
-		else
-			printf("load_bpf_file: Error\n");
-		return 1;
-	}
 
-	if (populate_map(ENV_FS_PATH_DENY_NAME, MAP_FLAG_DENY, map_fd[0]))
+	if (populate_map(ENV_FS_PATH_DENY_NAME, MAP_FLAG_DENY, ll_map))
 		return 1;
-	close(map_fd[0]);
+	//close(ll_map);
 
 	fprintf(stderr, "Launching a new sandboxed process\n");
 	if (apply_sandbox(ll_prog_walk))
 		return 1;
+	//close(ll_prog_walk);
 	if (apply_sandbox(ll_prog_pick))
 		return 1;
+	//close(ll_prog_pick);
+	//bpf_object__close(obj);
 	cmd_path = argv[1];
 	cmd_argv = argv + 1;
 	execve(cmd_path, cmd_argv, envp);

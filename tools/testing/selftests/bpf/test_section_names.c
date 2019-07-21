@@ -134,6 +134,16 @@ static struct sec_name_test tests[] = {
 		{0, BPF_PROG_TYPE_CGROUP_SYSCTL, BPF_CGROUP_SYSCTL},
 		{0, BPF_CGROUP_SYSCTL},
 	},
+	{
+		"cgroup/getsockopt",
+		{0, BPF_PROG_TYPE_CGROUP_SOCKOPT, BPF_CGROUP_GETSOCKOPT},
+		{0, BPF_CGROUP_GETSOCKOPT},
+	},
+	{
+		"cgroup/setsockopt",
+		{0, BPF_PROG_TYPE_CGROUP_SOCKOPT, BPF_CGROUP_SETSOCKOPT},
+		{0, BPF_CGROUP_SETSOCKOPT},
+	},
 };
 
 static int test_prog_type_by_name(const struct sec_name_test *test)
@@ -143,7 +153,7 @@ static int test_prog_type_by_name(const struct sec_name_test *test)
 	int rc;
 
 	rc = libbpf_prog_type_by_name(test->sec_name, &prog_type,
-				      &expected_attach_type);
+				      &expected_attach_type, false);
 
 	if (rc != test->expected_load.rc) {
 		warnx("prog: unexpected rc=%d for %s", rc, test->sec_name);

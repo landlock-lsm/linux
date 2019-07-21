@@ -431,6 +431,36 @@ int hinic_set_rx_csum_offload(struct hinic_dev *nic_dev, u32 en)
 	return 0;
 }
 
+int hinic_set_rx_vlan_offload(struct hinic_dev *nic_dev, u8 en)
+{
+	struct hinic_hwdev *hwdev = nic_dev->hwdev;
+	struct hinic_vlan_cfg vlan_cfg;
+	struct hinic_hwif *hwif;
+	struct pci_dev *pdev;
+	u16 out_size;
+	int err;
+
+	if (!hwdev)
+		return -EINVAL;
+
+	hwif = hwdev->hwif;
+	pdev = hwif->pdev;
+	vlan_cfg.func_id = HINIC_HWIF_FUNC_IDX(hwif);
+	vlan_cfg.vlan_rx_offload = en;
+
+	err = hinic_port_msg_cmd(hwdev, HINIC_PORT_CMD_SET_RX_VLAN_OFFLOAD,
+				 &vlan_cfg, sizeof(vlan_cfg),
+				 &vlan_cfg, &out_size);
+	if (err || !out_size || vlan_cfg.status) {
+		dev_err(&pdev->dev,
+			"Failed to set rx vlan offload, err: %d, status: 0x%x, out size: 0x%x\n",
+			err, vlan_cfg.status, out_size);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 int hinic_set_max_qnum(struct hinic_dev *nic_dev, u8 num_rqs)
 {
 	struct hinic_hwdev *hwdev = nic_dev->hwdev;
@@ -939,6 +969,102 @@ int hinic_rss_template_free(struct hinic_dev *nic_dev, u8 tmpl_idx)
 			err, template_mgmt.status, out_size);
 		return -EINVAL;
 	}
+
+	return 0;
+}
+
+int hinic_get_vport_stats(struct hinic_dev *nic_dev,
+			  struct hinic_vport_stats *stats)
+{
+	struct hinic_cmd_vport_stats vport_stats = { 0 };
+	struct hinic_port_stats_info stats_info = { 0 };
+	struct hinic_hwdev *hwdev = nic_dev->hwdev;
+	struct hinic_hwif *hwif = hwdev->hwif;
+	u16 out_size = sizeof(vport_stats);
+	struct pci_dev *pdev = hwif->pdev;
+	int err;
+
+	stats_info.stats_version = HINIC_PORT_STATS_VERSION;
+	stats_info.func_id = HINIC_HWIF_FUNC_IDX(hwif);
+	stats_info.stats_size = sizeof(vport_stats);
+
+	err = hinic_port_msg_cmd(hwdev, HINIC_PORT_CMD_GET_VPORT_STAT,
+				 &stats_info, sizeof(stats_info),
+				 &vport_stats, &out_size);
+	if (err || !out_size || vport_stats.status) {
+		dev_err(&pdev->dev,
+			"Failed to get function statistics, err: %d, status: 0x%x, out size: 0x%x\n",
+			err, vport_stats.status, out_size);
+		return -EFAULT;
+	}
+
+	memcpy(stats, &vport_stats.stats, sizeof(*stats));
+	return 0;
+}
+
+int hinic_get_phy_port_stats(struct hinic_dev *nic_dev,
+			     struct hinic_phy_port_stats *stats)
+{
+	struct hinic_port_stats_info stats_info = { 0 };
+	struct hinic_hwdev *hwdev = nic_dev->hwdev;
+	struct hinic_hwif *hwif = hwdev->hwif;
+	struct hinic_port_stats *port_stats;
+	u16 out_size = sizeof(*port_stats);
+	struct pci_dev *pdev = hwif->pdev;
+	int err;
+
+	port_stats = kzalloc(sizeof(*port_stats), GFP_KERNEL);
+	if (!port_stats)
+		return -ENOMEM;
+
+	stats_info.stats_version = HINIC_PORT_STATS_VERSION;
+	stats_info.stats_size = sizeof(*port_stats);
+
+	err = hinic_port_msg_cmd(hwdev, HINIC_PORT_CMD_GET_PORT_STATISTICS,
+				 &stats_info, sizeof(stats_info),
+				 port_stats, &out_size);
+	if (err || !out_size || port_stats->status) {
+		dev_err(&pdev->dev,
+			"Failed to get port statistics, err: %d, status: 0x%x, out size: 0x%x\n",
+			err, port_stats->status, out_size);
+		err = -EINVAL;
+		goto out;
+	}
+
+	memcpy(stats, &port_stats->stats, sizeof(*stats));
+
+out:
+	kfree(port_stats);
+
+	return err;
+}
+
+int hinic_get_mgmt_version(struct hinic_dev *nic_dev, u8 *mgmt_ver)
+{
+	struct hinic_hwdev *hwdev = nic_dev->hwdev;
+	struct hinic_version_info up_ver = {0};
+	struct hinic_hwif *hwif;
+	struct pci_dev *pdev;
+	u16 out_size;
+	int err;
+
+	if (!hwdev)
+		return -EINVAL;
+
+	hwif = hwdev->hwif;
+	pdev = hwif->pdev;
+
+	err = hinic_port_msg_cmd(hwdev, HINIC_PORT_CMD_GET_MGMT_VERSION,
+				 &up_ver, sizeof(up_ver), &up_ver,
+				 &out_size);
+	if (err || !out_size || up_ver.status) {
+		dev_err(&pdev->dev,
+			"Failed to get mgmt version, err: %d, status: 0x%x, out size: 0x%x\n",
+			err, up_ver.status, out_size);
+		return -EINVAL;
+	}
+
+	snprintf(mgmt_ver, HINIC_MGMT_VERSION_MAX_LEN, "%s", up_ver.ver);
 
 	return 0;
 }

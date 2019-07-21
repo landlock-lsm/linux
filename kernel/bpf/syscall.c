@@ -720,22 +720,6 @@ static void *__bpf_copy_key(void __user *ukey, u64 key_size)
 	return NULL;
 }
 
-int __weak bpf_inode_map_update_elem(struct bpf_map *map, int *key,
-				     u64 *value, u64 flags)
-{
-	return -ENOTSUPP;
-}
-
-int __weak bpf_inode_map_lookup_elem(struct bpf_map *map, int *key, u64 *value)
-{
-	return -ENOTSUPP;
-}
-
-int __weak bpf_inode_map_delete_elem(struct bpf_map *map, int *key)
-{
-	return -ENOTSUPP;
-}
-
 /* last field in 'union bpf_attr' used by this command */
 #define BPF_MAP_LOOKUP_ELEM_LAST_FIELD flags
 
@@ -818,7 +802,7 @@ static int map_lookup_elem(union bpf_attr *attr)
 		   map->map_type == BPF_MAP_TYPE_STACK) {
 		err = map->ops->map_peek_elem(map, value);
 	} else if (map->map_type == BPF_MAP_TYPE_INODE) {
-		err = bpf_inode_map_lookup_elem(map, key, value);
+		err = bpf_inode_fd_htab_map_lookup_elem(map, key, value);
 	} else {
 		rcu_read_lock();
 		if (map->ops->map_lookup_elem_sys_only)
@@ -971,7 +955,7 @@ static int map_update_elem(union bpf_attr *attr)
 		err = map->ops->map_push_elem(map, value, attr->flags);
 	} else if (map->map_type == BPF_MAP_TYPE_INODE) {
 		rcu_read_lock();
-		err = bpf_inode_map_update_elem(map, key, value, attr->flags);
+		err = bpf_inode_fd_htab_map_update_elem(map, key, value, attr->flags);
 		rcu_read_unlock();
 	} else {
 		rcu_read_lock();
@@ -1029,7 +1013,7 @@ static int map_delete_elem(union bpf_attr *attr)
 	__this_cpu_inc(bpf_prog_active);
 	rcu_read_lock();
 	if (map->map_type == BPF_MAP_TYPE_INODE)
-		err = bpf_inode_map_delete_elem(map, key);
+		err = bpf_inode_fd_htab_map_delete_elem(map, key);
 	else
 		err = map->ops->map_delete_elem(map, key);
 	rcu_read_unlock();
@@ -1040,6 +1024,22 @@ out:
 	kfree(key);
 err_put:
 	fdput(f);
+	return err;
+}
+
+int bpf_inode_ptr_unlocked_htab_map_delete_elem(struct bpf_map *map,
+						struct inode **key, bool remove_in_inode)
+{
+	int err;
+
+	preempt_disable();
+	__this_cpu_inc(bpf_prog_active);
+	rcu_read_lock();
+	err = bpf_inode_ptr_locked_htab_map_delete_elem(map, key, remove_in_inode);
+	rcu_read_unlock();
+	__this_cpu_dec(bpf_prog_active);
+	preempt_enable();
+	maybe_wait_bpf_programs(map);
 	return err;
 }
 
@@ -1615,13 +1615,31 @@ bpf_prog_load_check_attach_type(enum bpf_prog_type prog_type,
 		default:
 			return -EINVAL;
 		}
+	case BPF_PROG_TYPE_CGROUP_SOCKOPT:
+		switch (expected_attach_type) {
+		case BPF_CGROUP_SETSOCKOPT:
+		case BPF_CGROUP_GETSOCKOPT:
+			return 0;
+		default:
+			return -EINVAL;
+		}
+#ifdef CONFIG_SECURITY_LANDLOCK
+	case BPF_PROG_TYPE_LANDLOCK_HOOK:
+		switch (expected_attach_type) {
+		case BPF_LANDLOCK_FS_PICK:
+		case BPF_LANDLOCK_FS_WALK:
+			return 0;
+		default:
+			return -EINVAL;
+		}
+#endif
 	default:
 		return 0;
 	}
 }
 
 /* last field in 'union bpf_attr' used by this command */
-#define	BPF_PROG_LOAD_LAST_FIELD prog_subtype_size
+#define	BPF_PROG_LOAD_LAST_FIELD expected_attach_triggers
 
 static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 {
@@ -1706,40 +1724,12 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 	if (err < 0)
 		goto free_prog;
 
-	prog->aux->load_time = ktime_get_boot_ns();
+	prog->aux->load_time = ktime_get_boottime_ns();
 	err = bpf_obj_name_cpy(prog->aux->name, attr->prog_name);
 	if (err)
 		goto free_prog;
 
-	/* copy eBPF program subtype from user space */
-	if (attr->prog_subtype) {
-		u32 size;
-
-		err = bpf_check_uarg_tail_zero(
-				u64_to_user_ptr(attr->prog_subtype),
-				sizeof(prog->aux->extra->subtype),
-				attr->prog_subtype_size);
-		if (err)
-			goto free_prog;
-		size = min_t(u32, attr->prog_subtype_size,
-			     sizeof(prog->aux->extra->subtype));
-
-		prog->aux->extra = kzalloc(sizeof(*prog->aux->extra),
-					   GFP_KERNEL | GFP_USER);
-		if (!prog->aux->extra) {
-			err = -ENOMEM;
-			goto free_prog;
-		}
-		if (copy_from_user(&prog->aux->extra->subtype,
-				   u64_to_user_ptr(attr->prog_subtype), size)
-				   != 0) {
-			err = -EFAULT;
-			goto free_prog;
-		}
-	} else if (attr->prog_subtype_size != 0) {
-		err = -EINVAL;
-		goto free_prog;
-	}
+	prog->aux->expected_attach_triggers = attr->expected_attach_triggers;
 
 	/* run eBPF verifier */
 	err = bpf_check(&prog, attr, uattr);
@@ -1895,6 +1885,7 @@ static int bpf_prog_attach_check_attach_type(const struct bpf_prog *prog,
 	switch (prog->type) {
 	case BPF_PROG_TYPE_CGROUP_SOCK:
 	case BPF_PROG_TYPE_CGROUP_SOCK_ADDR:
+	case BPF_PROG_TYPE_CGROUP_SOCKOPT:
 		return attach_type == prog->expected_attach_type ? 0 : -EINVAL;
 	case BPF_PROG_TYPE_CGROUP_SKB:
 		return prog->enforce_expected_attach_type &&
@@ -1966,6 +1957,10 @@ static int bpf_prog_attach(const union bpf_attr *attr)
 		break;
 	case BPF_CGROUP_SYSCTL:
 		ptype = BPF_PROG_TYPE_CGROUP_SYSCTL;
+		break;
+	case BPF_CGROUP_GETSOCKOPT:
+	case BPF_CGROUP_SETSOCKOPT:
+		ptype = BPF_PROG_TYPE_CGROUP_SOCKOPT;
 		break;
 	default:
 		return -EINVAL;
@@ -2050,6 +2045,10 @@ static int bpf_prog_detach(const union bpf_attr *attr)
 	case BPF_CGROUP_SYSCTL:
 		ptype = BPF_PROG_TYPE_CGROUP_SYSCTL;
 		break;
+	case BPF_CGROUP_GETSOCKOPT:
+	case BPF_CGROUP_SETSOCKOPT:
+		ptype = BPF_PROG_TYPE_CGROUP_SOCKOPT;
+		break;
 	default:
 		return -EINVAL;
 	}
@@ -2086,6 +2085,8 @@ static int bpf_prog_query(const union bpf_attr *attr,
 	case BPF_CGROUP_SOCK_OPS:
 	case BPF_CGROUP_DEVICE:
 	case BPF_CGROUP_SYSCTL:
+	case BPF_CGROUP_GETSOCKOPT:
+	case BPF_CGROUP_SETSOCKOPT:
 		break;
 	case BPF_LIRC_MODE2:
 		return lirc_prog_query(attr, uattr);

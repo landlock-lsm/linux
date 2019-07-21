@@ -13,7 +13,7 @@
 #include <linux/rculist.h> /* list_add_tail_rcu */
 #include <uapi/linux/landlock.h> /* struct landlock_context */
 
-#include "common.h" /* struct landlock_rule, get_index() */
+#include "common.h" /* struct landlock_rule, get_hook_index() */
 #include "hooks.h" /* landlock_hook_ctx */
 
 #include "hooks_fs.h"
@@ -47,7 +47,7 @@ static bool landlock_access_deny(enum landlock_hook_type hook_type,
 		struct landlock_prog_set *prog_set, u64 triggers)
 {
 	struct landlock_prog_list *prog_list, *prev_list = NULL;
-	u32 hook_idx = get_index(hook_type);
+	u32 hook_idx = get_hook_index(hook_type);
 
 	if (!prog_set)
 		return false;
@@ -58,8 +58,8 @@ static bool landlock_access_deny(enum landlock_hook_type hook_type,
 		const void *prog_ctx;
 
 		/* check if @prog expect at least one of this triggers */
-		if (triggers && !(triggers & prog_list->prog->aux->extra->
-					subtype.landlock_hook.triggers))
+		if (triggers && !(triggers & prog_list->prog->aux->
+					expected_attach_triggers))
 			continue;
 		prog_ctx = get_ctx(hook_type, hook_ctx);
 		if (!prog_ctx || WARN_ON(IS_ERR(prog_ctx)))
@@ -71,9 +71,8 @@ static bool landlock_access_deny(enum landlock_hook_type hook_type,
 		if (ret)
 			return true;
 		if (prev_list && prog_list->prev && prog_list->prev->prog->
-				aux->extra->subtype.landlock_hook.type ==
-				prev_list->prog->aux->extra->
-				subtype.landlock_hook.type)
+				expected_attach_type ==
+				prev_list->prog->expected_attach_type)
 			WARN_ON(prog_list->prev != prev_list);
 		prev_list = prog_list;
 	}

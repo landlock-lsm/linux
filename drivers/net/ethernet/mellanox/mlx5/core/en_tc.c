@@ -717,18 +717,21 @@ mlx5e_tc_add_nic_flow(struct mlx5e_priv *priv,
 		      struct mlx5e_tc_flow *flow,
 		      struct netlink_ext_ack *extack)
 {
+	struct mlx5_flow_context *flow_context = &parse_attr->spec.flow_context;
 	struct mlx5_nic_flow_attr *attr = flow->nic_attr;
 	struct mlx5_core_dev *dev = priv->mdev;
 	struct mlx5_flow_destination dest[2] = {};
 	struct mlx5_flow_act flow_act = {
 		.action = attr->action,
-		.flow_tag = attr->flow_tag,
 		.reformat_id = 0,
-		.flags    = FLOW_ACT_HAS_TAG | FLOW_ACT_NO_APPEND,
+		.flags    = FLOW_ACT_NO_APPEND,
 	};
 	struct mlx5_fc *counter = NULL;
 	bool table_created = false;
 	int err, dest_ix = 0;
+
+	flow_context->flags |= FLOW_CONTEXT_HAS_TAG;
+	flow_context->flow_tag = attr->flow_tag;
 
 	if (flow->flags & MLX5E_TC_FLOW_HAIRPIN) {
 		err = mlx5e_hairpin_flow_add(priv, flow, parse_attr, extack);
@@ -1347,7 +1350,7 @@ static void mlx5e_tc_del_flow(struct mlx5e_priv *priv,
 
 static int parse_tunnel_attr(struct mlx5e_priv *priv,
 			     struct mlx5_flow_spec *spec,
-			     struct tc_cls_flower_offload *f,
+			     struct flow_cls_offload *f,
 			     struct net_device *filter_dev, u8 *match_level)
 {
 	struct netlink_ext_ack *extack = f->common.extack;
@@ -1355,7 +1358,7 @@ static int parse_tunnel_attr(struct mlx5e_priv *priv,
 				       outer_headers);
 	void *headers_v = MLX5_ADDR_OF(fte_match_param, spec->match_value,
 				       outer_headers);
-	struct flow_rule *rule = tc_cls_flower_offload_flow_rule(f);
+	struct flow_rule *rule = flow_cls_offload_flow_rule(f);
 	int err;
 
 	err = mlx5e_tc_tun_parse(filter_dev, priv, spec, f,
@@ -1475,7 +1478,7 @@ static void *get_match_headers_value(u32 flags,
 
 static int __parse_cls_flower(struct mlx5e_priv *priv,
 			      struct mlx5_flow_spec *spec,
-			      struct tc_cls_flower_offload *f,
+			      struct flow_cls_offload *f,
 			      struct net_device *filter_dev,
 			      u8 *match_level, u8 *tunnel_match_level)
 {
@@ -1488,7 +1491,7 @@ static int __parse_cls_flower(struct mlx5e_priv *priv,
 				    misc_parameters);
 	void *misc_v = MLX5_ADDR_OF(fte_match_param, spec->match_value,
 				    misc_parameters);
-	struct flow_rule *rule = tc_cls_flower_offload_flow_rule(f);
+	struct flow_rule *rule = flow_cls_offload_flow_rule(f);
 	struct flow_dissector *dissector = rule->match.dissector;
 	u16 addr_type = 0;
 	u8 ip_proto = 0;
@@ -1828,7 +1831,7 @@ static int __parse_cls_flower(struct mlx5e_priv *priv,
 static int parse_cls_flower(struct mlx5e_priv *priv,
 			    struct mlx5e_tc_flow *flow,
 			    struct mlx5_flow_spec *spec,
-			    struct tc_cls_flower_offload *f,
+			    struct flow_cls_offload *f,
 			    struct net_device *filter_dev)
 {
 	struct netlink_ext_ack *extack = f->common.extack;
@@ -2799,6 +2802,16 @@ static int add_vlan_pop_action(struct mlx5e_priv *priv,
 	return err;
 }
 
+bool mlx5e_is_valid_eswitch_fwd_dev(struct mlx5e_priv *priv,
+				    struct net_device *out_dev)
+{
+	if (is_merged_eswitch_dev(priv, out_dev))
+		return true;
+
+	return mlx5e_eswitch_rep(out_dev) &&
+	       same_hw_devs(priv, netdev_priv(out_dev));
+}
+
 static int parse_tc_fdb_actions(struct mlx5e_priv *priv,
 				struct flow_action *flow_action,
 				struct mlx5e_tc_flow *flow,
@@ -2864,9 +2877,7 @@ static int parse_tc_fdb_actions(struct mlx5e_priv *priv,
 
 			action |= MLX5_FLOW_CONTEXT_ACTION_FWD_DEST |
 				  MLX5_FLOW_CONTEXT_ACTION_COUNT;
-			if (netdev_port_same_parent_id(priv->netdev,
-						       out_dev) ||
-			    is_merged_eswitch_dev(priv, out_dev)) {
+			if (netdev_port_same_parent_id(priv->netdev, out_dev)) {
 				struct mlx5_eswitch *esw = priv->mdev->priv.eswitch;
 				struct net_device *uplink_dev = mlx5_eswitch_uplink_get_proto_dev(esw, REP_ETH);
 				struct net_device *uplink_upper = netdev_master_upper_dev_get(uplink_dev);
@@ -2883,6 +2894,7 @@ static int parse_tc_fdb_actions(struct mlx5e_priv *priv,
 					if (err)
 						return err;
 				}
+
 				if (is_vlan_dev(parse_attr->filter_dev)) {
 					err = add_vlan_pop_action(priv, attr,
 								  &action);
@@ -2890,8 +2902,13 @@ static int parse_tc_fdb_actions(struct mlx5e_priv *priv,
 						return err;
 				}
 
-				if (!mlx5e_eswitch_rep(out_dev))
+				if (!mlx5e_is_valid_eswitch_fwd_dev(priv, out_dev)) {
+					NL_SET_ERR_MSG_MOD(extack,
+							   "devices are not on same switch HW, can't offload forwarding");
+					pr_err("devices %s %s not on same switch HW, can't offload forwarding\n",
+					       priv->netdev->name, out_dev->name);
 					return -EOPNOTSUPP;
+				}
 
 				out_priv = netdev_priv(out_dev);
 				rpriv = out_priv->ppriv;
@@ -3098,7 +3115,7 @@ static bool is_peer_flow_needed(struct mlx5e_tc_flow *flow)
 
 static int
 mlx5e_alloc_flow(struct mlx5e_priv *priv, int attr_size,
-		 struct tc_cls_flower_offload *f, u16 flow_flags,
+		 struct flow_cls_offload *f, u16 flow_flags,
 		 struct mlx5e_tc_flow_parse_attr **__parse_attr,
 		 struct mlx5e_tc_flow **__flow)
 {
@@ -3132,7 +3149,7 @@ static void
 mlx5e_flow_esw_attr_init(struct mlx5_esw_flow_attr *esw_attr,
 			 struct mlx5e_priv *priv,
 			 struct mlx5e_tc_flow_parse_attr *parse_attr,
-			 struct tc_cls_flower_offload *f,
+			 struct flow_cls_offload *f,
 			 struct mlx5_eswitch_rep *in_rep,
 			 struct mlx5_core_dev *in_mdev)
 {
@@ -3154,13 +3171,13 @@ mlx5e_flow_esw_attr_init(struct mlx5_esw_flow_attr *esw_attr,
 
 static struct mlx5e_tc_flow *
 __mlx5e_add_fdb_flow(struct mlx5e_priv *priv,
-		     struct tc_cls_flower_offload *f,
+		     struct flow_cls_offload *f,
 		     u16 flow_flags,
 		     struct net_device *filter_dev,
 		     struct mlx5_eswitch_rep *in_rep,
 		     struct mlx5_core_dev *in_mdev)
 {
-	struct flow_rule *rule = tc_cls_flower_offload_flow_rule(f);
+	struct flow_rule *rule = flow_cls_offload_flow_rule(f);
 	struct netlink_ext_ack *extack = f->common.extack;
 	struct mlx5e_tc_flow_parse_attr *parse_attr;
 	struct mlx5e_tc_flow *flow;
@@ -3204,7 +3221,7 @@ out:
 	return ERR_PTR(err);
 }
 
-static int mlx5e_tc_add_fdb_peer_flow(struct tc_cls_flower_offload *f,
+static int mlx5e_tc_add_fdb_peer_flow(struct flow_cls_offload *f,
 				      struct mlx5e_tc_flow *flow,
 				      u16 flow_flags)
 {
@@ -3256,7 +3273,7 @@ out:
 
 static int
 mlx5e_add_fdb_flow(struct mlx5e_priv *priv,
-		   struct tc_cls_flower_offload *f,
+		   struct flow_cls_offload *f,
 		   u16 flow_flags,
 		   struct net_device *filter_dev,
 		   struct mlx5e_tc_flow **__flow)
@@ -3290,12 +3307,12 @@ out:
 
 static int
 mlx5e_add_nic_flow(struct mlx5e_priv *priv,
-		   struct tc_cls_flower_offload *f,
+		   struct flow_cls_offload *f,
 		   u16 flow_flags,
 		   struct net_device *filter_dev,
 		   struct mlx5e_tc_flow **__flow)
 {
-	struct flow_rule *rule = tc_cls_flower_offload_flow_rule(f);
+	struct flow_rule *rule = flow_cls_offload_flow_rule(f);
 	struct netlink_ext_ack *extack = f->common.extack;
 	struct mlx5e_tc_flow_parse_attr *parse_attr;
 	struct mlx5e_tc_flow *flow;
@@ -3341,7 +3358,7 @@ out:
 
 static int
 mlx5e_tc_add_flow(struct mlx5e_priv *priv,
-		  struct tc_cls_flower_offload *f,
+		  struct flow_cls_offload *f,
 		  int flags,
 		  struct net_device *filter_dev,
 		  struct mlx5e_tc_flow **flow)
@@ -3355,7 +3372,7 @@ mlx5e_tc_add_flow(struct mlx5e_priv *priv,
 	if (!tc_can_offload_extack(priv->netdev, f->common.extack))
 		return -EOPNOTSUPP;
 
-	if (esw && esw->mode == SRIOV_OFFLOADS)
+	if (esw && esw->mode == MLX5_ESWITCH_OFFLOADS)
 		err = mlx5e_add_fdb_flow(priv, f, flow_flags,
 					 filter_dev, flow);
 	else
@@ -3366,7 +3383,7 @@ mlx5e_tc_add_flow(struct mlx5e_priv *priv,
 }
 
 int mlx5e_configure_flower(struct net_device *dev, struct mlx5e_priv *priv,
-			   struct tc_cls_flower_offload *f, int flags)
+			   struct flow_cls_offload *f, int flags)
 {
 	struct netlink_ext_ack *extack = f->common.extack;
 	struct rhashtable *tc_ht = get_tc_ht(priv, flags);
@@ -3413,7 +3430,7 @@ static bool same_flow_direction(struct mlx5e_tc_flow *flow, int flags)
 }
 
 int mlx5e_delete_flower(struct net_device *dev, struct mlx5e_priv *priv,
-			struct tc_cls_flower_offload *f, int flags)
+			struct flow_cls_offload *f, int flags)
 {
 	struct rhashtable *tc_ht = get_tc_ht(priv, flags);
 	struct mlx5e_tc_flow *flow;
@@ -3432,7 +3449,7 @@ int mlx5e_delete_flower(struct net_device *dev, struct mlx5e_priv *priv,
 }
 
 int mlx5e_stats_flower(struct net_device *dev, struct mlx5e_priv *priv,
-		       struct tc_cls_flower_offload *f, int flags)
+		       struct flow_cls_offload *f, int flags)
 {
 	struct mlx5_devcom *devcom = priv->mdev->priv.devcom;
 	struct rhashtable *tc_ht = get_tc_ht(priv, flags);

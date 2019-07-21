@@ -12,7 +12,6 @@
 #include <stdlib.h>
 #include <linux/bpf.h>
 #include <linux/filter.h>
-#include <linux/landlock.h>
 #include <linux/perf_event.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
@@ -42,9 +41,6 @@ int prog_array_fd = -1;
 
 struct bpf_map_data map_data[MAX_MAPS];
 int map_data_count;
-
-struct bpf_subtype_data subtype_data[MAX_PROGS];
-int subtype_data_count;
 
 static int populate_prog_array(const char *event, int prog_fd)
 {
@@ -91,15 +87,11 @@ static int load_and_attach(const char *event, struct bpf_insn *prog, int size)
 	bool is_sockops = strncmp(event, "sockops", 7) == 0;
 	bool is_sk_skb = strncmp(event, "sk_skb", 6) == 0;
 	bool is_sk_msg = strncmp(event, "sk_msg", 6) == 0;
-	bool is_landlock = strncmp(event, "landlock", 8) == 0;
 	size_t insns_cnt = size / sizeof(struct bpf_insn);
 	enum bpf_prog_type prog_type;
 	char buf[256];
 	int fd, efd, err, id;
 	struct perf_event_attr attr = {};
-	union bpf_prog_subtype *st = NULL;
-	struct bpf_subtype_data *sd = NULL;
-	struct bpf_load_program_attr load_attr;
 
 	attr.type = PERF_TYPE_TRACEPOINT;
 	attr.sample_type = PERF_SAMPLE_RAW;
@@ -128,32 +120,6 @@ static int load_and_attach(const char *event, struct bpf_insn *prog, int size)
 		prog_type = BPF_PROG_TYPE_SK_SKB;
 	} else if (is_sk_msg) {
 		prog_type = BPF_PROG_TYPE_SK_MSG;
-	} else if (is_landlock) {
-		int i, prog_id;
-		const char *event_id = (event + 8);
-
-		if (!isdigit(*event_id)) {
-			printf("invalid prog number\n");
-			return -1;
-		}
-		prog_id = atoi(event_id);
-		for (i = 0; i < subtype_data_count; i++) {
-			if (subtype_data[i].name && strcmp(event,
-						subtype_data[i].name) == 0) {
-				/* save the prog_id for a next program */
-				sd = &subtype_data[i];
-				sd->prog_id = prog_id;
-				st = &sd->subtype;
-				free(sd->name);
-				sd->name = NULL;
-				break;
-			}
-		}
-		if (!st) {
-			printf("missing subtype\n");
-			return -1;
-		}
-		prog_type = BPF_PROG_TYPE_LANDLOCK_HOOK;
 	} else {
 		printf("Unknown event '%s'\n", event);
 		return -1;
@@ -162,25 +128,16 @@ static int load_and_attach(const char *event, struct bpf_insn *prog, int size)
 	if (prog_cnt == MAX_PROGS)
 		return -1;
 
-	memset(&load_attr, 0, sizeof(struct bpf_load_program_attr));
-	load_attr.prog_type = prog_type;
-	load_attr.prog_subtype = st;
-	load_attr.insns = prog;
-	load_attr.insns_cnt = insns_cnt;
-	load_attr.license = license;
-	load_attr.kern_version = kern_version;
-	fd = bpf_load_program_xattr(&load_attr, bpf_log_buf, BPF_LOG_BUF_SIZE);
+	fd = bpf_load_program(prog_type, prog, insns_cnt, license, kern_version,
+			      bpf_log_buf, BPF_LOG_BUF_SIZE);
 	if (fd < 0) {
 		printf("bpf_load_program() err=%d\n%s", errno, bpf_log_buf);
 		return -1;
 	}
-	if (sd)
-		sd->prog_fd = fd;
 
 	prog_fd[prog_cnt++] = fd;
 
-	if (is_xdp || is_perf_event || is_cgroup_skb || is_cgroup_sk ||
-	    is_landlock)
+	if (is_xdp || is_perf_event || is_cgroup_skb || is_cgroup_sk)
 		return 0;
 
 	if (is_socket || is_sockops || is_sk_skb || is_sk_msg) {
@@ -562,7 +519,6 @@ static int do_load_bpf_file(const char *path, fixup_map_cb fixup_map)
 	kern_version = 0;
 	memset(license, 0, sizeof(license));
 	memset(processed_sec, 0, sizeof(processed_sec));
-	subtype_data_count = 0;
 
 	if (elf_version(EV_CURRENT) == EV_NONE)
 		return 1;
@@ -611,29 +567,6 @@ static int do_load_bpf_file(const char *path, fixup_map_cb fixup_map)
 			data_maps = data;
 			for (j = 0; j < MAX_MAPS; j++)
 				map_data[j].fd = -1;
-		} else if (strncmp(shname, "subtype", 7) == 0) {
-			processed_sec[i] = true;
-			if (*(shname + 7) != '/') {
-				printf("invalid name of subtype section");
-				return 1;
-			}
-			if (data->d_size != sizeof(union bpf_prog_subtype)) {
-				printf("invalid size of subtype section: %zd\n",
-				       data->d_size);
-				printf("ref: %zd\n",
-				       sizeof(union bpf_prog_subtype));
-				return 1;
-			}
-			if (subtype_data_count >= MAX_PROGS) {
-				printf("too many subtype sections");
-				return 1;
-			}
-			memcpy(&subtype_data[subtype_data_count].subtype,
-					data->d_buf,
-					sizeof(union bpf_prog_subtype));
-			subtype_data[subtype_data_count].name =
-				strdup((shname + 8));
-			subtype_data_count++;
 		} else if (shdr.sh_type == SHT_SYMTAB) {
 			strtabidx = shdr.sh_link;
 			symbols = data;
@@ -710,8 +643,7 @@ static int do_load_bpf_file(const char *path, fixup_map_cb fixup_map)
 		    memcmp(shname, "cgroup/", 7) == 0 ||
 		    memcmp(shname, "sockops", 7) == 0 ||
 		    memcmp(shname, "sk_skb", 6) == 0 ||
-		    memcmp(shname, "sk_msg", 6) == 0 ||
-		    memcmp(shname, "landlock", 8) == 0) {
+		    memcmp(shname, "sk_msg", 6) == 0) {
 			ret = load_and_attach(shname, data->d_buf,
 					      data->d_size);
 			if (ret != 0)

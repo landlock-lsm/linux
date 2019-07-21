@@ -38,14 +38,34 @@ struct devlink {
 	char priv[0] __aligned(NETDEV_ALIGN);
 };
 
+struct devlink_port_phys_attrs {
+	u32 port_number; /* Same value as "split group".
+			  * A physical port which is visible to the user
+			  * for a given port flavour.
+			  */
+	u32 split_subport_number;
+};
+
+struct devlink_port_pci_pf_attrs {
+	u16 pf;	/* Associated PCI PF for this port. */
+};
+
+struct devlink_port_pci_vf_attrs {
+	u16 pf;	/* Associated PCI PF for this port. */
+	u16 vf;	/* Associated PCI VF for of the PCI PF for this port. */
+};
+
 struct devlink_port_attrs {
 	u8 set:1,
 	   split:1,
 	   switch_port:1;
 	enum devlink_port_flavour flavour;
-	u32 port_number; /* same value as "split group" */
-	u32 split_subport_number;
 	struct netdev_phys_item_id switch_id;
+	union {
+		struct devlink_port_phys_attrs phys;
+		struct devlink_port_pci_pf_attrs pci_pf;
+		struct devlink_port_pci_vf_attrs pci_vf;
+	};
 };
 
 struct devlink_port {
@@ -528,8 +548,10 @@ struct devlink_ops {
 	int (*eswitch_inline_mode_get)(struct devlink *devlink, u8 *p_inline_mode);
 	int (*eswitch_inline_mode_set)(struct devlink *devlink, u8 inline_mode,
 				       struct netlink_ext_ack *extack);
-	int (*eswitch_encap_mode_get)(struct devlink *devlink, u8 *p_encap_mode);
-	int (*eswitch_encap_mode_set)(struct devlink *devlink, u8 encap_mode,
+	int (*eswitch_encap_mode_get)(struct devlink *devlink,
+				      enum devlink_eswitch_encap_mode *p_encap_mode);
+	int (*eswitch_encap_mode_set)(struct devlink *devlink,
+				      enum devlink_eswitch_encap_mode encap_mode,
 				      struct netlink_ext_ack *extack);
 	int (*info_get)(struct devlink *devlink, struct devlink_info_req *req,
 			struct netlink_ext_ack *extack);
@@ -588,6 +610,13 @@ void devlink_port_attrs_set(struct devlink_port *devlink_port,
 			    u32 split_subport_number,
 			    const unsigned char *switch_id,
 			    unsigned char switch_id_len);
+void devlink_port_attrs_pci_pf_set(struct devlink_port *devlink_port,
+				   const unsigned char *switch_id,
+				   unsigned char switch_id_len, u16 pf);
+void devlink_port_attrs_pci_vf_set(struct devlink_port *devlink_port,
+				   const unsigned char *switch_id,
+				   unsigned char switch_id_len,
+				   u16 pf, u16 vf);
 int devlink_sb_register(struct devlink *devlink, unsigned int sb_index,
 			u32 size, u16 ingress_pools_count,
 			u16 egress_pools_count, u16 ingress_tc_count,

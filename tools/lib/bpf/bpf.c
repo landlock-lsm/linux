@@ -227,9 +227,6 @@ int bpf_load_program_xattr(const struct bpf_load_program_attr *load_attr,
 
 	memset(&attr, 0, sizeof(attr));
 	attr.prog_type = load_attr->prog_type;
-	attr.prog_subtype = ptr_to_u64(load_attr->prog_subtype);
-	attr.prog_subtype_size = load_attr->prog_subtype ?
-		sizeof(*load_attr->prog_subtype) : 0;
 	attr.expected_attach_type = load_attr->expected_attach_type;
 	attr.insn_cnt = (__u32)load_attr->insns_cnt;
 	attr.insns = ptr_to_u64(load_attr->insns);
@@ -335,11 +332,6 @@ int bpf_load_program(enum bpf_prog_type type, const struct bpf_insn *insns,
 	return bpf_load_program_xattr(&load_attr, log_buf, log_buf_sz);
 }
 
-int bpf_verify_program_xattr(union bpf_attr *attr, size_t attr_sz)
-{
-	return sys_bpf_prog_load(attr, attr_sz);
-}
-
 int bpf_verify_program(enum bpf_prog_type type, const struct bpf_insn *insns,
 		       size_t insns_cnt, __u32 prog_flags, const char *license,
 		       __u32 kern_version, char *log_buf, size_t log_buf_sz,
@@ -359,7 +351,7 @@ int bpf_verify_program(enum bpf_prog_type type, const struct bpf_insn *insns,
 	attr.kern_version = kern_version;
 	attr.prog_flags = prog_flags;
 
-	return bpf_verify_program_xattr(&attr, sizeof(attr));
+	return sys_bpf_prog_load(&attr, sizeof(attr));
 }
 
 int bpf_map_update_elem(int fd, const void *key, const void *value,

@@ -83,6 +83,9 @@ static void update_rx_stats(struct hinic_dev *nic_dev, struct hinic_rxq *rxq)
 	u64_stats_update_begin(&nic_rx_stats->syncp);
 	nic_rx_stats->bytes += rx_stats.bytes;
 	nic_rx_stats->pkts  += rx_stats.pkts;
+	nic_rx_stats->errors += rx_stats.errors;
+	nic_rx_stats->csum_errors += rx_stats.csum_errors;
+	nic_rx_stats->other_errors += rx_stats.other_errors;
 	u64_stats_update_end(&nic_rx_stats->syncp);
 
 	hinic_rxq_clean_stats(rxq);
@@ -103,6 +106,7 @@ static void update_tx_stats(struct hinic_dev *nic_dev, struct hinic_txq *txq)
 	nic_tx_stats->tx_busy += tx_stats.tx_busy;
 	nic_tx_stats->tx_wake += tx_stats.tx_wake;
 	nic_tx_stats->tx_dropped += tx_stats.tx_dropped;
+	nic_tx_stats->big_frags_pkts += tx_stats.big_frags_pkts;
 	u64_stats_update_end(&nic_tx_stats->syncp);
 
 	hinic_txq_clean_stats(txq);
@@ -252,10 +256,14 @@ static int hinic_configure_max_qnum(struct hinic_dev *nic_dev)
 
 static int hinic_rss_init(struct hinic_dev *nic_dev)
 {
-	u32 indir_tbl[HINIC_RSS_INDIR_SIZE] = { 0 };
 	u8 default_rss_key[HINIC_RSS_KEY_SIZE];
 	u8 tmpl_idx = nic_dev->rss_tmpl_idx;
+	u32 *indir_tbl;
 	int err, i;
+
+	indir_tbl = kcalloc(HINIC_RSS_INDIR_SIZE, sizeof(u32), GFP_KERNEL);
+	if (!indir_tbl)
+		return -ENOMEM;
 
 	netdev_rss_key_fill(default_rss_key, sizeof(default_rss_key));
 	for (i = 0; i < HINIC_RSS_INDIR_SIZE; i++)
@@ -263,26 +271,28 @@ static int hinic_rss_init(struct hinic_dev *nic_dev)
 
 	err = hinic_rss_set_template_tbl(nic_dev, tmpl_idx, default_rss_key);
 	if (err)
-		return err;
+		goto out;
 
 	err = hinic_rss_set_indir_tbl(nic_dev, tmpl_idx, indir_tbl);
 	if (err)
-		return err;
+		goto out;
 
 	err = hinic_set_rss_type(nic_dev, tmpl_idx, nic_dev->rss_type);
 	if (err)
-		return err;
+		goto out;
 
 	err = hinic_rss_set_hash_engine(nic_dev, tmpl_idx,
 					nic_dev->rss_hash_engine);
 	if (err)
-		return err;
+		goto out;
 
 	err = hinic_rss_cfg(nic_dev, 1, tmpl_idx);
 	if (err)
-		return err;
+		goto out;
 
-	return 0;
+out:
+	kfree(indir_tbl);
+	return err;
 }
 
 static void hinic_rss_deinit(struct hinic_dev *nic_dev)
@@ -782,6 +792,7 @@ static void hinic_get_stats64(struct net_device *netdev,
 
 	stats->rx_bytes   = nic_rx_stats->bytes;
 	stats->rx_packets = nic_rx_stats->pkts;
+	stats->rx_errors  = nic_rx_stats->errors;
 
 	stats->tx_bytes   = nic_tx_stats->bytes;
 	stats->tx_packets = nic_tx_stats->pkts;
@@ -825,14 +836,14 @@ static const struct net_device_ops hinic_netdev_ops = {
 	.ndo_get_stats64 = hinic_get_stats64,
 	.ndo_fix_features = hinic_fix_features,
 	.ndo_set_features = hinic_set_features,
-
 };
 
 static void netdev_features_init(struct net_device *netdev)
 {
 	netdev->hw_features = NETIF_F_SG | NETIF_F_HIGHDMA | NETIF_F_IP_CSUM |
 			      NETIF_F_IPV6_CSUM | NETIF_F_TSO | NETIF_F_TSO6 |
-			      NETIF_F_RXCSUM | NETIF_F_LRO;
+			      NETIF_F_RXCSUM | NETIF_F_LRO |
+			      NETIF_F_HW_VLAN_CTAG_TX | NETIF_F_HW_VLAN_CTAG_RX;
 
 	netdev->vlan_features = netdev->hw_features;
 
@@ -911,6 +922,11 @@ static int set_features(struct hinic_dev *nic_dev,
 					     HINIC_LRO_RX_TIMER_DEFAULT,
 					     HINIC_LRO_MAX_WQE_NUM_DEFAULT);
 	}
+
+	if (changed & NETIF_F_HW_VLAN_CTAG_RX)
+		err = hinic_set_rx_vlan_offload(nic_dev,
+						!!(features &
+						   NETIF_F_HW_VLAN_CTAG_RX));
 
 	return err;
 }

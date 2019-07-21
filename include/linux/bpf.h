@@ -47,6 +47,7 @@ struct bpf_map_ops {
 	void *(*map_fd_get_ptr)(struct bpf_map *map, struct file *map_file,
 				int fd);
 	void (*map_fd_put_ptr)(void *ptr);
+	void (*map_put_key)(void *key);
 	u32 (*map_gen_lookup)(struct bpf_map *map, struct bpf_insn *insn_buf);
 	u32 (*map_fd_sys_lookup_elem)(void *ptr);
 	void (*map_seq_show_elem)(struct bpf_map *map, void *key,
@@ -297,11 +298,6 @@ bpf_ctx_record_field_size(struct bpf_insn_access_aux *aux, u32 size)
 	aux->ctx_field_size = size;
 }
 
-/* specific data per program type */
-struct bpf_prog_extra {
-	union bpf_prog_subtype subtype;
-};
-
 struct bpf_prog_ops {
 	int (*test_run)(struct bpf_prog *prog, const union bpf_attr *kattr,
 			union bpf_attr __user *uattr);
@@ -327,8 +323,7 @@ struct bpf_verifier_ops {
 				  const struct bpf_insn *src,
 				  struct bpf_insn *dst,
 				  struct bpf_prog *prog, u32 *target_size);
-	// TODO?: convert to bool (*is_valid_subtype)(struct bpf_prog *prog);
-	bool (*is_valid_subtype)(struct bpf_prog_extra *prog_extra);
+	bool (*is_valid_triggers)(const struct bpf_prog *prog);
 };
 
 struct bpf_prog_offload_ops {
@@ -428,7 +423,7 @@ struct bpf_prog_aux {
 		struct work_struct work;
 		struct rcu_head	rcu;
 	};
-	struct bpf_prog_extra *extra;
+	u64 expected_attach_triggers;
 };
 
 struct bpf_array {
@@ -530,6 +525,7 @@ struct bpf_prog_array {
 struct bpf_prog_array *bpf_prog_array_alloc(u32 prog_cnt, gfp_t flags);
 void bpf_prog_array_free(struct bpf_prog_array *progs);
 int bpf_prog_array_length(struct bpf_prog_array *progs);
+bool bpf_prog_array_is_empty(struct bpf_prog_array *array);
 int bpf_prog_array_copy_to_user(struct bpf_prog_array *progs,
 				__u32 __user *prog_ids, u32 cnt);
 
@@ -693,10 +689,16 @@ int bpf_fd_array_map_lookup_elem(struct bpf_map *map, void *key, u32 *value);
 int bpf_fd_htab_map_update_elem(struct bpf_map *map, struct file *map_file,
 				void *key, void *value, u64 map_flags);
 int bpf_fd_htab_map_lookup_elem(struct bpf_map *map, void *key, u32 *value);
-int bpf_inode_map_update_elem(struct bpf_map *map, int *key, u64 *value,
-			      u64 flags);
-int bpf_inode_map_lookup_elem(struct bpf_map *map, int *key, u64 *value);
-int bpf_inode_map_delete_elem(struct bpf_map *map, int *key);
+int bpf_inode_fd_htab_map_lookup_elem(struct bpf_map *map, int *key, void *value);
+int bpf_inode_fd_htab_map_delete_elem(struct bpf_map *map, int *key);
+int bpf_inode_ptr_unlocked_htab_map_delete_elem(struct bpf_map *map,
+						struct inode **key,
+						bool remove_in_inode);
+int bpf_inode_ptr_locked_htab_map_delete_elem(struct bpf_map *map,
+					      struct inode **key,
+					      bool remove_in_inode);
+int bpf_inode_fd_htab_map_update_elem(struct bpf_map *map, int *key,
+				      void *value, u64 map_flags);
 
 int bpf_get_file_flag(int flags);
 int bpf_check_uarg_tail_zero(void __user *uaddr, size_t expected_size,
@@ -1067,7 +1069,8 @@ extern const struct bpf_func_proto bpf_spin_unlock_proto;
 extern const struct bpf_func_proto bpf_get_local_storage_proto;
 extern const struct bpf_func_proto bpf_strtol_proto;
 extern const struct bpf_func_proto bpf_strtoul_proto;
-extern const struct bpf_func_proto bpf_inode_map_lookup_proto;
+extern const struct bpf_func_proto bpf_tcp_sock_proto;
+extern const struct bpf_func_proto bpf_inode_map_lookup_elem_proto;
 
 /* Shared helpers among cBPF and eBPF. */
 void bpf_user_rnd_init_once(void);

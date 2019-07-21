@@ -304,9 +304,9 @@ struct tlsdev_ops {
 	void (*tls_dev_del)(struct net_device *netdev,
 			    struct tls_context *ctx,
 			    enum tls_offload_ctx_dir direction);
-	void (*tls_dev_resync)(struct net_device *netdev,
-			       struct sock *sk, u32 seq, u8 *rcd_sn,
-			       enum tls_offload_ctx_dir direction);
+	int (*tls_dev_resync)(struct net_device *netdev,
+			      struct sock *sk, u32 seq, u8 *rcd_sn,
+			      enum tls_offload_ctx_dir direction);
 };
 
 enum tls_offload_sync_type {
@@ -347,6 +347,7 @@ struct tls_offload_context_rx {
 #define TLS_OFFLOAD_CONTEXT_SIZE_RX					\
 	(sizeof(struct tls_offload_context_rx) + TLS_DRIVER_STATE_SIZE_RX)
 
+void tls_ctx_free(struct tls_context *ctx);
 int wait_on_pending_writer(struct sock *sk, long *timeo);
 int tls_sk_query(struct sock *sk, int optname, char __user *optval,
 		int __user *optlen);
@@ -405,21 +406,6 @@ static inline struct tls_msg *tls_msg(struct sk_buff *skb)
 static inline bool tls_is_partially_sent_record(struct tls_context *ctx)
 {
 	return !!ctx->partially_sent_record;
-}
-
-static inline int tls_complete_pending_work(struct sock *sk,
-					    struct tls_context *ctx,
-					    int flags, long *timeo)
-{
-	int rc = 0;
-
-	if (unlikely(sk->sk_write_pending))
-		rc = wait_on_pending_writer(sk, timeo);
-
-	if (!rc && tls_is_partially_sent_record(ctx))
-		rc = tls_push_partial_record(sk, ctx, flags);
-
-	return rc;
 }
 
 static inline bool tls_is_pending_open_record(struct tls_context *tls_ctx)

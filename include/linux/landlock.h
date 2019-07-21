@@ -9,6 +9,7 @@
 #ifndef _LINUX_LANDLOCK_H
 #define _LINUX_LANDLOCK_H
 
+#include <linux/bpf.h>
 #include <linux/errno.h>
 #include <linux/sched.h> /* task_struct */
 
@@ -30,5 +31,8 @@ static inline void get_seccomp_landlock(struct task_struct *tsk)
 {
 }
 #endif /* CONFIG_SECCOMP_FILTER && CONFIG_SECURITY_LANDLOCK */
+
+int landlock_inode_add_map(struct inode *inode, struct bpf_map *map);
+void landlock_inode_remove_map(struct inode *inode, const struct bpf_map *map);
 
 #endif /* _LINUX_LANDLOCK_H */
