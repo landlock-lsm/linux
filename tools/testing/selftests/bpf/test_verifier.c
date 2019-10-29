@@ -30,6 +30,7 @@
 #include <linux/bpf.h>
 #include <linux/if_ether.h>
 #include <linux/btf.h>
+#include <linux/landlock.h>
 
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
