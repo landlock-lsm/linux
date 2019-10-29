@@ -1621,6 +1621,15 @@ bpf_prog_load_check_attach(enum bpf_prog_type prog_type,
 		default:
 			return -EINVAL;
 		}
+#ifdef CONFIG_SECURITY_LANDLOCK
+	case BPF_PROG_TYPE_LANDLOCK_HOOK:
+		switch (expected_attach_type) {
+		case BPF_LANDLOCK_PTRACE:
+			return 0;
+		default:
+			return -EINVAL;
+		}
+#endif
 	default:
 		return 0;
 	}
