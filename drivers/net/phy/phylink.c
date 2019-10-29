@@ -117,9 +117,7 @@ static int phylink_is_empty_linkmode(const unsigned long *linkmode)
 	phylink_set(tmp, Pause);
 	phylink_set(tmp, Asym_Pause);
 
-	bitmap_andnot(tmp, linkmode, tmp, __ETHTOOL_LINK_MODE_MASK_NBITS);
-
-	return linkmode_empty(tmp);
+	return linkmode_subset(linkmode, tmp);
 }
 
 static const char *phylink_an_mode_str(unsigned int mode)
@@ -216,6 +214,8 @@ static int phylink_parse_fixedlink(struct phylink *pl,
 			       pl->supported, true);
 	linkmode_zero(pl->supported);
 	phylink_set(pl->supported, MII);
+	phylink_set(pl->supported, Pause);
+	phylink_set(pl->supported, Asym_Pause);
 	if (s) {
 		__set_bit(s->bit, pl->supported);
 	} else {
@@ -374,8 +374,8 @@ static void phylink_get_fixed_state(struct phylink *pl, struct phylink_link_stat
  *  Local device  Link partner
  *  Pause AsymDir Pause AsymDir Result
  *    1     X       1     X     TX+RX
- *    0     1       1     1     RX
- *    1     1       0     1     TX
+ *    0     1       1     1     TX
+ *    1     1       0     1     RX
  */
 static void phylink_resolve_flow(struct phylink *pl,
 				 struct phylink_link_state *state)
@@ -396,7 +396,7 @@ static void phylink_resolve_flow(struct phylink *pl,
 			new_pause = MLO_PAUSE_TX | MLO_PAUSE_RX;
 		else if (pause & MLO_PAUSE_ASYM)
 			new_pause = state->pause & MLO_PAUSE_SYM ?
-				 MLO_PAUSE_RX : MLO_PAUSE_TX;
+				 MLO_PAUSE_TX : MLO_PAUSE_RX;
 	} else {
 		new_pause = pl->link_config.pause & MLO_PAUSE_TXRX_MASK;
 	}
@@ -548,33 +548,24 @@ static const struct sfp_upstream_ops sfp_phylink_ops;
 static int phylink_register_sfp(struct phylink *pl,
 				struct fwnode_handle *fwnode)
 {
-	struct fwnode_reference_args ref;
+	struct sfp_bus *bus;
 	int ret;
 
-	if (!fwnode)
-		return 0;
-
-	ret = fwnode_property_get_reference_args(fwnode, "sfp", NULL,
-						 0, 0, &ref);
-	if (ret < 0) {
-		if (ret == -ENOENT)
-			return 0;
-
-		phylink_err(pl, "unable to parse \"sfp\" node: %d\n",
-			    ret);
+	bus = sfp_register_upstream_node(fwnode, pl, &sfp_phylink_ops);
+	if (IS_ERR(bus)) {
+		ret = PTR_ERR(bus);
+		phylink_err(pl, "unable to attach SFP bus: %d\n", ret);
 		return ret;
 	}
 
-	pl->sfp_bus = sfp_register_upstream(ref.fwnode, pl, &sfp_phylink_ops);
-	if (!pl->sfp_bus)
-		return -ENOMEM;
+	pl->sfp_bus = bus;
 
 	return 0;
 }
 
 /**
  * phylink_create() - create a phylink instance
- * @ndev: a pointer to the &struct net_device
+ * @config: a pointer to the target &struct phylink_config
  * @fwnode: a pointer to a &struct fwnode_handle describing the network
  *	interface
  * @iface: the desired link mode defined by &typedef phy_interface_t
@@ -990,10 +981,10 @@ void phylink_start(struct phylink *pl)
 	}
 	if (pl->link_an_mode == MLO_AN_FIXED && pl->get_fixed_state)
 		mod_timer(&pl->link_poll, jiffies + HZ);
-	if (pl->sfp_bus)
-		sfp_upstream_start(pl->sfp_bus);
 	if (pl->phydev)
 		phy_start(pl->phydev);
+	if (pl->sfp_bus)
+		sfp_upstream_start(pl->sfp_bus);
 }
 EXPORT_SYMBOL_GPL(phylink_start);
 
@@ -1010,10 +1001,10 @@ void phylink_stop(struct phylink *pl)
 {
 	ASSERT_RTNL();
 
-	if (pl->phydev)
-		phy_stop(pl->phydev);
 	if (pl->sfp_bus)
 		sfp_upstream_stop(pl->sfp_bus);
+	if (pl->phydev)
+		phy_stop(pl->phydev);
 	del_timer_sync(&pl->link_poll);
 	if (pl->link_irq) {
 		free_irq(pl->link_irq, pl);
@@ -1726,8 +1717,7 @@ static int phylink_sfp_module_insert(void *upstream,
 	if (phy_interface_mode_is_8023z(iface) && pl->phydev)
 		return -EINVAL;
 
-	changed = !bitmap_equal(pl->supported, support,
-				__ETHTOOL_LINK_MODE_MASK_NBITS);
+	changed = !linkmode_equal(pl->supported, support);
 	if (changed) {
 		linkmode_copy(pl->supported, support);
 		linkmode_copy(pl->link_config.advertising, config.advertising);

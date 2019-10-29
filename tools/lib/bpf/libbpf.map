@@ -83,7 +83,6 @@ LIBBPF_0.0.1 {
 		bpf_program__prev;
 		bpf_program__priv;
 		bpf_program__set_expected_attach_type;
-		bpf_program__set_expected_attach_triggers;
 		bpf_program__set_ifindex;
 		bpf_program__set_kprobe;
 		bpf_program__set_perf_event;
@@ -108,7 +107,6 @@ LIBBPF_0.0.1 {
 		bpf_set_link_xdp_fd;
 		bpf_task_fd_query;
 		bpf_verify_program;
-		bpf_verify_program_xattr;
 		btf__fd;
 		btf__find_by_name;
 		btf__free;
@@ -185,4 +183,18 @@ LIBBPF_0.0.4 {
 		perf_buffer__new;
 		perf_buffer__new_raw;
 		perf_buffer__poll;
+		xsk_umem__create;
 } LIBBPF_0.0.3;
+
+LIBBPF_0.0.5 {
+	global:
+		bpf_btf_get_next_id;
+} LIBBPF_0.0.4;
+
+LIBBPF_0.0.6 {
+	global:
+		bpf_object__open_file;
+		bpf_object__open_mem;
+		bpf_program__get_expected_attach_type;
+		bpf_program__get_type;
+} LIBBPF_0.0.5;

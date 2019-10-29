@@ -1,5 +1,6 @@
 obj-$(CONFIG_SECURITY_LANDLOCK) := landlock.o
 
 landlock-y := init.o \
-	enforce.o enforce_seccomp.o \
-	hooks.o hooks_fs.o hooks_ptrace.o
+	bpf_verify.o bpf_run.o bpf_ptrace.o \
+	domain_manage.o domain_syscall.o \
+	hooks_cred.o hooks_ptrace.o

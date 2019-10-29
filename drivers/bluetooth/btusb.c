@@ -384,6 +384,9 @@ static const struct usb_device_id blacklist_table[] = {
 	{ USB_DEVICE(0x13d3, 0x3526), .driver_info = BTUSB_REALTEK },
 	{ USB_DEVICE(0x0b05, 0x185c), .driver_info = BTUSB_REALTEK },
 
+	/* Additional Realtek 8822CE Bluetooth devices */
+	{ USB_DEVICE(0x04ca, 0x4005), .driver_info = BTUSB_REALTEK },
+
 	/* Silicon Wave based devices */
 	{ USB_DEVICE(0x0c10, 0x0000), .driver_info = BTUSB_SWAVE },
 
@@ -435,6 +438,7 @@ static const struct dmi_system_id btusb_needs_reset_resume_table[] = {
 #define BTUSB_OOB_WAKE_ENABLED	11
 #define BTUSB_HW_RESET_ACTIVE	12
 #define BTUSB_TX_WAIT_VND_EVT	13
+#define BTUSB_WAKEUP_DISABLE	14
 
 struct btusb_data {
 	struct hci_dev       *hdev;
@@ -521,6 +525,36 @@ static void btusb_intel_cmd_timeout(struct hci_dev *hdev)
 	gpiod_set_value_cansleep(reset_gpio, 1);
 	msleep(100);
 	gpiod_set_value_cansleep(reset_gpio, 0);
+}
+
+static void btusb_rtl_cmd_timeout(struct hci_dev *hdev)
+{
+	struct btusb_data *data = hci_get_drvdata(hdev);
+	struct gpio_desc *reset_gpio = data->reset_gpio;
+
+	if (++data->cmd_timeout_cnt < 5)
+		return;
+
+	if (!reset_gpio) {
+		bt_dev_err(hdev, "No gpio to reset Realtek device, ignoring");
+		return;
+	}
+
+	/* Toggle the hard reset line. The Realtek device is going to
+	 * yank itself off the USB and then replug. The cleanup is handled
+	 * correctly on the way out (standard USB disconnect), and the new
+	 * device is detected cleanly and bound to the driver again like
+	 * it should be.
+	 */
+	if (test_and_set_bit(BTUSB_HW_RESET_ACTIVE, &data->flags)) {
+		bt_dev_err(hdev, "last reset failed? Not resetting again");
+		return;
+	}
+
+	bt_dev_err(hdev, "Reset Realtek device via gpio");
+	gpiod_set_value_cansleep(reset_gpio, 0);
+	msleep(200);
+	gpiod_set_value_cansleep(reset_gpio, 1);
 }
 
 static inline void btusb_free_frags(struct btusb_data *data)
@@ -1170,10 +1204,13 @@ static int btusb_open(struct hci_dev *hdev)
 	}
 
 	data->intf->needs_remote_wakeup = 1;
-	/* device specific wakeup source enabled and required for USB
-	 * remote wakeup while host is suspended
+
+	/* Disable device remote wakeup when host is suspended
+	 * For Realtek chips, global suspend without
+	 * SET_FEATURE (DEVICE_REMOTE_WAKEUP) can save more power in device.
 	 */
-	device_wakeup_enable(&data->udev->dev);
+	if (test_bit(BTUSB_WAKEUP_DISABLE, &data->flags))
+		device_wakeup_disable(&data->udev->dev);
 
 	if (test_and_set_bit(BTUSB_INTR_RUNNING, &data->flags))
 		goto done;
@@ -1238,7 +1275,11 @@ static int btusb_close(struct hci_dev *hdev)
 		goto failed;
 
 	data->intf->needs_remote_wakeup = 0;
-	device_wakeup_disable(&data->udev->dev);
+
+	/* Enable remote wake up for auto-suspend */
+	if (test_bit(BTUSB_WAKEUP_DISABLE, &data->flags))
+		data->intf->needs_remote_wakeup = 1;
+
 	usb_autopm_put_interface(data->intf);
 
 failed:
@@ -2141,8 +2182,11 @@ static int btusb_setup_intel_new(struct hci_dev *hdev)
 	 * loaded.
 	 */
 	err = btintel_read_version(hdev, &ver);
-	if (err)
+	if (err) {
+		bt_dev_err(hdev, "Intel Read version failed (%d)", err);
+		btintel_reset_to_bootloader(hdev);
 		return err;
+	}
 
 	/* The hardware platform number has a fixed value of 0x37 and
 	 * for now only accept this single value.
@@ -2285,9 +2329,13 @@ static int btusb_setup_intel_new(struct hci_dev *hdev)
 
 	/* Start firmware downloading and get boot parameter */
 	err = btintel_download_firmware(hdev, fw, &boot_param);
-	if (err < 0)
+	if (err < 0) {
+		/* When FW download fails, send Intel Reset to retry
+		 * FW download.
+		 */
+		btintel_reset_to_bootloader(hdev);
 		goto done;
-
+	}
 	set_bit(BTUSB_FIRMWARE_LOADED, &data->flags);
 
 	bt_dev_info(hdev, "Waiting for firmware download to complete");
@@ -2314,6 +2362,7 @@ static int btusb_setup_intel_new(struct hci_dev *hdev)
 	if (err) {
 		bt_dev_err(hdev, "Firmware loading timeout");
 		err = -ETIMEDOUT;
+		btintel_reset_to_bootloader(hdev);
 		goto done;
 	}
 
@@ -2340,8 +2389,11 @@ done:
 	set_bit(BTUSB_BOOTING, &data->flags);
 
 	err = btintel_send_intel_reset(hdev, boot_param);
-	if (err)
+	if (err) {
+		bt_dev_err(hdev, "Intel Soft Reset failed (%d)", err);
+		btintel_reset_to_bootloader(hdev);
 		return err;
+	}
 
 	/* The bootloader will not indicate when the device is ready. This
 	 * is done by the operational firmware sending bootup notification.
@@ -2363,6 +2415,7 @@ done:
 
 	if (err) {
 		bt_dev_err(hdev, "Device boot timeout");
+		btintel_reset_to_bootloader(hdev);
 		return -ETIMEDOUT;
 	}
 
@@ -2390,6 +2443,13 @@ done:
 	 * and thus no need to fail the setup.
 	 */
 	btintel_set_event_mask(hdev, false);
+
+	/* Read the Intel version information after loading the FW  */
+	err = btintel_read_version(hdev, &ver);
+	if (err)
+		return err;
+
+	btintel_version_info(hdev, &ver);
 
 	return 0;
 }
@@ -2447,8 +2507,6 @@ static int btusb_shutdown_intel_new(struct hci_dev *hdev)
 
 	return 0;
 }
-
-#ifdef CONFIG_BT_HCIBTUSB_MTK
 
 #define FIRMWARE_MT7663		"mediatek/mt7663pr2h.bin"
 #define FIRMWARE_MT7668		"mediatek/mt7668pr2h.bin"
@@ -2762,8 +2820,10 @@ static int btusb_mtk_setup_firmware(struct hci_dev *hdev, const char *fwname)
 	fw_size = fw->size;
 
 	/* The size of patch header is 30 bytes, should be skip */
-	if (fw_size < 30)
+	if (fw_size < 30) {
+		err = -EINVAL;
 		goto err_release_fw;
+	}
 
 	fw_size -= 30;
 	fw_ptr += 30;
@@ -3008,7 +3068,6 @@ static int btusb_mtk_shutdown(struct hci_dev *hdev)
 
 MODULE_FIRMWARE(FIRMWARE_MT7663);
 MODULE_FIRMWARE(FIRMWARE_MT7668);
-#endif
 
 #ifdef CONFIG_PM
 /* Configure an out-of-band gpio as wake-up pin, if specified in device tree */
@@ -3368,7 +3427,6 @@ static int btusb_setup_qca(struct hci_dev *hdev)
 	return 0;
 }
 
-#ifdef CONFIG_BT_HCIBTUSB_BCM
 static inline int __set_diag_interface(struct hci_dev *hdev)
 {
 	struct btusb_data *data = hci_get_drvdata(hdev);
@@ -3455,7 +3513,6 @@ static int btusb_bcm_set_diag(struct hci_dev *hdev, bool enable)
 
 	return submit_or_queue_tx_urb(hdev, urb);
 }
-#endif
 
 #ifdef CONFIG_PM
 static irqreturn_t btusb_oob_wake_handler(int irq, void *priv)
@@ -3681,8 +3738,8 @@ static int btusb_probe(struct usb_interface *intf,
 	if (id->driver_info & BTUSB_BCM92035)
 		hdev->setup = btusb_setup_bcm92035;
 
-#ifdef CONFIG_BT_HCIBTUSB_BCM
-	if (id->driver_info & BTUSB_BCM_PATCHRAM) {
+	if (IS_ENABLED(CONFIG_BT_HCIBTUSB_BCM) &&
+	    (id->driver_info & BTUSB_BCM_PATCHRAM)) {
 		hdev->manufacturer = 15;
 		hdev->setup = btbcm_setup_patchram;
 		hdev->set_diag = btusb_bcm_set_diag;
@@ -3692,7 +3749,8 @@ static int btusb_probe(struct usb_interface *intf,
 		data->diag = usb_ifnum_to_if(data->udev, ifnum_base + 2);
 	}
 
-	if (id->driver_info & BTUSB_BCM_APPLE) {
+	if (IS_ENABLED(CONFIG_BT_HCIBTUSB_BCM) &&
+	    (id->driver_info & BTUSB_BCM_APPLE)) {
 		hdev->manufacturer = 15;
 		hdev->setup = btbcm_setup_apple;
 		hdev->set_diag = btusb_bcm_set_diag;
@@ -3700,7 +3758,6 @@ static int btusb_probe(struct usb_interface *intf,
 		/* Broadcom LM_DIAG Interface numbers are hardcoded */
 		data->diag = usb_ifnum_to_if(data->udev, ifnum_base + 2);
 	}
-#endif
 
 	if (id->driver_info & BTUSB_INTEL) {
 		hdev->manufacturer = 2;
@@ -3731,14 +3788,13 @@ static int btusb_probe(struct usb_interface *intf,
 	if (id->driver_info & BTUSB_MARVELL)
 		hdev->set_bdaddr = btusb_set_bdaddr_marvell;
 
-#ifdef CONFIG_BT_HCIBTUSB_MTK
-	if (id->driver_info & BTUSB_MEDIATEK) {
+	if (IS_ENABLED(CONFIG_BT_HCIBTUSB_MTK) &&
+	    (id->driver_info & BTUSB_MEDIATEK)) {
 		hdev->setup = btusb_mtk_setup;
 		hdev->shutdown = btusb_mtk_shutdown;
 		hdev->manufacturer = 70;
 		set_bit(HCI_QUIRK_NON_PERSISTENT_SETUP, &hdev->quirks);
 	}
-#endif
 
 	if (id->driver_info & BTUSB_SWAVE) {
 		set_bit(HCI_QUIRK_FIXUP_INQUIRY_MODE, &hdev->quirks);
@@ -3764,18 +3820,18 @@ static int btusb_probe(struct usb_interface *intf,
 		btusb_check_needs_reset_resume(intf);
 	}
 
-#ifdef CONFIG_BT_HCIBTUSB_RTL
-	if (id->driver_info & BTUSB_REALTEK) {
+	if (IS_ENABLED(CONFIG_BT_HCIBTUSB_RTL) &&
+	    (id->driver_info & BTUSB_REALTEK)) {
 		hdev->setup = btrtl_setup_realtek;
 		hdev->shutdown = btrtl_shutdown_realtek;
+		hdev->cmd_timeout = btusb_rtl_cmd_timeout;
 
-		/* Realtek devices lose their updated firmware over suspend,
-		 * but the USB hub doesn't notice any status change.
-		 * Explicitly request a device reset on resume.
+		/* Realtek devices lose their updated firmware over global
+		 * suspend that means host doesn't send SET_FEATURE
+		 * (DEVICE_REMOTE_WAKEUP)
 		 */
-		interface_to_usbdev(intf)->quirks |= USB_QUIRK_RESET_RESUME;
+		set_bit(BTUSB_WAKEUP_DISABLE, &data->flags);
 	}
-#endif
 
 	if (id->driver_info & BTUSB_AMP) {
 		/* AMP controllers do not support SCO packets */
@@ -3843,15 +3899,13 @@ static int btusb_probe(struct usb_interface *intf,
 			goto out_free_dev;
 	}
 
-#ifdef CONFIG_BT_HCIBTUSB_BCM
-	if (data->diag) {
+	if (IS_ENABLED(CONFIG_BT_HCIBTUSB_BCM) && data->diag) {
 		if (!usb_driver_claim_interface(&btusb_driver,
 						data->diag, data))
 			__set_diag_interface(hdev);
 		else
 			data->diag = NULL;
 	}
-#endif
 
 	if (enable_autosuspend)
 		usb_enable_autosuspend(data->udev);
@@ -3945,6 +3999,19 @@ static int btusb_suspend(struct usb_interface *intf, pm_message_t message)
 		set_bit(BTUSB_OOB_WAKE_ENABLED, &data->flags);
 		enable_irq_wake(data->oob_wake_irq);
 		enable_irq(data->oob_wake_irq);
+	}
+
+	/* For global suspend, Realtek devices lose the loaded fw
+	 * in them. But for autosuspend, firmware should remain.
+	 * Actually, it depends on whether the usb host sends
+	 * set feature (enable wakeup) or not.
+	 */
+	if (test_bit(BTUSB_WAKEUP_DISABLE, &data->flags)) {
+		if (PMSG_IS_AUTO(message) &&
+		    device_can_wakeup(&data->udev->dev))
+			data->udev->do_remote_wakeup = 1;
+		else if (!PMSG_IS_AUTO(message))
+			data->udev->reset_resume = 1;
 	}
 
 	return 0;

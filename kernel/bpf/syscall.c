@@ -23,6 +23,7 @@
 #include <linux/timekeeping.h>
 #include <linux/ctype.h>
 #include <linux/nospec.h>
+#include <uapi/linux/btf.h>
 
 #define IS_FD_ARRAY(map) ((map)->map_type == BPF_MAP_TYPE_PROG_ARRAY || \
 			   (map)->map_type == BPF_MAP_TYPE_PERF_EVENT_ARRAY || \
@@ -683,8 +684,8 @@ struct bpf_map *bpf_map_get_with_uref(u32 ufd)
 }
 
 /* map_idr_lock should have been held */
-static struct bpf_map *bpf_map_inc_not_zero(struct bpf_map *map,
-					    bool uref)
+static struct bpf_map *__bpf_map_inc_not_zero(struct bpf_map *map,
+					      bool uref)
 {
 	int refold;
 
@@ -703,6 +704,16 @@ static struct bpf_map *bpf_map_inc_not_zero(struct bpf_map *map,
 
 	return map;
 }
+
+struct bpf_map *bpf_map_inc_not_zero(struct bpf_map *map, bool uref)
+{
+	spin_lock_bh(&map_idr_lock);
+	map = __bpf_map_inc_not_zero(map, uref);
+	spin_unlock_bh(&map_idr_lock);
+
+	return map;
+}
+EXPORT_SYMBOL_GPL(bpf_map_inc_not_zero);
 
 int __weak bpf_stackmap_copy(struct bpf_map *map, void *key, void *value)
 {
@@ -801,8 +812,6 @@ static int map_lookup_elem(union bpf_attr *attr)
 	} else if (map->map_type == BPF_MAP_TYPE_QUEUE ||
 		   map->map_type == BPF_MAP_TYPE_STACK) {
 		err = map->ops->map_peek_elem(map, value);
-	} else if (map->map_type == BPF_MAP_TYPE_INODE) {
-		err = bpf_inode_fd_htab_map_lookup_elem(map, key, value);
 	} else {
 		rcu_read_lock();
 		if (map->ops->map_lookup_elem_sys_only)
@@ -953,10 +962,6 @@ static int map_update_elem(union bpf_attr *attr)
 	} else if (map->map_type == BPF_MAP_TYPE_QUEUE ||
 		   map->map_type == BPF_MAP_TYPE_STACK) {
 		err = map->ops->map_push_elem(map, value, attr->flags);
-	} else if (map->map_type == BPF_MAP_TYPE_INODE) {
-		rcu_read_lock();
-		err = bpf_inode_fd_htab_map_update_elem(map, key, value, attr->flags);
-		rcu_read_unlock();
 	} else {
 		rcu_read_lock();
 		err = map->ops->map_update_elem(map, key, value, attr->flags);
@@ -1012,10 +1017,7 @@ static int map_delete_elem(union bpf_attr *attr)
 	preempt_disable();
 	__this_cpu_inc(bpf_prog_active);
 	rcu_read_lock();
-	if (map->map_type == BPF_MAP_TYPE_INODE)
-		err = bpf_inode_fd_htab_map_delete_elem(map, key);
-	else
-		err = map->ops->map_delete_elem(map, key);
+	err = map->ops->map_delete_elem(map, key);
 	rcu_read_unlock();
 	__this_cpu_dec(bpf_prog_active);
 	preempt_enable();
@@ -1024,22 +1026,6 @@ out:
 	kfree(key);
 err_put:
 	fdput(f);
-	return err;
-}
-
-int bpf_inode_ptr_unlocked_htab_map_delete_elem(struct bpf_map *map,
-						struct inode **key, bool remove_in_inode)
-{
-	int err;
-
-	preempt_disable();
-	__this_cpu_inc(bpf_prog_active);
-	rcu_read_lock();
-	err = bpf_inode_ptr_locked_htab_map_delete_elem(map, key, remove_in_inode);
-	rcu_read_unlock();
-	__this_cpu_dec(bpf_prog_active);
-	preempt_enable();
-	maybe_wait_bpf_programs(map);
 	return err;
 }
 
@@ -1580,9 +1566,21 @@ static void bpf_prog_load_fixup_attach_type(union bpf_attr *attr)
 }
 
 static int
-bpf_prog_load_check_attach_type(enum bpf_prog_type prog_type,
-				enum bpf_attach_type expected_attach_type)
+bpf_prog_load_check_attach(enum bpf_prog_type prog_type,
+			   enum bpf_attach_type expected_attach_type,
+			   u32 btf_id)
 {
+	switch (prog_type) {
+	case BPF_PROG_TYPE_RAW_TRACEPOINT:
+		if (btf_id > BTF_MAX_TYPE)
+			return -EINVAL;
+		break;
+	default:
+		if (btf_id)
+			return -EINVAL;
+		break;
+	}
+
 	switch (prog_type) {
 	case BPF_PROG_TYPE_CGROUP_SOCK:
 		switch (expected_attach_type) {
@@ -1626,8 +1624,7 @@ bpf_prog_load_check_attach_type(enum bpf_prog_type prog_type,
 #ifdef CONFIG_SECURITY_LANDLOCK
 	case BPF_PROG_TYPE_LANDLOCK_HOOK:
 		switch (expected_attach_type) {
-		case BPF_LANDLOCK_FS_PICK:
-		case BPF_LANDLOCK_FS_WALK:
+		case BPF_LANDLOCK_PTRACE:
 			return 0;
 		default:
 			return -EINVAL;
@@ -1639,7 +1636,7 @@ bpf_prog_load_check_attach_type(enum bpf_prog_type prog_type,
 }
 
 /* last field in 'union bpf_attr' used by this command */
-#define	BPF_PROG_LOAD_LAST_FIELD expected_attach_triggers
+#define	BPF_PROG_LOAD_LAST_FIELD attach_btf_id
 
 static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 {
@@ -1654,6 +1651,7 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 
 	if (attr->prog_flags & ~(BPF_F_STRICT_ALIGNMENT |
 				 BPF_F_ANY_ALIGNMENT |
+				 BPF_F_TEST_STATE_FREQ |
 				 BPF_F_TEST_RND_HI32))
 		return -EINVAL;
 
@@ -1680,7 +1678,8 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 		return -EPERM;
 
 	bpf_prog_load_fixup_attach_type(attr);
-	if (bpf_prog_load_check_attach_type(type, attr->expected_attach_type))
+	if (bpf_prog_load_check_attach(type, attr->expected_attach_type,
+				       attr->attach_btf_id))
 		return -EINVAL;
 
 	/* plain bpf_prog allocation */
@@ -1689,6 +1688,7 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 		return -ENOMEM;
 
 	prog->expected_attach_type = attr->expected_attach_type;
+	prog->aux->attach_btf_id = attr->attach_btf_id;
 
 	prog->aux->offload_requested = !!attr->prog_ifindex;
 
@@ -1729,8 +1729,6 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 	if (err)
 		goto free_prog;
 
-	prog->aux->expected_attach_triggers = attr->expected_attach_triggers;
-
 	/* run eBPF verifier */
 	err = bpf_check(&prog, attr, uattr);
 	if (err < 0)
@@ -1744,20 +1742,26 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 	if (err)
 		goto free_used_maps;
 
-	err = bpf_prog_new_fd(prog);
-	if (err < 0) {
-		/* failed to allocate fd.
-		 * bpf_prog_put() is needed because the above
-		 * bpf_prog_alloc_id() has published the prog
-		 * to the userspace and the userspace may
-		 * have refcnt-ed it through BPF_PROG_GET_FD_BY_ID.
-		 */
-		bpf_prog_put(prog);
-		return err;
-	}
-
+	/* Upon success of bpf_prog_alloc_id(), the BPF prog is
+	 * effectively publicly exposed. However, retrieving via
+	 * bpf_prog_get_fd_by_id() will take another reference,
+	 * therefore it cannot be gone underneath us.
+	 *
+	 * Only for the time /after/ successful bpf_prog_new_fd()
+	 * and before returning to userspace, we might just hold
+	 * one reference and any parallel close on that fd could
+	 * rip everything out. Hence, below notifications must
+	 * happen before bpf_prog_new_fd().
+	 *
+	 * Also, any failure handling from this point onwards must
+	 * be using bpf_prog_put() given the program is exposed.
+	 */
 	bpf_prog_kallsyms_add(prog);
 	perf_event_bpf_event(prog, PERF_BPF_EVENT_PROG_LOAD, 0);
+
+	err = bpf_prog_new_fd(prog);
+	if (err < 0)
+		bpf_prog_put(prog);
 	return err;
 
 free_used_maps:
@@ -1826,17 +1830,50 @@ static int bpf_raw_tracepoint_open(const union bpf_attr *attr)
 	struct bpf_raw_tracepoint *raw_tp;
 	struct bpf_raw_event_map *btp;
 	struct bpf_prog *prog;
-	char tp_name[128];
+	const char *tp_name;
+	char buf[128];
 	int tp_fd, err;
 
-	if (strncpy_from_user(tp_name, u64_to_user_ptr(attr->raw_tracepoint.name),
-			      sizeof(tp_name) - 1) < 0)
-		return -EFAULT;
-	tp_name[sizeof(tp_name) - 1] = 0;
+	if (CHECK_ATTR(BPF_RAW_TRACEPOINT_OPEN))
+		return -EINVAL;
+
+	prog = bpf_prog_get(attr->raw_tracepoint.prog_fd);
+	if (IS_ERR(prog))
+		return PTR_ERR(prog);
+
+	if (prog->type != BPF_PROG_TYPE_RAW_TRACEPOINT &&
+	    prog->type != BPF_PROG_TYPE_RAW_TRACEPOINT_WRITABLE) {
+		err = -EINVAL;
+		goto out_put_prog;
+	}
+
+	if (prog->type == BPF_PROG_TYPE_RAW_TRACEPOINT &&
+	    prog->aux->attach_btf_id) {
+		if (attr->raw_tracepoint.name) {
+			/* raw_tp name should not be specified in raw_tp
+			 * programs that were verified via in-kernel BTF info
+			 */
+			err = -EINVAL;
+			goto out_put_prog;
+		}
+		/* raw_tp name is taken from type name instead */
+		tp_name = prog->aux->attach_func_name;
+	} else {
+		if (strncpy_from_user(buf,
+				      u64_to_user_ptr(attr->raw_tracepoint.name),
+				      sizeof(buf) - 1) < 0) {
+			err = -EFAULT;
+			goto out_put_prog;
+		}
+		buf[sizeof(buf) - 1] = 0;
+		tp_name = buf;
+	}
 
 	btp = bpf_get_raw_tracepoint(tp_name);
-	if (!btp)
-		return -ENOENT;
+	if (!btp) {
+		err = -ENOENT;
+		goto out_put_prog;
+	}
 
 	raw_tp = kzalloc(sizeof(*raw_tp), GFP_USER);
 	if (!raw_tp) {
@@ -1844,38 +1881,27 @@ static int bpf_raw_tracepoint_open(const union bpf_attr *attr)
 		goto out_put_btp;
 	}
 	raw_tp->btp = btp;
-
-	prog = bpf_prog_get(attr->raw_tracepoint.prog_fd);
-	if (IS_ERR(prog)) {
-		err = PTR_ERR(prog);
-		goto out_free_tp;
-	}
-	if (prog->type != BPF_PROG_TYPE_RAW_TRACEPOINT &&
-	    prog->type != BPF_PROG_TYPE_RAW_TRACEPOINT_WRITABLE) {
-		err = -EINVAL;
-		goto out_put_prog;
-	}
+	raw_tp->prog = prog;
 
 	err = bpf_probe_register(raw_tp->btp, prog);
 	if (err)
-		goto out_put_prog;
+		goto out_free_tp;
 
-	raw_tp->prog = prog;
 	tp_fd = anon_inode_getfd("bpf-raw-tracepoint", &bpf_raw_tp_fops, raw_tp,
 				 O_CLOEXEC);
 	if (tp_fd < 0) {
 		bpf_probe_unregister(raw_tp->btp, prog);
 		err = tp_fd;
-		goto out_put_prog;
+		goto out_free_tp;
 	}
 	return tp_fd;
 
-out_put_prog:
-	bpf_prog_put(prog);
 out_free_tp:
 	kfree(raw_tp);
 out_put_btp:
 	bpf_put_raw_tracepoint(btp);
+out_put_prog:
+	bpf_prog_put(prog);
 	return err;
 }
 
@@ -2214,7 +2240,7 @@ static int bpf_map_get_fd_by_id(const union bpf_attr *attr)
 	spin_lock_bh(&map_idr_lock);
 	map = idr_find(&map_idr, id);
 	if (map)
-		map = bpf_map_inc_not_zero(map, true);
+		map = __bpf_map_inc_not_zero(map, true);
 	else
 		map = ERR_PTR(-ENOENT);
 	spin_unlock_bh(&map_idr_lock);
@@ -2910,6 +2936,10 @@ SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, siz
 	case BPF_MAP_GET_NEXT_ID:
 		err = bpf_obj_get_next_id(&attr, uattr,
 					  &map_idr, &map_idr_lock);
+		break;
+	case BPF_BTF_GET_NEXT_ID:
+		err = bpf_obj_get_next_id(&attr, uattr,
+					  &btf_idr, &btf_idr_lock);
 		break;
 	case BPF_PROG_GET_FD_BY_ID:
 		err = bpf_prog_get_fd_by_id(&attr);

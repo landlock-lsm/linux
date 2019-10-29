@@ -312,7 +312,7 @@ class DebugfsDir:
             if f == "ports":
                 continue
             p = os.path.join(path, f)
-            if os.path.isfile(p):
+            if os.path.isfile(p) and os.access(p, os.R_OK):
                 _, out = cmd('cat %s/%s' % (path, f))
                 dfs[f] = out.strip()
             elif os.path.isdir(p):
@@ -1353,7 +1353,7 @@ try:
     bpftool_prog_list_wait(expected=1)
 
     ifnameB = bpftool("prog show %s" % (progB))[1]["dev"]["ifname"]
-    fail(ifnameB != simB1['ifname'], "program not bound to originial device")
+    fail(ifnameB != simB1['ifname'], "program not bound to original device")
     simB1.remove()
     bpftool_prog_list_wait(expected=1)
 

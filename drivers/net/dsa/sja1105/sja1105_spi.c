@@ -7,42 +7,15 @@
 #include <linux/packing.h>
 #include "sja1105.h"
 
-#define SJA1105_SIZE_PORT_CTRL		4
 #define SJA1105_SIZE_RESET_CMD		4
 #define SJA1105_SIZE_SPI_MSG_HEADER	4
 #define SJA1105_SIZE_SPI_MSG_MAXLEN	(64 * 4)
-#define SJA1105_SIZE_SPI_TRANSFER_MAX	\
-	(SJA1105_SIZE_SPI_MSG_HEADER + SJA1105_SIZE_SPI_MSG_MAXLEN)
 
-static int sja1105_spi_transfer(const struct sja1105_private *priv,
-				const void *tx, void *rx, int size)
-{
-	struct spi_device *spi = priv->spidev;
-	struct spi_transfer transfer = {
-		.tx_buf = tx,
-		.rx_buf = rx,
-		.len = size,
-	};
-	struct spi_message msg;
-	int rc;
-
-	if (size > SJA1105_SIZE_SPI_TRANSFER_MAX) {
-		dev_err(&spi->dev, "SPI message (%d) longer than max of %d\n",
-			size, SJA1105_SIZE_SPI_TRANSFER_MAX);
-		return -EMSGSIZE;
-	}
-
-	spi_message_init(&msg);
-	spi_message_add_tail(&transfer, &msg);
-
-	rc = spi_sync(spi, &msg);
-	if (rc < 0) {
-		dev_err(&spi->dev, "SPI transfer failed: %d\n", rc);
-		return rc;
-	}
-
-	return rc;
-}
+struct sja1105_chunk {
+	u8	*buf;
+	size_t	len;
+	u64	reg_addr;
+};
 
 static void
 sja1105_spi_message_pack(void *buf, const struct sja1105_spi_message *msg)
@@ -56,121 +29,150 @@ sja1105_spi_message_pack(void *buf, const struct sja1105_spi_message *msg)
 	sja1105_pack(buf, &msg->address,    24,  4, size);
 }
 
+#define sja1105_hdr_xfer(xfers, chunk) \
+	((xfers) + 2 * (chunk))
+#define sja1105_chunk_xfer(xfers, chunk) \
+	((xfers) + 2 * (chunk) + 1)
+#define sja1105_hdr_buf(hdr_bufs, chunk) \
+	((hdr_bufs) + (chunk) * SJA1105_SIZE_SPI_MSG_HEADER)
+
 /* If @rw is:
  * - SPI_WRITE: creates and sends an SPI write message at absolute
- *		address reg_addr, taking size_bytes from *packed_buf
+ *		address reg_addr, taking @len bytes from *buf
  * - SPI_READ:  creates and sends an SPI read message from absolute
- *		address reg_addr, writing size_bytes into *packed_buf
- *
- * This function should only be called if it is priorly known that
- * @size_bytes is smaller than SIZE_SPI_MSG_MAXLEN. Larger packed buffers
- * are chunked in smaller pieces by sja1105_spi_send_long_packed_buf below.
+ *		address reg_addr, writing @len bytes into *buf
  */
-int sja1105_spi_send_packed_buf(const struct sja1105_private *priv,
-				sja1105_spi_rw_mode_t rw, u64 reg_addr,
-				void *packed_buf, size_t size_bytes)
+int sja1105_xfer_buf(const struct sja1105_private *priv,
+		     sja1105_spi_rw_mode_t rw, u64 reg_addr,
+		     u8 *buf, size_t len)
 {
-	u8 tx_buf[SJA1105_SIZE_SPI_TRANSFER_MAX] = {0};
-	u8 rx_buf[SJA1105_SIZE_SPI_TRANSFER_MAX] = {0};
-	const int msg_len = size_bytes + SJA1105_SIZE_SPI_MSG_HEADER;
-	struct sja1105_spi_message msg = {0};
-	int rc;
+	struct sja1105_chunk chunk = {
+		.len = min_t(size_t, len, SJA1105_SIZE_SPI_MSG_MAXLEN),
+		.reg_addr = reg_addr,
+		.buf = buf,
+	};
+	struct spi_device *spi = priv->spidev;
+	struct spi_transfer *xfers;
+	int num_chunks;
+	int rc, i = 0;
+	u8 *hdr_bufs;
 
-	if (msg_len > SJA1105_SIZE_SPI_TRANSFER_MAX)
-		return -ERANGE;
+	num_chunks = DIV_ROUND_UP(len, SJA1105_SIZE_SPI_MSG_MAXLEN);
 
-	msg.access = rw;
-	msg.address = reg_addr;
-	if (rw == SPI_READ)
-		msg.read_count = size_bytes / 4;
+	/* One transfer for each message header, one for each message
+	 * payload (chunk).
+	 */
+	xfers = kcalloc(2 * num_chunks, sizeof(struct spi_transfer),
+			GFP_KERNEL);
+	if (!xfers)
+		return -ENOMEM;
 
-	sja1105_spi_message_pack(tx_buf, &msg);
+	/* Packed buffers for the num_chunks SPI message headers,
+	 * stored as a contiguous array
+	 */
+	hdr_bufs = kcalloc(num_chunks, SJA1105_SIZE_SPI_MSG_HEADER,
+			   GFP_KERNEL);
+	if (!hdr_bufs) {
+		kfree(xfers);
+		return -ENOMEM;
+	}
 
-	if (rw == SPI_WRITE)
-		memcpy(tx_buf + SJA1105_SIZE_SPI_MSG_HEADER,
-		       packed_buf, size_bytes);
+	for (i = 0; i < num_chunks; i++) {
+		struct spi_transfer *chunk_xfer = sja1105_chunk_xfer(xfers, i);
+		struct spi_transfer *hdr_xfer = sja1105_hdr_xfer(xfers, i);
+		u8 *hdr_buf = sja1105_hdr_buf(hdr_bufs, i);
+		struct sja1105_spi_message msg;
 
-	rc = sja1105_spi_transfer(priv, tx_buf, rx_buf, msg_len);
+		/* Populate the transfer's header buffer */
+		msg.address = chunk.reg_addr;
+		msg.access = rw;
+		if (rw == SPI_READ)
+			msg.read_count = chunk.len / 4;
+		else
+			/* Ignored */
+			msg.read_count = 0;
+		sja1105_spi_message_pack(hdr_buf, &msg);
+		hdr_xfer->tx_buf = hdr_buf;
+		hdr_xfer->len = SJA1105_SIZE_SPI_MSG_HEADER;
+
+		/* Populate the transfer's data buffer */
+		if (rw == SPI_READ)
+			chunk_xfer->rx_buf = chunk.buf;
+		else
+			chunk_xfer->tx_buf = chunk.buf;
+		chunk_xfer->len = chunk.len;
+
+		/* Calculate next chunk */
+		chunk.buf += chunk.len;
+		chunk.reg_addr += chunk.len / 4;
+		chunk.len = min_t(size_t, (ptrdiff_t)(buf + len - chunk.buf),
+				  SJA1105_SIZE_SPI_MSG_MAXLEN);
+
+		/* De-assert the chip select after each chunk. */
+		if (chunk.len)
+			chunk_xfer->cs_change = 1;
+	}
+
+	rc = spi_sync_transfer(spi, xfers, 2 * num_chunks);
 	if (rc < 0)
-		return rc;
+		dev_err(&spi->dev, "SPI transfer failed: %d\n", rc);
 
-	if (rw == SPI_READ)
-		memcpy(packed_buf, rx_buf + SJA1105_SIZE_SPI_MSG_HEADER,
-		       size_bytes);
-
-	return 0;
-}
-
-/* If @rw is:
- * - SPI_WRITE: creates and sends an SPI write message at absolute
- *		address reg_addr, taking size_bytes from *packed_buf
- * - SPI_READ:  creates and sends an SPI read message from absolute
- *		address reg_addr, writing size_bytes into *packed_buf
- *
- * The u64 *value is unpacked, meaning that it's stored in the native
- * CPU endianness and directly usable by software running on the core.
- *
- * This is a wrapper around sja1105_spi_send_packed_buf().
- */
-int sja1105_spi_send_int(const struct sja1105_private *priv,
-			 sja1105_spi_rw_mode_t rw, u64 reg_addr,
-			 u64 *value, u64 size_bytes)
-{
-	u8 packed_buf[SJA1105_SIZE_SPI_MSG_MAXLEN];
-	int rc;
-
-	if (size_bytes > SJA1105_SIZE_SPI_MSG_MAXLEN)
-		return -ERANGE;
-
-	if (rw == SPI_WRITE)
-		sja1105_pack(packed_buf, value, 8 * size_bytes - 1, 0,
-			     size_bytes);
-
-	rc = sja1105_spi_send_packed_buf(priv, rw, reg_addr, packed_buf,
-					 size_bytes);
-
-	if (rw == SPI_READ)
-		sja1105_unpack(packed_buf, value, 8 * size_bytes - 1, 0,
-			       size_bytes);
+	kfree(hdr_bufs);
+	kfree(xfers);
 
 	return rc;
 }
 
-/* Should be used if a @packed_buf larger than SJA1105_SIZE_SPI_MSG_MAXLEN
- * must be sent/received. Splitting the buffer into chunks and assembling
- * those into SPI messages is done automatically by this function.
+/* If @rw is:
+ * - SPI_WRITE: creates and sends an SPI write message at absolute
+ *		address reg_addr
+ * - SPI_READ:  creates and sends an SPI read message from absolute
+ *		address reg_addr
+ *
+ * The u64 *value is unpacked, meaning that it's stored in the native
+ * CPU endianness and directly usable by software running on the core.
  */
-int sja1105_spi_send_long_packed_buf(const struct sja1105_private *priv,
-				     sja1105_spi_rw_mode_t rw, u64 base_addr,
-				     void *packed_buf, u64 buf_len)
+int sja1105_xfer_u64(const struct sja1105_private *priv,
+		     sja1105_spi_rw_mode_t rw, u64 reg_addr, u64 *value)
 {
-	struct chunk {
-		void *buf_ptr;
-		int len;
-		u64 spi_address;
-	} chunk;
-	int distance_to_end;
+	u8 packed_buf[8];
 	int rc;
 
-	/* Initialize chunk */
-	chunk.buf_ptr = packed_buf;
-	chunk.spi_address = base_addr;
-	chunk.len = min_t(int, buf_len, SJA1105_SIZE_SPI_MSG_MAXLEN);
+	if (rw == SPI_WRITE)
+		sja1105_pack(packed_buf, value, 63, 0, 8);
 
-	while (chunk.len) {
-		rc = sja1105_spi_send_packed_buf(priv, rw, chunk.spi_address,
-						 chunk.buf_ptr, chunk.len);
-		if (rc < 0)
-			return rc;
+	rc = sja1105_xfer_buf(priv, rw, reg_addr, packed_buf, 8);
 
-		chunk.buf_ptr += chunk.len;
-		chunk.spi_address += chunk.len / 4;
-		distance_to_end = (uintptr_t)(packed_buf + buf_len -
-					      chunk.buf_ptr);
-		chunk.len = min(distance_to_end, SJA1105_SIZE_SPI_MSG_MAXLEN);
+	if (rw == SPI_READ)
+		sja1105_unpack(packed_buf, value, 63, 0, 8);
+
+	return rc;
+}
+
+/* Same as above, but transfers only a 4 byte word */
+int sja1105_xfer_u32(const struct sja1105_private *priv,
+		     sja1105_spi_rw_mode_t rw, u64 reg_addr, u32 *value)
+{
+	u8 packed_buf[4];
+	u64 tmp;
+	int rc;
+
+	if (rw == SPI_WRITE) {
+		/* The packing API only supports u64 as CPU word size,
+		 * so we need to convert.
+		 */
+		tmp = *value;
+		sja1105_pack(packed_buf, &tmp, 31, 0, 4);
 	}
 
-	return 0;
+	rc = sja1105_xfer_buf(priv, rw, reg_addr, packed_buf, 4);
+
+	if (rw == SPI_READ) {
+		sja1105_unpack(packed_buf, &tmp, 31, 0, 4);
+		*value = tmp;
+	}
+
+	return rc;
 }
 
 /* Back-ported structure from UM11040 Table 112.
@@ -241,8 +243,8 @@ static int sja1105et_reset_cmd(const void *ctx, const void *data)
 
 	sja1105et_reset_cmd_pack(packed_buf, reset);
 
-	return sja1105_spi_send_packed_buf(priv, SPI_WRITE, regs->rgu,
-					   packed_buf, SJA1105_SIZE_RESET_CMD);
+	return sja1105_xfer_buf(priv, SPI_WRITE, regs->rgu, packed_buf,
+				SJA1105_SIZE_RESET_CMD);
 }
 
 static int sja1105pqrs_reset_cmd(const void *ctx, const void *data)
@@ -271,8 +273,8 @@ static int sja1105pqrs_reset_cmd(const void *ctx, const void *data)
 
 	sja1105pqrs_reset_cmd_pack(packed_buf, reset);
 
-	return sja1105_spi_send_packed_buf(priv, SPI_WRITE, regs->rgu,
-					   packed_buf, SJA1105_SIZE_RESET_CMD);
+	return sja1105_xfer_buf(priv, SPI_WRITE, regs->rgu, packed_buf,
+				SJA1105_SIZE_RESET_CMD);
 }
 
 static int sja1105_cold_reset(const struct sja1105_private *priv)
@@ -287,11 +289,11 @@ int sja1105_inhibit_tx(const struct sja1105_private *priv,
 		       unsigned long port_bitmap, bool tx_inhibited)
 {
 	const struct sja1105_regs *regs = priv->info->regs;
-	u64 inhibit_cmd;
+	u32 inhibit_cmd;
 	int rc;
 
-	rc = sja1105_spi_send_int(priv, SPI_READ, regs->port_control,
-				  &inhibit_cmd, SJA1105_SIZE_PORT_CTRL);
+	rc = sja1105_xfer_u32(priv, SPI_READ, regs->port_control,
+			      &inhibit_cmd);
 	if (rc < 0)
 		return rc;
 
@@ -300,8 +302,8 @@ int sja1105_inhibit_tx(const struct sja1105_private *priv,
 	else
 		inhibit_cmd &= ~port_bitmap;
 
-	return sja1105_spi_send_int(priv, SPI_WRITE, regs->port_control,
-				    &inhibit_cmd, SJA1105_SIZE_PORT_CTRL);
+	return sja1105_xfer_u32(priv, SPI_WRITE, regs->port_control,
+				&inhibit_cmd);
 }
 
 struct sja1105_status {
@@ -339,9 +341,7 @@ static int sja1105_status_get(struct sja1105_private *priv,
 	u8 packed_buf[4];
 	int rc;
 
-	rc = sja1105_spi_send_packed_buf(priv, SPI_READ,
-					 regs->status,
-					 packed_buf, 4);
+	rc = sja1105_xfer_buf(priv, SPI_READ, regs->status, packed_buf, 4);
 	if (rc < 0)
 		return rc;
 
@@ -409,7 +409,8 @@ int sja1105_static_config_upload(struct sja1105_private *priv)
 	rc = static_config_buf_prepare_for_upload(priv, config_buf, buf_len);
 	if (rc < 0) {
 		dev_err(dev, "Invalid config, cannot upload\n");
-		return -EINVAL;
+		rc = -EINVAL;
+		goto out;
 	}
 	/* Prevent PHY jabbering during switch reset by inhibiting
 	 * Tx on all ports and waiting for current packet to drain.
@@ -418,7 +419,8 @@ int sja1105_static_config_upload(struct sja1105_private *priv)
 	rc = sja1105_inhibit_tx(priv, port_bitmap, true);
 	if (rc < 0) {
 		dev_err(dev, "Failed to inhibit Tx on ports\n");
-		return -ENXIO;
+		rc = -ENXIO;
+		goto out;
 	}
 	/* Wait for an eventual egress packet to finish transmission
 	 * (reach IFG). It is guaranteed that a second one will not
@@ -435,9 +437,8 @@ int sja1105_static_config_upload(struct sja1105_private *priv)
 		/* Wait for the switch to come out of reset */
 		usleep_range(1000, 5000);
 		/* Upload the static config to the device */
-		rc = sja1105_spi_send_long_packed_buf(priv, SPI_WRITE,
-						      regs->config,
-						      config_buf, buf_len);
+		rc = sja1105_xfer_buf(priv, SPI_WRITE, regs->config,
+				      config_buf, buf_len);
 		if (rc < 0) {
 			dev_err(dev, "Failed to upload config, retrying...\n");
 			continue;
@@ -480,7 +481,7 @@ int sja1105_static_config_upload(struct sja1105_private *priv)
 		dev_info(dev, "Succeeded after %d tried\n", RETRIES - retries);
 	}
 
-	rc = sja1105_ptp_reset(priv);
+	rc = sja1105_ptp_reset(priv->ds);
 	if (rc < 0)
 		dev_err(dev, "Failed to reset PTP clock: %d\n", rc);
 
@@ -515,9 +516,8 @@ static struct sja1105_regs sja1105et_regs = {
 	.rmii_ext_tx_clk = {0x100018, 0x10001F, 0x100026, 0x10002D, 0x100034},
 	.ptpegr_ts = {0xC0, 0xC2, 0xC4, 0xC6, 0xC8},
 	.ptp_control = 0x17,
-	.ptpclk = 0x18, /* Spans 0x18 to 0x19 */
+	.ptpclkval = 0x18, /* Spans 0x18 to 0x19 */
 	.ptpclkrate = 0x1A,
-	.ptptsclk = 0x1B, /* Spans 0x1B to 0x1C */
 };
 
 static struct sja1105_regs sja1105pqrs_regs = {
@@ -546,9 +546,8 @@ static struct sja1105_regs sja1105pqrs_regs = {
 	.qlevel = {0x604, 0x614, 0x624, 0x634, 0x644},
 	.ptpegr_ts = {0xC0, 0xC4, 0xC8, 0xCC, 0xD0},
 	.ptp_control = 0x18,
-	.ptpclk = 0x19,
+	.ptpclkval = 0x19,
 	.ptpclkrate = 0x1B,
-	.ptptsclk = 0x1C,
 };
 
 struct sja1105_info sja1105e_info = {

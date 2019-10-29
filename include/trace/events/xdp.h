@@ -22,7 +22,7 @@
 #define __XDP_ACT_SYM_FN(x)	\
 	{ XDP_##x, #x },
 #define __XDP_ACT_SYM_TAB	\
-	__XDP_ACT_MAP(__XDP_ACT_SYM_FN) { -1, 0 }
+	__XDP_ACT_MAP(__XDP_ACT_SYM_FN) { -1, NULL }
 __XDP_ACT_MAP(__XDP_ACT_TP_FN)
 
 TRACE_EVENT(xdp_exception,
@@ -175,7 +175,8 @@ struct _bpf_dtab_netdev {
 #endif /* __DEVMAP_OBJ_TYPE */
 
 #define devmap_ifindex(fwd, map)				\
-	((map->map_type == BPF_MAP_TYPE_DEVMAP) ?		\
+	((map->map_type == BPF_MAP_TYPE_DEVMAP ||		\
+	  map->map_type == BPF_MAP_TYPE_DEVMAP_HASH) ?		\
 	  ((struct _bpf_dtab_netdev *)fwd)->dev->ifindex : 0)
 
 #define _trace_xdp_redirect_map(dev, xdp, fwd, map, idx)		\

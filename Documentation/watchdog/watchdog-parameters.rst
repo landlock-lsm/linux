@@ -13,6 +13,17 @@ modules.
 
 -------------------------------------------------
 
+watchdog core:
+    open_timeout:
+	Maximum time, in seconds, for which the watchdog framework will take
+	care of pinging a running hardware watchdog until userspace opens the
+	corresponding /dev/watchdogN device. A value of 0 means an infinite
+	timeout. Setting this to a non-zero value can be useful to ensure that
+	either userspace comes up properly, or the board gets reset and allows
+	fallback logic in the bootloader to try something else.
+
+-------------------------------------------------
+
 acquirewdt:
     wdt_stop:
 	Acquire WDT 'stop' io port (default 0x43)
@@ -290,15 +301,6 @@ ixp4xx_wdt:
 
 -------------------------------------------------
 
-ks8695_wdt:
-    wdt_time:
-	Watchdog time in seconds. (default=5)
-    nowayout:
-	Watchdog cannot be stopped once started
-	(default=kernel config parameter)
-
--------------------------------------------------
-
 machzwd:
     nowayout:
 	Watchdog cannot be stopped once started
@@ -358,16 +360,6 @@ ni903x_wdt:
 nic7018_wdt:
     timeout:
 	Initial watchdog timeout in seconds (0<timeout<464, default=80)
-    nowayout:
-	Watchdog cannot be stopped once started
-	(default=kernel config parameter)
-
--------------------------------------------------
-
-nuc900_wdt:
-    heartbeat:
-	Watchdog heartbeats in seconds.
-	(default = 15)
     nowayout:
 	Watchdog cannot be stopped once started
 	(default=kernel config parameter)

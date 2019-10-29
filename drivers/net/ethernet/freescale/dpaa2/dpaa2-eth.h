@@ -245,6 +245,14 @@ static inline struct dpaa2_faead *dpaa2_get_faead(void *buf_addr, bool swa)
  */
 #define DPAA2_ETH_ENQUEUE_RETRIES	10
 
+/* Number of times to retry DPIO portal operations while waiting
+ * for portal to finish executing current command and become
+ * available. We want to avoid being stuck in a while loop in case
+ * hardware becomes unresponsive, but not give up too easily if
+ * the portal really is busy for valid reasons
+ */
+#define DPAA2_ETH_SWP_BUSY_RETRIES	1000
+
 /* Driver statistics, other than those in struct rtnl_link_stats64.
  * These are usually collected per-CPU and aggregated by ethtool.
  */
@@ -392,6 +400,7 @@ struct dpaa2_eth_priv {
 	struct dpaa2_eth_drv_stats __percpu *percpu_extras;
 
 	u16 mc_token;
+	u8 rx_td_enabled;
 
 	struct dpni_link_state link_state;
 	bool do_link_poll;
@@ -475,6 +484,12 @@ enum dpaa2_eth_rx_dist {
 #define DPAA2_ETH_DIST_L4SRC		BIT(7)
 #define DPAA2_ETH_DIST_L4DST		BIT(8)
 #define DPAA2_ETH_DIST_ALL		(~0ULL)
+
+#define DPNI_PAUSE_VER_MAJOR		7
+#define DPNI_PAUSE_VER_MINOR		13
+#define dpaa2_eth_has_pause_support(priv)			\
+	(dpaa2_eth_cmp_dpni_ver((priv), DPNI_PAUSE_VER_MAJOR,	\
+				DPNI_PAUSE_VER_MINOR) >= 0)
 
 static inline
 unsigned int dpaa2_eth_needed_headroom(struct dpaa2_eth_priv *priv,

@@ -1,4 +1,5 @@
+/feature
+/fixdep
+/*libbpf*
 /test_base
-/test_fs
 /test_ptrace
-/tmp_*

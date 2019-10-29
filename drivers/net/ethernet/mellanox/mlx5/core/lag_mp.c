@@ -308,8 +308,8 @@ int mlx5_lag_mp_init(struct mlx5_lag *ldev)
 		return 0;
 
 	mp->fib_nb.notifier_call = mlx5_lag_fib_event;
-	err = register_fib_notifier(&mp->fib_nb,
-				    mlx5_lag_fib_event_flush);
+	err = register_fib_notifier(&init_net, &mp->fib_nb,
+				    mlx5_lag_fib_event_flush, NULL);
 	if (err)
 		mp->fib_nb.notifier_call = NULL;
 
@@ -323,6 +323,6 @@ void mlx5_lag_mp_cleanup(struct mlx5_lag *ldev)
 	if (!mp->fib_nb.notifier_call)
 		return;
 
-	unregister_fib_notifier(&mp->fib_nb);
+	unregister_fib_notifier(&init_net, &mp->fib_nb);
 	mp->fib_nb.notifier_call = NULL;
 }

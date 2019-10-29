@@ -2,74 +2,50 @@
 /*
  * Landlock LSM - ptrace hooks
  *
- * Copyright © 2017 Mickaël Salaün <mic@digikod.net>
+ * Copyright © 2017-2019 Mickaël Salaün <mic@digikod.net>
+ * Copyright © 2019 ANSSI
  */
 
 #include <asm/current.h>
+#include <linux/cred.h>
 #include <linux/errno.h>
-#include <linux/kernel.h> /* ARRAY_SIZE */
+#include <linux/kernel.h>
 #include <linux/lsm_hooks.h>
-#include <linux/sched.h> /* struct task_struct */
-#include <linux/seccomp.h>
+#include <linux/sched.h>
+#include <uapi/linux/landlock.h>
 
-#include "common.h" /* struct landlock_prog_set */
-#include "hooks.h" /* landlocked() */
+#include "bpf_run.h"
+#include "common.h"
 #include "hooks_ptrace.h"
 
-static bool progs_are_subset(const struct landlock_prog_set *parent,
-		const struct landlock_prog_set *child)
+struct landlock_hook_ctx_ptrace {
+	struct landlock_context_ptrace prog_ctx;
+};
+
+const struct landlock_context_ptrace *landlock_get_ctx_ptrace(
+		const struct landlock_hook_ctx_ptrace *hook_ctx)
 {
-	size_t i;
+	if (WARN_ON(!hook_ctx))
+		return NULL;
 
-	if (!parent || !child)
-		return false;
-	if (parent == child)
-		return true;
-
-	for (i = 0; i < ARRAY_SIZE(child->programs); i++) {
-		struct landlock_prog_list *walker;
-		bool found_parent = false;
-
-		if (!parent->programs[i])
-			continue;
-		for (walker = child->programs[i]; walker;
-				walker = walker->prev) {
-			if (walker == parent->programs[i]) {
-				found_parent = true;
-				break;
-			}
-		}
-		if (!found_parent)
-			return false;
-	}
-	return true;
+	return &hook_ctx->prog_ctx;
 }
 
-static bool task_has_subset_progs(const struct task_struct *parent,
-		const struct task_struct *child)
+static int check_ptrace(struct landlock_domain *domain,
+		struct task_struct *tracer, struct task_struct *tracee)
 {
-#ifdef CONFIG_SECCOMP_FILTER
-	if (progs_are_subset(parent->seccomp.landlock_prog_set,
-				child->seccomp.landlock_prog_set))
-		/* must be ANDed with other providers (i.e. cgroup) */
-		return true;
-#endif /* CONFIG_SECCOMP_FILTER */
-	return false;
-}
+	struct landlock_hook_ctx_ptrace ctx_ptrace = {
+		.prog_ctx = {
+			.tracer = (uintptr_t)tracer,
+			.tracee = (uintptr_t)tracee,
+		},
+	};
+	struct landlock_hook_ctx hook_ctx = {
+		.type = LANDLOCK_HOOK_PTRACE,
+		.ctx_ptrace = &ctx_ptrace,
+	};
 
-static int task_ptrace(const struct task_struct *parent,
-		const struct task_struct *child)
-{
-	if (!landlocked(parent))
-		return 0;
-
-	if (!landlocked(child))
-		return -EPERM;
-
-	if (task_has_subset_progs(parent, child))
-		return 0;
-
-	return -EPERM;
+	return landlock_access_denied(domain, &hook_ctx) ? -EPERM : 0;
 }
 
 /**
@@ -79,16 +55,21 @@ static int task_ptrace(const struct task_struct *parent,
  * @child: the process to be accessed
  * @mode: the mode of attachment
  *
- * If the current task has Landlock programs, then the child must have at least
- * the same programs.  Else denied.
- *
- * Determine whether a process may access another, returning 0 if permission
- * granted, -errno if denied.
+ * If the current task (i.e. tracer) has one or multiple BPF_LANDLOCK_PTRACE
+ * programs, then run them with the `struct landlock_context_ptrace` context.
+ * If one of these programs return LANDLOCK_RET_DENY, then deny access with
+ * -EPERM, else allow it by returning 0.
  */
 static int hook_ptrace_access_check(struct task_struct *child,
 		unsigned int mode)
 {
-	return task_ptrace(current, child);
+	struct landlock_domain *dom_current;
+	const size_t hook = get_hook_index(LANDLOCK_HOOK_PTRACE);
+
+	dom_current = landlock_cred(current_cred())->domain;
+	if (!(dom_current && dom_current->programs[hook]))
+		return 0;
+	return check_ptrace(dom_current, current, child);
 }
 
 /**
@@ -97,16 +78,28 @@ static int hook_ptrace_access_check(struct task_struct *child,
  *
  * @parent: the task proposed to be the tracer
  *
- * If the parent has Landlock programs, then the current task must have the
- * same or more programs.
- * Else denied.
- *
- * Determine whether the nominated task is permitted to trace the current
- * process, returning 0 if permission is granted, -errno if denied.
+ * If the parent task (i.e. tracer) has one or multiple BPF_LANDLOCK_PTRACE
+ * programs, then run them with the `struct landlock_context_ptrace` context.
+ * If one of these programs return LANDLOCK_RET_DENY, then deny access with
+ * -EPERM, else allow it by returning 0.
  */
 static int hook_ptrace_traceme(struct task_struct *parent)
 {
-	return task_ptrace(parent, current);
+	struct landlock_domain *dom_parent;
+	const size_t hook = get_hook_index(LANDLOCK_HOOK_PTRACE);
+	int ret;
+
+	rcu_read_lock();
+	dom_parent = landlock_cred(__task_cred(parent))->domain;
+	if (!(dom_parent && dom_parent->programs[hook])) {
+		ret = 0;
+		goto put_rcu;
+	}
+	ret = check_ptrace(dom_parent, parent, current);
+
+put_rcu:
+	rcu_read_unlock();
+	return ret;
 }
 
 static struct security_hook_list landlock_hooks[] = {

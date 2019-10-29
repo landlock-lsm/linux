@@ -14,25 +14,25 @@ information on BPF can be found in *Documentation/networking/filter.txt*.
 Writing a program
 -----------------
 
-To enforce a security policy, a thread first needs to create a Landlock program.
-The easiest way to write an eBPF program depicting a security program is to write
-it in the C language.  As described in *samples/bpf/README.rst*, LLVM can
-compile such programs.  Files *samples/bpf/landlock1_kern.c* and those in
-*tools/testing/selftests/landlock/* can be used as examples.
+To enforce a security policy, a thread first needs to create a Landlock
+program.  The easiest way to write an eBPF program depicting a security program
+is to write it in the C language.  As described in *samples/bpf/README.rst*,
+LLVM can compile such programs.  A simple eBPF program can also be written by
+hand has done in *tools/testing/selftests/landlock/*.
 
 Once the eBPF program is created, the next step is to create the metadata
-describing the Landlock program.  This metadata includes an expected attach type which
-contains the hook type to which the program is tied, and expected attach
-triggers which identify the actions for which the program should be run.
+describing the Landlock program.  This metadata includes an expected attach
+type which contains the hook type to which the program is tied.
 
 A hook is a policy decision point which exposes the same context type for
 each program evaluation.
 
 A Landlock hook describes the kind of kernel object for which a program will be
 triggered to allow or deny an action.  For example, the hook
-BPF_LANDLOCK_FS_PICK can be triggered every time a landlocked thread performs a
-set of action related to the filesystem (e.g. open, read, write, mount...).
-This actions are identified by the `triggers` bitfield.
+BPF_LANDLOCK_PTRACE can be triggered every time a landlocked thread performs a
+set of action related to debugging (cf. :manpage:`ptrace(2)`) or if the kernel
+needs to know if a process manipulation requested by something else is
+legitimate.
 
 The next step is to fill a :c:type:`struct bpf_load_program_attr
 <bpf_load_program_attr>` with BPF_PROG_TYPE_LANDLOCK_HOOK, the expected attach
@@ -52,8 +52,7 @@ which can be extracted from an ELF file as is done in bpf_load_file() from
 
     memset(&load_attr, 0, sizeof(struct bpf_load_program_attr));
     load_attr.prog_type = BPF_PROG_TYPE_LANDLOCK_HOOK;
-    load_attr.expected_attach_type = BPF_LANDLOCK_FS_PICK;
-    load_attr.expected_attach_triggers = LANDLOCK_TRIGGER_FS_PICK_OPEN;
+    load_attr.expected_attach_type = BPF_LANDLOCK_PTRACE;
     load_attr.insns = insns;
     load_attr.insns_cnt = sizeof(insn) / sizeof(struct bpf_insn);
     load_attr.license = "GPL";
@@ -105,40 +104,36 @@ Inherited programs
 
 Every new thread resulting from a :manpage:`clone(2)` inherits Landlock program
 restrictions from its parent.  This is similar to the seccomp inheritance as
-described in *Documentation/prctl/seccomp_filter.txt*.
+described in *Documentation/prctl/seccomp_filter.txt* or any other LSM dealing
+with task's :manpage:`credentials(7)`.
 
 
 Ptrace restrictions
 -------------------
 
-A landlocked process has less privileges than a non-landlocked process and must
+A sandboxed process has less privileges than a non-sandboxed process and must
 then be subject to additional restrictions when manipulating another process.
 To be allowed to use :manpage:`ptrace(2)` and related syscalls on a target
-process, a landlocked process must have a subset of the target process programs.
+process, a sandboxed process should have a subset of the target process
+programs.  This security policy can easily be implemented like in
+*tools/testing/selftests/landlock/test_ptrace.c*.
 
 
 Landlock structures and constants
 =================================
 
-Hook types
-----------
-
-.. kernel-doc:: include/uapi/linux/landlock.h
-    :functions: landlock_hook_type
-
-
 Contexts
 --------
 
 .. kernel-doc:: include/uapi/linux/landlock.h
-    :functions: landlock_ctx_fs_pick landlock_ctx_fs_walk landlock_ctx_fs_get
+    :functions: landlock_context_ptrace
 
 
-Triggers for fs_pick
---------------------
+Return types
+------------
 
 .. kernel-doc:: include/uapi/linux/landlock.h
-    :functions: landlock_triggers
+    :functions: landlock_ret
 
 
 Additional documentation

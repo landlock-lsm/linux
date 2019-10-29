@@ -35,6 +35,7 @@
 #include <linux/regmap.h>
 #include <linux/reset.h>
 #include <linux/clk.h>
+#include <linux/io.h>
 
 /* For our NAPI weight bigger does *NOT* mean better - it means more
  * D-cache misses and lots more wasted cycles than we'll ever
@@ -525,7 +526,7 @@ static int ag71xx_mdio_probe(struct ag71xx *ag)
 	struct device *dev = &ag->pdev->dev;
 	struct net_device *ndev = ag->ndev;
 	static struct mii_bus *mii_bus;
-	struct device_node *np;
+	struct device_node *np, *mnp;
 	int err;
 
 	np = dev->of_node;
@@ -570,7 +571,9 @@ static int ag71xx_mdio_probe(struct ag71xx *ag)
 		msleep(200);
 	}
 
-	err = of_mdiobus_register(mii_bus, np);
+	mnp = of_get_child_by_name(np, "mdio");
+	err = of_mdiobus_register(mii_bus, mnp);
+	of_node_put(mnp);
 	if (err)
 		goto mdio_err_put_clk;
 
@@ -1140,14 +1143,14 @@ static int ag71xx_rings_init(struct ag71xx *ag)
 
 	tx->descs_cpu = dma_alloc_coherent(&ag->pdev->dev,
 					   ring_size * AG71XX_DESC_SIZE,
-					   &tx->descs_dma, GFP_ATOMIC);
+					   &tx->descs_dma, GFP_KERNEL);
 	if (!tx->descs_cpu) {
 		kfree(tx->buf);
 		tx->buf = NULL;
 		return -ENOMEM;
 	}
 
-	rx->buf = &tx->buf[BIT(tx->order)];
+	rx->buf = &tx->buf[tx_size];
 	rx->descs_cpu = ((void *)tx->descs_cpu) + tx_size * AG71XX_DESC_SIZE;
 	rx->descs_dma = tx->descs_dma + tx_size * AG71XX_DESC_SIZE;
 
@@ -1685,7 +1688,7 @@ static int ag71xx_probe(struct platform_device *pdev)
 	}
 
 	ag->mac_base = devm_ioremap_nocache(&pdev->dev, res->start,
-					    res->end - res->start + 1);
+					    resource_size(res));
 	if (!ag->mac_base) {
 		err = -ENOMEM;
 		goto err_free;
@@ -1724,17 +1727,19 @@ static int ag71xx_probe(struct platform_device *pdev)
 	ag->stop_desc = dmam_alloc_coherent(&pdev->dev,
 					    sizeof(struct ag71xx_desc),
 					    &ag->stop_desc_dma, GFP_KERNEL);
-	if (!ag->stop_desc)
+	if (!ag->stop_desc) {
+		err = -ENOMEM;
 		goto err_free;
+	}
 
 	ag->stop_desc->data = 0;
 	ag->stop_desc->ctrl = 0;
 	ag->stop_desc->next = (u32)ag->stop_desc_dma;
 
 	mac_addr = of_get_mac_address(np);
-	if (mac_addr)
+	if (!IS_ERR(mac_addr))
 		memcpy(ndev->dev_addr, mac_addr, ETH_ALEN);
-	if (!mac_addr || !is_valid_ether_addr(ndev->dev_addr)) {
+	if (IS_ERR(mac_addr) || !is_valid_ether_addr(ndev->dev_addr)) {
 		netif_err(ag, probe, ndev, "invalid MAC address, using random address\n");
 		eth_random_addr(ndev->dev_addr);
 	}

@@ -11,7 +11,6 @@
 
 #ifdef CONFIG_SECCOMP
 
-#include <linux/landlock.h>
 #include <linux/thread_info.h>
 #include <asm/seccomp.h>
 
@@ -23,7 +22,6 @@ struct seccomp_filter;
  *         system calls available to a process.
  * @filter: must always point to a valid seccomp-filter or NULL as it is
  *          accessed without locking during system call entry.
- * @landlock_prog_set: contains a set of Landlock programs.
  *
  *          @filter must only be accessed from the context of current as there
  *          is no read locking.
@@ -31,9 +29,6 @@ struct seccomp_filter;
 struct seccomp {
 	int mode;
 	struct seccomp_filter *filter;
-#if defined(CONFIG_SECCOMP_FILTER) && defined(CONFIG_SECURITY_LANDLOCK)
-	struct landlock_prog_set *landlock_prog_set;
-#endif /* CONFIG_SECCOMP_FILTER && CONFIG_SECURITY_LANDLOCK */
 };
 
 #ifdef CONFIG_HAVE_ARCH_SECCOMP_FILTER

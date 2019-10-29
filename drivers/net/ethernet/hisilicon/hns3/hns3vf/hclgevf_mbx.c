@@ -204,7 +204,8 @@ void hclgevf_mbx_handler(struct hclgevf_dev *hdev)
 		case HCLGE_MBX_LINK_STAT_CHANGE:
 		case HCLGE_MBX_ASSERTING_RESET:
 		case HCLGE_MBX_LINK_STAT_MODE:
-		case HLCGE_MBX_PUSH_VLAN_INFO:
+		case HCLGE_MBX_PUSH_VLAN_INFO:
+		case HCLGE_MBX_PUSH_PROMISC_INFO:
 			/* set this mbx event as pending. This is required as we
 			 * might loose interrupt event when mbx task is busy
 			 * handling. This shall be cleared when mbx task just
@@ -248,6 +249,14 @@ void hclgevf_mbx_handler(struct hclgevf_dev *hdev)
 			  crq->next_to_use);
 }
 
+static void hclgevf_parse_promisc_info(struct hclgevf_dev *hdev,
+				       u16 promisc_info)
+{
+	if (!promisc_info)
+		dev_info(&hdev->pdev->dev,
+			 "Promisc mode is closed by host for being untrusted.\n");
+}
+
 void hclgevf_mbx_async_handler(struct hclgevf_dev *hdev)
 {
 	enum hnae3_reset_type reset_type;
@@ -277,9 +286,9 @@ void hclgevf_mbx_async_handler(struct hclgevf_dev *hdev)
 
 		switch (msg_q[0]) {
 		case HCLGE_MBX_LINK_STAT_CHANGE:
-			link_status = le16_to_cpu(msg_q[1]);
+			link_status = msg_q[1];
 			memcpy(&speed, &msg_q[2], sizeof(speed));
-			duplex = (u8)le16_to_cpu(msg_q[4]);
+			duplex = (u8)msg_q[4];
 
 			/* update upper layer with new link link status */
 			hclgevf_update_link_status(hdev, link_status);
@@ -287,7 +296,7 @@ void hclgevf_mbx_async_handler(struct hclgevf_dev *hdev)
 
 			break;
 		case HCLGE_MBX_LINK_STAT_MODE:
-			idx = (u8)le16_to_cpu(msg_q[1]);
+			idx = (u8)msg_q[1];
 			if (idx)
 				memcpy(&hdev->hw.mac.supported, &msg_q[2],
 				       sizeof(unsigned long));
@@ -301,17 +310,20 @@ void hclgevf_mbx_async_handler(struct hclgevf_dev *hdev)
 			 * has been completely reset. After this stack should
 			 * eventually be re-initialized.
 			 */
-			reset_type = le16_to_cpu(msg_q[1]);
+			reset_type = (enum hnae3_reset_type)msg_q[1];
 			set_bit(reset_type, &hdev->reset_pending);
 			set_bit(HCLGEVF_RESET_PENDING, &hdev->reset_state);
 			hclgevf_reset_task_schedule(hdev);
 
 			break;
-		case HLCGE_MBX_PUSH_VLAN_INFO:
-			state = le16_to_cpu(msg_q[1]);
+		case HCLGE_MBX_PUSH_VLAN_INFO:
+			state = msg_q[1];
 			vlan_info = &msg_q[1];
 			hclgevf_update_port_base_vlan_info(hdev, state,
 							   (u8 *)vlan_info, 8);
+			break;
+		case HCLGE_MBX_PUSH_PROMISC_INFO:
+			hclgevf_parse_promisc_info(hdev, msg_q[1]);
 			break;
 		default:
 			dev_err(&hdev->pdev->dev,

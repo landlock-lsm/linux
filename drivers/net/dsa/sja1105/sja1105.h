@@ -1,5 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0
- * Copyright (c) 2018, Sensor-Technik Wiedemann GmbH
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2018, Sensor-Technik Wiedemann GmbH
  * Copyright (c) 2018-2019, Vladimir Oltean <olteanv@gmail.com>
  */
 #ifndef _SJA1105_H
@@ -20,6 +20,9 @@
  */
 #define SJA1105_AGEING_TIME_MS(ms)	((ms) / 10)
 
+#include "sja1105_tas.h"
+#include "sja1105_ptp.h"
+
 /* Keeps the different addresses between E/T and P/Q/R/S */
 struct sja1105_regs {
 	u64 device_id;
@@ -30,9 +33,8 @@ struct sja1105_regs {
 	u64 config;
 	u64 rmii_pll1;
 	u64 ptp_control;
-	u64 ptpclk;
+	u64 ptpclkval;
 	u64 ptpclkrate;
-	u64 ptptsclk;
 	u64 ptpegr_ts[SJA1105_NUM_PORTS];
 	u64 pad_mii_tx[SJA1105_NUM_PORTS];
 	u64 pad_mii_id[SJA1105_NUM_PORTS];
@@ -69,7 +71,8 @@ struct sja1105_info {
 	const struct sja1105_dynamic_table_ops *dyn_ops;
 	const struct sja1105_table_ops *static_ops;
 	const struct sja1105_regs *regs;
-	int (*ptp_cmd)(const void *ctx, const void *data);
+	int (*ptp_cmd)(const struct dsa_switch *ds,
+		       const struct sja1105_ptp_cmd *cmd);
 	int (*reset_cmd)(const void *ctx, const void *data);
 	int (*setup_rgmii_delay)(const void *ctx, int port);
 	/* Prototypes from include/net/dsa.h */
@@ -89,25 +92,16 @@ struct sja1105_private {
 	struct spi_device *spidev;
 	struct dsa_switch *ds;
 	struct sja1105_port ports[SJA1105_NUM_PORTS];
-	struct ptp_clock_info ptp_caps;
-	struct ptp_clock *clock;
-	/* The cycle counter translates the PTP timestamps (based on
-	 * a free-running counter) into a software time domain.
-	 */
-	struct cyclecounter tstamp_cc;
-	struct timecounter tstamp_tc;
-	struct delayed_work refresh_work;
-	/* Serializes all operations on the cycle counter */
-	struct mutex ptp_lock;
 	/* Serializes transmission of management frames so that
 	 * the switch doesn't confuse them with one another.
 	 */
 	struct mutex mgmt_lock;
 	struct sja1105_tagger_data tagger_data;
+	struct sja1105_ptp_data ptp_data;
+	struct sja1105_tas_data tas_data;
 };
 
 #include "sja1105_dynamic_config.h"
-#include "sja1105_ptp.h"
 
 struct sja1105_spi_message {
 	u64 access;
@@ -120,16 +114,17 @@ typedef enum {
 	SPI_WRITE = 1,
 } sja1105_spi_rw_mode_t;
 
+/* From sja1105_main.c */
+int sja1105_static_config_reload(struct sja1105_private *priv);
+
 /* From sja1105_spi.c */
-int sja1105_spi_send_packed_buf(const struct sja1105_private *priv,
-				sja1105_spi_rw_mode_t rw, u64 reg_addr,
-				void *packed_buf, size_t size_bytes);
-int sja1105_spi_send_int(const struct sja1105_private *priv,
-			 sja1105_spi_rw_mode_t rw, u64 reg_addr,
-			 u64 *value, u64 size_bytes);
-int sja1105_spi_send_long_packed_buf(const struct sja1105_private *priv,
-				     sja1105_spi_rw_mode_t rw, u64 base_addr,
-				     void *packed_buf, u64 buf_len);
+int sja1105_xfer_buf(const struct sja1105_private *priv,
+		     sja1105_spi_rw_mode_t rw, u64 reg_addr,
+		     u8 *buf, size_t len);
+int sja1105_xfer_u32(const struct sja1105_private *priv,
+		     sja1105_spi_rw_mode_t rw, u64 reg_addr, u32 *value);
+int sja1105_xfer_u64(const struct sja1105_private *priv,
+		     sja1105_spi_rw_mode_t rw, u64 reg_addr, u64 *value);
 int sja1105_static_config_upload(struct sja1105_private *priv);
 int sja1105_inhibit_tx(const struct sja1105_private *priv,
 		       unsigned long port_bitmap, bool tx_inhibited);

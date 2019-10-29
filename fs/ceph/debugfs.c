@@ -52,7 +52,7 @@ static int mdsc_show(struct seq_file *s, void *p)
 	struct ceph_mds_client *mdsc = fsc->mdsc;
 	struct ceph_mds_request *req;
 	struct rb_node *rp;
-	int pathlen;
+	int pathlen = 0;
 	u64 pathbase;
 	char *path;
 
@@ -294,7 +294,6 @@ void ceph_fs_debugfs_init(struct ceph_fs_client *fsc)
 
 void ceph_fs_debugfs_init(struct ceph_fs_client *fsc)
 {
-	return 0;
 }
 
 void ceph_fs_debugfs_cleanup(struct ceph_fs_client *fsc)

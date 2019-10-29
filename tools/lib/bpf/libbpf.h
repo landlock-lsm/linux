@@ -57,7 +57,7 @@ enum libbpf_print_level {
 typedef int (*libbpf_print_fn_t)(enum libbpf_print_level level,
 				 const char *, va_list ap);
 
-LIBBPF_API void libbpf_set_print(libbpf_print_fn_t fn);
+LIBBPF_API libbpf_print_fn_t libbpf_set_print(libbpf_print_fn_t fn);
 
 /* Hide internal to user */
 struct bpf_object;
@@ -67,14 +67,59 @@ struct bpf_object_open_attr {
 	enum bpf_prog_type prog_type;
 };
 
+/* Helper macro to declare and initialize libbpf options struct
+ *
+ * This dance with uninitialized declaration, followed by memset to zero,
+ * followed by assignment using compound literal syntax is done to preserve
+ * ability to use a nice struct field initialization syntax and **hopefully**
+ * have all the padding bytes initialized to zero. It's not guaranteed though,
+ * when copying literal, that compiler won't copy garbage in literal's padding
+ * bytes, but that's the best way I've found and it seems to work in practice.
+ *
+ * Macro declares opts struct of given type and name, zero-initializes,
+ * including any extra padding, it with memset() and then assigns initial
+ * values provided by users in struct initializer-syntax as varargs.
+ */
+#define DECLARE_LIBBPF_OPTS(TYPE, NAME, ...)				    \
+	struct TYPE NAME = ({ 						    \
+		memset(&NAME, 0, sizeof(struct TYPE));			    \
+		(struct TYPE) {						    \
+			.sz = sizeof(struct TYPE),			    \
+			__VA_ARGS__					    \
+		};							    \
+	})
+
+struct bpf_object_open_opts {
+	/* size of this struct, for forward/backward compatiblity */
+	size_t sz;
+	/* object name override, if provided:
+	 * - for object open from file, this will override setting object
+	 *   name from file path's base name;
+	 * - for object open from memory buffer, this will specify an object
+	 *   name and will override default "<addr>-<buf-size>" name;
+	 */
+	const char *object_name;
+	/* parse map definitions non-strictly, allowing extra attributes/data */
+	bool relaxed_maps;
+	/* process CO-RE relocations non-strictly, allowing them to fail */
+	bool relaxed_core_relocs;
+};
+#define bpf_object_open_opts__last_field relaxed_core_relocs
+
 LIBBPF_API struct bpf_object *bpf_object__open(const char *path);
 LIBBPF_API struct bpf_object *
+bpf_object__open_file(const char *path, struct bpf_object_open_opts *opts);
+LIBBPF_API struct bpf_object *
+bpf_object__open_mem(const void *obj_buf, size_t obj_buf_sz,
+		     struct bpf_object_open_opts *opts);
+
+/* deprecated bpf_object__open variants */
+LIBBPF_API struct bpf_object *
+bpf_object__open_buffer(const void *obj_buf, size_t obj_buf_sz,
+			const char *name);
+LIBBPF_API struct bpf_object *
 bpf_object__open_xattr(struct bpf_object_open_attr *attr);
-struct bpf_object *__bpf_object__open_xattr(struct bpf_object_open_attr *attr,
-					    int flags);
-LIBBPF_API struct bpf_object *bpf_object__open_buffer(void *obj_buf,
-						      size_t obj_buf_sz,
-						      const char *name);
+
 int bpf_object__section_size(const struct bpf_object *obj, const char *name,
 			     __u32 *size);
 int bpf_object__variable_offset(const struct bpf_object *obj, const char *name,
@@ -92,6 +137,7 @@ LIBBPF_API void bpf_object__close(struct bpf_object *object);
 struct bpf_object_load_attr {
 	struct bpf_object *obj;
 	int log_level;
+	const char *target_btf_path;
 };
 
 /* Load/unload object into/from kernel */
@@ -123,8 +169,7 @@ LIBBPF_API void *bpf_object__priv(const struct bpf_object *prog);
 
 LIBBPF_API int
 libbpf_prog_type_by_name(const char *name, enum bpf_prog_type *prog_type,
-			 enum bpf_attach_type *expected_attach_type,
-			 bool *has_triggers);
+			 enum bpf_attach_type *expected_attach_type);
 LIBBPF_API int libbpf_attach_type_by_name(const char *name,
 					  enum bpf_attach_type *attach_type);
 
@@ -262,14 +307,16 @@ LIBBPF_API int bpf_program__set_sched_cls(struct bpf_program *prog);
 LIBBPF_API int bpf_program__set_sched_act(struct bpf_program *prog);
 LIBBPF_API int bpf_program__set_xdp(struct bpf_program *prog);
 LIBBPF_API int bpf_program__set_perf_event(struct bpf_program *prog);
+
+LIBBPF_API enum bpf_prog_type bpf_program__get_type(struct bpf_program *prog);
 LIBBPF_API void bpf_program__set_type(struct bpf_program *prog,
 				      enum bpf_prog_type type);
+
+LIBBPF_API enum bpf_attach_type
+bpf_program__get_expected_attach_type(struct bpf_program *prog);
 LIBBPF_API void
 bpf_program__set_expected_attach_type(struct bpf_program *prog,
 				      enum bpf_attach_type type);
-LIBBPF_API void
-bpf_program__set_expected_attach_triggers(struct bpf_program *prog,
-					  __u64 triggers);
 
 LIBBPF_API bool bpf_program__is_socket_filter(const struct bpf_program *prog);
 LIBBPF_API bool bpf_program__is_tracepoint(const struct bpf_program *prog);
@@ -349,7 +396,6 @@ struct bpf_prog_load_attr {
 	const char *file;
 	enum bpf_prog_type prog_type;
 	enum bpf_attach_type expected_attach_type;
-	__u64 expected_attach_triggers;
 	int ifindex;
 	int log_level;
 	int prog_flags;

@@ -1163,7 +1163,7 @@ mem_op_stack(struct nfp_prog *nfp_prog, struct nfp_insn_meta *meta,
 	     bool clr_gpr, lmem_step step)
 {
 	s32 off = nfp_prog->stack_frame_depth + meta->insn.off + ptr_off;
-	bool first = true, last;
+	bool first = true, narrow_ld, last;
 	bool needs_inc = false;
 	swreg stack_off_reg;
 	u8 prev_gpr = 255;
@@ -1209,13 +1209,22 @@ mem_op_stack(struct nfp_prog *nfp_prog, struct nfp_insn_meta *meta,
 
 		needs_inc = true;
 	}
+
+	narrow_ld = clr_gpr && size < 8;
+
 	if (lm3) {
+		unsigned int nop_cnt;
+
 		emit_csr_wr(nfp_prog, imm_b(nfp_prog), NFP_CSR_ACT_LM_ADDR3);
-		/* For size < 4 one slot will be filled by zeroing of upper. */
-		wrp_nops(nfp_prog, clr_gpr && size < 8 ? 2 : 3);
+		/* For size < 4 one slot will be filled by zeroing of upper,
+		 * but be careful, that zeroing could be eliminated by zext
+		 * optimization.
+		 */
+		nop_cnt = narrow_ld && meta->flags & FLAG_INSN_DO_ZEXT ? 2 : 3;
+		wrp_nops(nfp_prog, nop_cnt);
 	}
 
-	if (clr_gpr && size < 8)
+	if (narrow_ld)
 		wrp_zext(nfp_prog, meta, gpr);
 
 	while (size) {
@@ -3943,7 +3952,7 @@ static void nfp_bpf_opt_neg_add_sub(struct nfp_prog *nfp_prog)
 static void nfp_bpf_opt_ld_mask(struct nfp_prog *nfp_prog)
 {
 	struct nfp_insn_meta *meta1, *meta2;
-	const s32 exp_mask[] = {
+	static const s32 exp_mask[] = {
 		[BPF_B] = 0x000000ffU,
 		[BPF_H] = 0x0000ffffU,
 		[BPF_W] = 0xffffffffU,

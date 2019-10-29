@@ -9,13 +9,11 @@
 #define YYDEBUG 1
 
 #include <fnmatch.h>
+#include <stdio.h>
 #include <linux/compiler.h>
-#include <linux/list.h>
 #include <linux/types.h>
-#include "util.h"
 #include "pmu.h"
 #include "evsel.h"
-#include "debug.h"
 #include "parse-events.h"
 #include "parse-events-bison.h"
 
@@ -480,7 +478,6 @@ event_bpf_file:
 PE_BPF_OBJECT opt_event_config
 {
 	struct parse_events_state *parse_state = _parse_state;
-	struct parse_events_error *error = parse_state->error;
 	struct list_head *list;
 
 	ALLOC_LIST(list);
@@ -626,7 +623,6 @@ PE_TERM
 PE_NAME array '=' PE_NAME
 {
 	struct parse_events_term *term;
-	int i;
 
 	ABORT_ON(parse_events_term__str(&term, PARSE_EVENTS__TERM_TYPE_USER,
 					$1, $4, &@1, &@4));
