@@ -3492,6 +3492,10 @@ static int check_func_arg(struct bpf_verifier_env *env, u32 regno,
 		    type != PTR_TO_MAP_VALUE &&
 		    type != expected_type)
 			goto err_type;
+	} else if (arg_type == ARG_PTR_TO_TASK) {
+		expected_type = PTR_TO_TASK;
+		if (type != expected_type)
+			goto err_type;
 	} else {
 		verbose(env, "unsupported arg_type %d\n", arg_type);
 		return -EFAULT;

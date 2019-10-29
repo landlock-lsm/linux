@@ -2777,6 +2777,24 @@ union bpf_attr {
  * 		restricted to raw_tracepoint bpf programs.
  * 	Return
  * 		0 on success, or a negative error in case of failure.
+ *
+ * int bpf_task_landlock_ptrace_ancestor(struct task_struct *parent, struct task_struct *child)
+ *	Description
+ *		Check the relation of a potentially parent task with a child
+ *		one, according to their Landlock ptrace hook programs.
+ *	Return
+ *		**-EINVAL** if the child's ptrace programs are not comparable
+ *		to the parent ones, i.e. one of them is an empty set.
+ *
+ *		**-ENOENT** if the parent's ptrace programs are either in a
+ *		separate hierarchy of the child ones, or if the parent's ptrace
+ *		programs are a superset of the child ones.
+ *
+ *		0 if the parent's ptrace programs are the same as the child
+ *		ones.
+ *
+ *		1 if the parent's ptrace programs are indeed a subset of the
+ *		child ones.
  */
 #define __BPF_FUNC_MAPPER(FN)		\
 	FN(unspec),			\
@@ -2890,7 +2908,8 @@ union bpf_attr {
 	FN(sk_storage_delete),		\
 	FN(send_signal),		\
 	FN(tcp_gen_syncookie),		\
-	FN(skb_output),
+	FN(skb_output),			\
+	FN(task_landlock_ptrace_ancestor),
 
 /* integer value in 'imm' field of BPF_CALL instruction selects which helper
  * function eBPF program intends to call
