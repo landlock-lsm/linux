@@ -9149,6 +9149,7 @@ F:	net/ipv4/tcp_bpf.c
 LANDLOCK SECURITY MODULE
 M:	Mickaël Salaün <mic@digikod.net>
 S:	Supported
+F:	include/linux/landlock.h
 F:	include/uapi/linux/landlock.h
 F:	security/landlock/
 K:	landlock

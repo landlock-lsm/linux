@@ -10,8 +10,14 @@
 #define _SECURITY_LANDLOCK_COMMON_H
 
 #include <linux/bpf.h>
+#include <linux/cred.h>
 #include <linux/filter.h>
+#include <linux/lsm_hooks.h>
 #include <linux/refcount.h>
+
+#define LANDLOCK_NAME "landlock"
+
+extern struct lsm_blob_sizes landlock_blob_sizes;
 
 enum landlock_hook_type {
 	LANDLOCK_HOOK_PTRACE = 1,
@@ -42,6 +48,16 @@ struct landlock_domain {
 	struct landlock_prog_list *programs[_LANDLOCK_HOOK_LAST];
 	refcount_t usage;
 };
+
+struct landlock_cred_security {
+	struct landlock_domain *domain;
+};
+
+static inline struct landlock_cred_security *landlock_cred(
+		const struct cred *cred)
+{
+	return cred->security + landlock_blob_sizes.lbs_cred;
+}
 
 /**
  * get_hook_index - get an index for the programs of struct landlock_prog_set

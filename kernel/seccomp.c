@@ -41,6 +41,7 @@
 #include <linux/tracehook.h>
 #include <linux/uaccess.h>
 #include <linux/anon_inodes.h>
+#include <linux/landlock.h>
 
 enum notify_state {
 	SECCOMP_NOTIFY_INIT,
@@ -1397,6 +1398,9 @@ static long do_seccomp(unsigned int op, unsigned int flags,
 			return -EINVAL;
 
 		return seccomp_get_notif_sizes(uargs);
+	case SECCOMP_PREPEND_LANDLOCK_PROG:
+		return landlock_seccomp_prepend_prog(flags,
+				(const int __user *)uargs);
 	default:
 		return -EINVAL;
 	}
