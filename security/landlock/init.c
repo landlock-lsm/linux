@@ -10,11 +10,13 @@
 
 #include "common.h"
 #include "hooks_cred.h"
+#include "hooks_ptrace.h"
 
 static int __init landlock_init(void)
 {
 	pr_info(LANDLOCK_NAME ": Registering hooks\n");
 	landlock_add_hooks_cred();
+	landlock_add_hooks_ptrace();
 	return 0;
 }
 
