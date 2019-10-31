@@ -19,6 +19,7 @@
 #include <linux/compat.h>
 #include <linux/coredump.h>
 #include <linux/kmemleak.h>
+#include <linux/landlock.h>
 #include <linux/nospec.h>
 #include <linux/prctl.h>
 #include <linux/sched.h>
@@ -41,7 +42,6 @@
 #include <linux/tracehook.h>
 #include <linux/uaccess.h>
 #include <linux/anon_inodes.h>
-#include <linux/landlock.h>
 
 enum notify_state {
 	SECCOMP_NOTIFY_INIT,

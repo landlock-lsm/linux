@@ -20,7 +20,7 @@ inconsistent evaluation (i.e.  `incorrect mirroring of the OS code and state
 <https://www.ndss-symposium.org/ndss2003/traps-and-pitfalls-practical-problems-system-call-interposition-based-security-tools/>`_).
 
 A Landlock hook describes a particular access type.  For now, there is one hook
-dedicated to ptrace related operations: BPF_LANDLOCK_PTRACE.  A Landlock
+dedicated to ptrace related operations: ``BPF_LANDLOCK_PTRACE``.  A Landlock
 program is tied to one hook.  This makes it possible to statically check
 context accesses, potentially performed by such program, and hence prevents
 kernel address leaks and ensure the right use of hook arguments with eBPF
@@ -39,7 +39,7 @@ Unprivileged use
 * Landlock helpers and context should be usable by any unprivileged and
   untrusted program while following the system security policy enforced by
   other access control mechanisms (e.g. DAC, LSM), even if a global
-  CAP_SYS_ADMIN is currently required.
+  ``CAP_SYS_ADMIN`` is currently required.
 
 
 Landlock hook and context
@@ -97,7 +97,7 @@ Adding a Landlock program with seccomp
 --------------------------------------
 
 The :manpage:`seccomp(2)` syscall can be used with the
-`SECCOMP_PREPEND_LANDLOCK_PROG` operation to prepend a Landlock program to the
+``SECCOMP_PREPEND_LANDLOCK_PROG`` operation to prepend a Landlock program to the
 current task's domain.
 
 .. kernel-doc:: security/landlock/domain_syscall.c

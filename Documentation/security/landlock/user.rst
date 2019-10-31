@@ -29,17 +29,17 @@ each program evaluation.
 
 A Landlock hook describes the kind of kernel object for which a program will be
 triggered to allow or deny an action.  For example, the hook
-BPF_LANDLOCK_PTRACE can be triggered every time a landlocked thread performs a
-set of action related to debugging (cf. :manpage:`ptrace(2)`) or if the kernel
-needs to know if a process manipulation requested by something else is
-legitimate.
+``BPF_LANDLOCK_PTRACE`` can be triggered every time a landlocked thread
+performs a set of action related to debugging (cf. :manpage:`ptrace(2)`) or if
+the kernel needs to know if a process manipulation requested by something else
+is legitimate.
 
 The next step is to fill a :c:type:`struct bpf_load_program_attr
-<bpf_load_program_attr>` with BPF_PROG_TYPE_LANDLOCK_HOOK, the expected attach
-type and other BPF program metadata.  This bpf_attr must then be passed to the
-:manpage:`bpf(2)` syscall alongside the BPF_PROG_LOAD command.  If everything
-is deemed correct by the kernel, the thread gets a file descriptor referring to
-this program.
+<bpf_load_program_attr>` with ``BPF_PROG_TYPE_LANDLOCK_HOOK``, the expected
+attach type and other BPF program metadata.  This bpf_attr must then be passed
+to the :manpage:`bpf(2)` syscall alongside the ``BPF_PROG_LOAD`` command.  If
+everything is deemed correct by the kernel, the thread gets a file descriptor
+referring to this program.
 
 In the following code, the *insn* variable is an array of BPF instructions
 which can be extracted from an ELF file as is done in bpf_load_file() from
@@ -70,7 +70,7 @@ socket), the thread willing to sandbox itself (and its future children) should
 perform the following two steps.
 
 The thread should first request to never be allowed to get new privileges with a
-call to :manpage:`prctl(2)` and the PR_SET_NO_NEW_PRIVS option.  More
+call to :manpage:`prctl(2)` and the ``PR_SET_NO_NEW_PRIVS`` option.  More
 information can be found in *Documentation/prctl/no_new_privs.txt*.
 
 .. code-block:: c
@@ -79,8 +79,8 @@ information can be found in *Documentation/prctl/no_new_privs.txt*.
         exit(1);
 
 A thread can apply a program to itself by using the :manpage:`seccomp(2)` syscall.
-The operation is SECCOMP_PREPEND_LANDLOCK_PROG, the flags must be empty and the
-*args* argument must point to a valid Landlock program file descriptor.
+The operation is ``SECCOMP_PREPEND_LANDLOCK_PROG``, the flags must be empty and
+the *args* argument must point to a valid Landlock program file descriptor.
 
 .. code-block:: c
 
@@ -94,7 +94,7 @@ policy, only stacking more restrictions is allowed.  The program evaluation is
 performed from the newest to the oldest.
 
 When a syscall ask for an action on a kernel object, if this action is denied,
-then an EACCES errno code is returned through the syscall.
+then an ``EACCES`` errno code is returned through the syscall.
 
 
 .. _inherited_programs:

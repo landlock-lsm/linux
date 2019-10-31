@@ -7,11 +7,11 @@
  */
 
 #define _GNU_SOURCE
-#include <signal.h> /* raise */
+#include <signal.h>
 #include <sys/ptrace.h>
-#include <sys/types.h> /* waitpid */
-#include <sys/wait.h> /* waitpid */
-#include <unistd.h> /* fork, pipe */
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "test.h"
 
@@ -32,8 +32,10 @@ static void create_domain(struct __test_metadata *_metadata,
 			offsetof(struct landlock_context_ptrace, tracee)),
 		BPF_RAW_INSN(BPF_JMP | BPF_CALL, 0, 0, 0,
 				BPF_FUNC_task_landlock_ptrace_ancestor),
-		/* if @tracee is an ancestor or at the same level of @tracer,
-		 * then allow ptrace (warning: do not use BPF_JGE 0) */
+		/*
+		 * If @tracee is an ancestor or at the same level of @tracer,
+		 * then allow ptrace (warning: do not use BPF_JGE 0).
+		 */
 		BPF_JMP_IMM(BPF_JEQ, BPF_REG_0, inherited_only ? 0 : 1, 2),
 		BPF_MOV32_IMM(BPF_REG_0, LANDLOCK_RET_DENY),
 		BPF_EXIT_INSN(),
@@ -55,7 +57,8 @@ static void create_domain(struct __test_metadata *_metadata,
 				strerror(errno), log);
 	}
 	ASSERT_EQ(0, seccomp(SECCOMP_PREPEND_LANDLOCK_PROG, 0, &prog)) {
-		TH_LOG("Failed to create a Landlock domain: %s", strerror(errno));
+		TH_LOG("Failed to create a Landlock domain: %s",
+				strerror(errno));
 	}
 	EXPECT_EQ(0, close(prog));
 }
@@ -69,7 +72,8 @@ static void _check_ptrace(struct __test_metadata *_metadata,
 	int status;
 	int pipe_child[2], pipe_parent[2];
 	char buf_parent;
-	const bool inherited_only = domain_both && !domain_parent && !domain_child;
+	const bool inherited_only = domain_both && !domain_parent &&
+		!domain_child;
 
 	parent = getpid();
 
