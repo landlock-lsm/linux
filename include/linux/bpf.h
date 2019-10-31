@@ -291,6 +291,7 @@ enum bpf_reg_type {
 	PTR_TO_TP_BUFFER,	 /* reg points to a writable raw tp's buffer */
 	PTR_TO_XDP_SOCK,	 /* reg points to struct xdp_sock */
 	PTR_TO_BTF_ID,		 /* reg points to kernel struct */
+	PTR_TO_TASK,		 /* reg points to struct task_struct */
 };
 
 /* The information passed from prog-specific *_is_valid_access
