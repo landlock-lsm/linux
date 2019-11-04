@@ -19,6 +19,7 @@
 #include <linux/compat.h>
 #include <linux/coredump.h>
 #include <linux/kmemleak.h>
+#include <linux/landlock.h>
 #include <linux/nospec.h>
 #include <linux/prctl.h>
 #include <linux/sched.h>
@@ -1397,6 +1398,9 @@ static long do_seccomp(unsigned int op, unsigned int flags,
 			return -EINVAL;
 
 		return seccomp_get_notif_sizes(uargs);
+	case SECCOMP_PREPEND_LANDLOCK_PROG:
+		return landlock_seccomp_prepend_prog(flags,
+				(const int __user *)uargs);
 	default:
 		return -EINVAL;
 	}

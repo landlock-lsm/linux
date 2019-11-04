@@ -264,6 +264,21 @@ static void __init ordered_lsm_parse(const char *order, const char *origin)
 		}
 	}
 
+	/*
+	 * In case of an unprivileged access-control, we don't want to give the
+	 * ability to any process to do some checks (e.g. through an eBPF
+	 * program) on kernel objects (e.g. files) if a privileged security
+	 * policy forbid their access.  We must then load
+	 * potentially-unprivileged security modules after all other LSMs.
+	 *
+	 * LSM_ORDER_LAST is always last and does not appear in the modifiable
+	 * ordered list of enabled LSMs.
+	 */
+	for (lsm = __start_lsm_info; lsm < __end_lsm_info; lsm++) {
+		if (lsm->order == LSM_ORDER_LAST)
+			append_ordered_lsm(lsm, "last");
+	}
+
 	/* Disable all LSMs not in the ordered list. */
 	for (lsm = __start_lsm_info; lsm < __end_lsm_info; lsm++) {
 		if (exists_ordered_lsm(lsm))
