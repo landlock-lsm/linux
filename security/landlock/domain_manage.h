@@ -13,11 +13,10 @@
 
 #include "common.h"
 
-void landlock_get_domain(struct landlock_domain *dom);
-void landlock_put_domain(struct landlock_domain *dom);
+void landlock_get_domain(struct landlock_domain *domain);
+void landlock_put_domain(struct landlock_domain *domain);
 
-struct landlock_domain *landlock_prepend_prog(
-		struct landlock_domain *current_domain,
+struct landlock_domain *landlock_prepend_prog(struct landlock_domain *domain,
 		struct bpf_prog *prog);
 
 #endif /* _SECURITY_LANDLOCK_DOMAIN_MANAGE_H */

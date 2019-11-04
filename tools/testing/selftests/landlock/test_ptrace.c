@@ -187,28 +187,103 @@ static void _check_ptrace(struct __test_metadata *_metadata,
 				domain_child); \
 	}
 
-/* no domain */
+/*
+ * Test multiple tracing combinations between a parent process P1 and a child
+ * process P2.
+ *
+ * Yama's scoped ptrace is presumed disabled.  If enabled, this additional
+ * restriction is enforced before any Landlock check, which means that all P2
+ * requests to trace P1 would be denied.
+ */
+
+/*
+ *        No domain
+ *
+ *   P1-.               P1 -> P2 : allow
+ *       \              P2 -> P1 : allow
+ *        'P2
+ */
 CHECK_PTRACE(allow_without_domain, false, false, false);
 
-/* child domain */
+/*
+ *        Child domain
+ *
+ *   P1--.              P1 -> P2 : allow
+ *        \             P2 -> P1 : deny
+ *        .'-----.
+ *        |  P2  |
+ *        '------'
+ */
 CHECK_PTRACE(allow_with_one_domain, false, false, true);
 
-/* parent domain */
+/*
+ *        Parent domain
+ * .------.
+ * |  P1  --.           P1 -> P2 : deny
+ * '------'  \          P2 -> P1 : allow
+ *            '
+ *            P2
+ */
 CHECK_PTRACE(deny_with_parent_domain, false, true, false);
 
-/* parent and child domain */
+/*
+ *        Parent + child domain (siblings)
+ * .------.
+ * |  P1  ---.          P1 -> P2 : deny
+ * '------'   \         P2 -> P1 : deny
+ *         .---'--.
+ *         |  P2  |
+ *         '------'
+ */
 CHECK_PTRACE(deny_with_sibling_domain, false, true, true);
 
-/* inherited domain */
+/*
+ *         Same domain (inherited)
+ * .-------------.
+ * | P1----.     |      P1 -> P2 : allow
+ * |        \    |      P2 -> P1 : allow
+ * |         '   |
+ * |         P2  |
+ * '-------------'
+ */
 CHECK_PTRACE(allow_sibling_domain, true, false, false);
 
-/* inherited and child domain */
+/*
+ *         Inherited + child domain
+ * .-----------------.
+ * |  P1----.        |  P1 -> P2 : allow
+ * |         \       |  P2 -> P1 : deny
+ * |        .-'----. |
+ * |        |  P2  | |
+ * |        '------' |
+ * '-----------------'
+ */
 CHECK_PTRACE(allow_with_nested_domain, true, false, true);
 
-/* inherited and parent domain */
+/*
+ *         Inherited + parent domain
+ * .-----------------.
+ * |.------.         |  P1 -> P2 : deny
+ * ||  P1  ----.     |  P2 -> P1 : allow
+ * |'------'    \    |
+ * |             '   |
+ * |             P2  |
+ * '-----------------'
+ */
 CHECK_PTRACE(deny_with_nested_and_parent_domain, true, true, false);
 
-/* inherited, parent and child domain */
+/*
+ *         Inherited + parent and child domain (siblings)
+ * .-----------------.
+ * | .------.        |  P1 -> P2 : deny
+ * | |  P1  .        |  P2 -> P1 : deny
+ * | '------'\       |
+ * |          \      |
+ * |        .--'---. |
+ * |        |  P2  | |
+ * |        '------' |
+ * '-----------------'
+ */
 CHECK_PTRACE(deny_with_forked_domain, true, true, true);
 
 TEST_HARNESS_MAIN

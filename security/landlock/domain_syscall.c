@@ -45,14 +45,18 @@
 int landlock_seccomp_prepend_prog(unsigned int flags,
 		const int __user *user_bpf_fd)
 {
-	struct landlock_domain *new_domain;
-	struct cred *cred_new;
-	struct landlock_cred_security *llcred_new;
+	struct landlock_domain *new_dom;
+	struct cred *new_cred;
+	struct landlock_cred_security *new_llcred;
 	struct bpf_prog *prog;
 	int bpf_fd, err;
 
-	/* planned to be replaced with a no_new_privs check to allow
-	 * unprivileged tasks */
+	/*
+	 * It is planned to replaced the CAP_SYS_ADMIN check with a
+	 * no_new_privs check to allow unprivileged tasks to sandbox
+	 * themselves.  However, they may not be allowed to directly create an
+	 * eBPF program, but could received it from a privileged service.
+	 */
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 	/* enable to check if Landlock is supported with early EFAULT */
@@ -67,21 +71,23 @@ int landlock_seccomp_prepend_prog(unsigned int flags,
 	if (IS_ERR(prog))
 		return PTR_ERR(prog);
 
-	cred_new = prepare_creds();
-	if (!cred_new) {
+	new_cred = prepare_creds();
+	if (!new_cred) {
 		bpf_prog_put(prog);
 		return -ENOMEM;
 	}
-	llcred_new = landlock_cred(cred_new);
+	new_llcred = landlock_cred(new_cred);
 	/* the new creds are an atomic copy of the current creds */
-	new_domain = landlock_prepend_prog(llcred_new->domain, prog);
+	new_dom = landlock_prepend_prog(new_llcred->domain, prog);
 	bpf_prog_put(prog);
-	if (IS_ERR(new_domain)) {
-		abort_creds(cred_new);
-		return PTR_ERR(new_domain);
+	if (IS_ERR(new_dom)) {
+		abort_creds(new_cred);
+		return PTR_ERR(new_dom);
 	}
-	llcred_new->domain = new_domain;
-	return commit_creds(cred_new);
+	/* replace the old (prepared) domain */
+	landlock_put_domain(new_llcred->domain);
+	new_llcred->domain = new_dom;
+	return commit_creds(new_cred);
 }
 
 #endif /* CONFIG_SECCOMP_FILTER */

@@ -15,11 +15,11 @@
 #include "common.h"
 #include "domain_manage.h"
 
-void landlock_get_domain(struct landlock_domain *dom)
+void landlock_get_domain(struct landlock_domain *domain)
 {
-	if (!dom)
+	if (!domain)
 		return;
-	refcount_inc(&dom->usage);
+	refcount_inc(&domain->usage);
 }
 
 static void put_prog_list(struct landlock_prog_list *prog_list)
@@ -48,7 +48,7 @@ void landlock_put_domain(struct landlock_domain *domain)
 	}
 }
 
-static struct landlock_prog_list *new_prog_list(struct bpf_prog *prog)
+static struct landlock_prog_list *create_prog_list(struct bpf_prog *prog)
 {
 	struct landlock_prog_list *new_list;
 
@@ -69,105 +69,84 @@ static struct landlock_prog_list *new_prog_list(struct bpf_prog *prog)
 	return new_list;
 }
 
-/* @prog can legitimately be NULL */
-static struct landlock_domain *new_landlock_domain(struct bpf_prog *prog)
+static struct landlock_domain *create_domain(struct bpf_prog *prog)
 {
-	struct landlock_domain *new_domain;
+	struct landlock_domain *new_dom;
 	struct landlock_prog_list *new_list;
 	size_t hook;
 
 	/* programs[] filled with NULL values */
-	new_domain = kzalloc(sizeof(*new_domain), GFP_KERNEL);
-	if (!new_domain)
+	new_dom = kzalloc(sizeof(*new_dom), GFP_KERNEL);
+	if (!new_dom)
 		return ERR_PTR(-ENOMEM);
-	refcount_set(&new_domain->usage, 1);
-	if (!prog)
-		return new_domain;
-	new_list = new_prog_list(prog);
+	refcount_set(&new_dom->usage, 1);
+	new_list = create_prog_list(prog);
 	if (IS_ERR(new_list)) {
-		kfree(new_domain);
+		kfree(new_dom);
 		return ERR_CAST(new_list);
 	}
 	hook = get_hook_index(get_hook_type(prog));
-	new_domain->programs[hook] = new_list;
-	return new_domain;
+	new_dom->programs[hook] = new_list;
+	return new_dom;
 }
 
 /**
- * landlock_prepend_prog - attach a Landlock program to @current_domain
+ * landlock_prepend_prog - extend a Landlock domain with an eBPF program
  *
- * Prepend @prog to @current_domain if @prog is not already in @current_domain.
+ * Prepend @prog to @domain if @prog is not already in @domain.
  *
- * @current_domain: landlock_domain pointer which is garantee to not be
- *                  modified elsewhere. This pointer should not be used nor
- *                  put/freed after the call.
- * @prog: non-NULL Landlock program to prepend to @current_domain. @prog will
- *        be owned by landlock_prepend_prog(). You can then call
+ * @domain: domain to copy and extend with @prog. This domain must not be
+ *          modified by another function than this one to guarantee domain
+ *          immutability.
+ * @prog: non-NULL Landlock program to prepend to a copy of @domain.  @prog
+ *        will be owned by landlock_prepend_prog(). You can then call
  *        bpf_prog_put(@prog) after.
  *
- * Return @current_domain or a new pointer when OK. Return a pointer error
- * otherwise.
+ * Return a copy of @domain (with @prog prepended) when OK. Return a pointer
+ * error otherwise.
  */
-struct landlock_domain *landlock_prepend_prog(
-		struct landlock_domain *current_domain,
+struct landlock_domain *landlock_prepend_prog(struct landlock_domain *domain,
 		struct bpf_prog *prog)
 {
-	struct landlock_domain *oneref_domain;
-	struct landlock_prog_list *new_list, *walker;
-	size_t hook;
+	struct landlock_prog_list *walker;
+	struct landlock_domain *new_dom;
+	size_t i, hook;
 
 	if (WARN_ON(!prog))
 		return ERR_PTR(-EFAULT);
 	if (prog->type != BPF_PROG_TYPE_LANDLOCK_HOOK)
 		return ERR_PTR(-EINVAL);
 
-	/*
-	 * Each domain contains an array of prog_list pointers.  If a domain is
-	 * used by more than one credential, then this domain is first
-	 * duplicated and then @prog is prepended to this new domain.  We then
-	 * have the garantee that a domain is immutable when shared, and it can
-	 * only be modified if it is referenced only once (by the modifier).
-	 */
-	if (!current_domain)
-		return new_landlock_domain(prog);
+	if (!domain)
+		return create_domain(prog);
 
 	hook = get_hook_index(get_hook_type(prog));
 	/* check for similar program */
-	for (walker = current_domain->programs[hook]; walker;
+	for (walker = domain->programs[hook]; walker;
 			walker = walker->prev) {
 		/* don't allow duplicate programs */
 		if (prog == walker->prog)
 			return ERR_PTR(-EEXIST);
 	}
 
-	new_list = new_prog_list(prog);
-	if (IS_ERR(new_list))
-		return ERR_CAST(new_list);
+	new_dom = create_domain(prog);
+	if (IS_ERR(new_dom))
+		return new_dom;
 
-	/* duplicate the domain if not referenced only once */
-	if (refcount_read(&current_domain->usage) == 1) {
-		oneref_domain = current_domain;
-	} else {
-		size_t i;
+	/* copy @domain (which is guarantee to be immutable) */
+	for (i = 0; i < ARRAY_SIZE(new_dom->programs); i++) {
+		struct landlock_prog_list *current_list;
+		struct landlock_prog_list **new_list;
 
-		oneref_domain = new_landlock_domain(NULL);
-		if (IS_ERR(oneref_domain)) {
-			put_prog_list(new_list);
-			return oneref_domain;
-		}
-		for (i = 0; i < ARRAY_SIZE(oneref_domain->programs); i++) {
-			oneref_domain->programs[i] =
-				current_domain->programs[i];
-			if (oneref_domain->programs[i])
-				refcount_inc(&oneref_domain->programs[i]->usage);
-		}
-		landlock_put_domain(current_domain);
-		/* @current_domain may be a dangling pointer now */
-		current_domain = NULL;
+		current_list = domain->programs[i];
+		if (!current_list)
+			continue;
+		refcount_inc(&current_list->usage);
+		new_list = &new_dom->programs[i];
+		if (*new_list)
+			new_list = &(*new_list)->prev;
+		/* do not increment usage */
+		*new_list = current_list;
 	}
-
-	/* no need to increment usage (pointer replacement) */
-	new_list->prev = oneref_domain->programs[hook];
-	oneref_domain->programs[hook] = new_list;
-	return oneref_domain;
+	return new_dom;
 }

@@ -10,6 +10,7 @@
 #include <linux/bpf.h>
 #include <linux/errno.h>
 #include <linux/filter.h>
+#include <linux/preempt.h>
 #include <linux/rculist.h>
 #include <uapi/linux/landlock.h>
 
@@ -52,9 +53,11 @@ bool landlock_access_denied(struct landlock_domain *domain,
 		prog_ctx = get_prog_ctx(hook_ctx);
 		if (!prog_ctx || WARN_ON(IS_ERR(prog_ctx)))
 			return true;
+		preempt_disable();
 		rcu_read_lock();
 		ret = BPF_PROG_RUN(prog_list->prog, prog_ctx);
 		rcu_read_unlock();
+		preempt_enable();
 		if (ret & LANDLOCK_RET_DENY)
 			return true;
 	}

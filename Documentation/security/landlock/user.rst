@@ -1,6 +1,6 @@
-================================
-Landlock: userland documentation
-================================
+=================================
+Landlock: userspace documentation
+=================================
 
 Landlock programs
 =================
@@ -8,7 +8,7 @@ Landlock programs
 eBPF programs are used to create security programs.  They are contained and can
 call only a whitelist of dedicated functions. Moreover, they can only loop
 under strict conditions, which protects from denial of service.  More
-information on BPF can be found in *Documentation/networking/filter.txt*.
+information on BPF can be found in :doc:`/bpf/index`.
 
 
 Writing a program
@@ -16,9 +16,9 @@ Writing a program
 
 To enforce a security policy, a thread first needs to create a Landlock
 program.  The easiest way to write an eBPF program depicting a security program
-is to write it in the C language.  As described in *samples/bpf/README.rst*,
+is to write it in the C language.  As described in `samples/bpf/README.rst`_,
 LLVM can compile such programs.  A simple eBPF program can also be written by
-hand has done in *tools/testing/selftests/landlock/*.
+hand has done in `tools/testing/selftests/landlock/`_.
 
 Once the eBPF program is created, the next step is to create the metadata
 describing the Landlock program.  This metadata includes an expected attach
@@ -41,9 +41,9 @@ to the :manpage:`bpf(2)` syscall alongside the ``BPF_PROG_LOAD`` command.  If
 everything is deemed correct by the kernel, the thread gets a file descriptor
 referring to this program.
 
-In the following code, the *insn* variable is an array of BPF instructions
+In the following code, the `insn` variable is an array of BPF instructions
 which can be extracted from an ELF file as is done in bpf_load_file() from
-*samples/bpf/bpf_load.c*.
+`samples/bpf/bpf_load.c`_.
 
 .. code-block:: c
 
@@ -69,18 +69,19 @@ Once the Landlock program has been created or received (e.g. through a UNIX
 socket), the thread willing to sandbox itself (and its future children) should
 perform the following two steps.
 
-The thread should first request to never be allowed to get new privileges with a
-call to :manpage:`prctl(2)` and the ``PR_SET_NO_NEW_PRIVS`` option.  More
-information can be found in *Documentation/prctl/no_new_privs.txt*.
+The thread should first request to never be allowed to get new privileges with
+a call to :manpage:`prctl(2)` and the ``PR_SET_NO_NEW_PRIVS`` option.  More
+information can be found in :doc:`/userspace-api/no_new_privs`.
 
 .. code-block:: c
 
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, NULL, 0, 0))
         exit(1);
 
-A thread can apply a program to itself by using the :manpage:`seccomp(2)` syscall.
-The operation is ``SECCOMP_PREPEND_LANDLOCK_PROG``, the flags must be empty and
-the *args* argument must point to a valid Landlock program file descriptor.
+A thread can apply a program to itself by using the :manpage:`seccomp(2)`
+syscall.  The operation is ``SECCOMP_PREPEND_LANDLOCK_PROG``, the flags must be
+empty and the `args` argument must point to a valid Landlock program file
+descriptor.
 
 .. code-block:: c
 
@@ -103,9 +104,12 @@ Inherited programs
 ------------------
 
 Every new thread resulting from a :manpage:`clone(2)` inherits Landlock program
-restrictions from its parent.  This is similar to the seccomp inheritance as
-described in *Documentation/prctl/seccomp_filter.txt* or any other LSM dealing
-with task's :manpage:`credentials(7)`.
+restrictions from its parent.  This is similar to the seccomp inheritance (cf.
+:doc:`/userspace-api/seccomp_filter`) or any other LSM dealing with task's
+:manpage:`credentials(7)`.  For instance, one process's thread may apply
+Landlock programs to itself, but they will not be automatically applied to
+other sibling threads (unlike POSIX thread credential changes, cf.
+:manpage:`nptl(7)`).
 
 
 Ptrace restrictions
@@ -116,7 +120,7 @@ then be subject to additional restrictions when manipulating another process.
 To be allowed to use :manpage:`ptrace(2)` and related syscalls on a target
 process, a sandboxed process should have a subset of the target process
 programs.  This security policy can easily be implemented like in
-*tools/testing/selftests/landlock/test_ptrace.c*.
+`tools/testing/selftests/landlock/test_ptrace.c`_.
 
 
 Landlock structures and constants
@@ -140,3 +144,10 @@ Additional documentation
 ========================
 
 See https://landlock.io
+
+
+.. Links
+.. _samples/bpf/README.rst: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/samples/bpf/README.rst
+.. _tools/testing/selftests/landlock/: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/tools/testing/selftests/landlock/
+.. _samples/bpf/bpf_load.c: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/samples/bpf/bpf_load.c
+.. _tools/testing/selftests/landlock/test_ptrace.c: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/tools/testing/selftests/landlock/test_ptrace.c

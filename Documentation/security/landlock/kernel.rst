@@ -36,10 +36,34 @@ Guiding principles
 Unprivileged use
 ----------------
 
-* Landlock helpers and context should be usable by any unprivileged and
-  untrusted program while following the system security policy enforced by
-  other access control mechanisms (e.g. DAC, LSM), even if a global
-  ``CAP_SYS_ADMIN`` is currently required.
+* As far as possible, Landlock helpers and contexts should be *designed* to be
+  usable by unprivileged programs while following the system security policy
+  enforced by other access control mechanisms (e.g. DAC, LSM).  Indeed, a
+  Landlock program shall not interfere with other access-controls enforced on
+  the system.
+
+Because one of the Landlock's goal is to create scoped access-control (i.e.
+sandboxing), it makes sense to make it possible to have access-control-safe
+programs.  This enables to avoid unneeded security risks when writing a
+security policy.  We should also keep in mind that a Landlock program may be
+written and loaded in the kernel by a trusted process, but applied by a
+non-root (and possibly malicious) process to sandbox itself e.g., using a
+sandboxer service.  This sandboxed process must not be able to leverage one of
+the Landlock program applied on itself to do a privilege escalation nor to
+infer data that should not be accessible otherwise (i.e. side-channels).
+
+However, when justified, it should be possible to have dedicated
+privileged-only program types e.g., to make a security decision based on
+properties inaccessible by unprivileged processes, or to log actions with
+additional metadata.  As explained above, these properties should not be
+inferable from the enforced access-control.  Care must be taken to not only
+focus on these programs' context or helpers to avoid putting everything in a
+root-only realm (cf. `CAP_SYS_ADMIN: the new root
+<https://lwn.net/Articles/486306/>`_).
+
+It should be noted that ``CAP_SYS_ADMIN`` is currently required for loading and
+for enforcing any Landlock programs, but more fine-grained rights may be
+discussed in the future.
 
 
 Landlock hook and context
@@ -49,7 +73,10 @@ Landlock hook and context
   of syscall filtering (i.e. syscall arguments), which is the purpose of
   seccomp-bpf.
 * A Landlock context provided by a hook shall express the minimal and more
-  generic interface to control an access for a kernel object.
+  generic interface to control an access for a kernel object.  This may be
+  implemented with kernel pointers used as security capabilities (i.e.
+  unforgeable token enabling actions on an object according to a set of
+  rights).
 * A hook shall guaranty that all the BPF function calls from a program are
   safe.  Thus, the related Landlock context arguments shall always be of the
   same type for a particular hook.  For example, a network hook could share
@@ -63,7 +90,7 @@ Landlock helpers
 
 * Landlock helpers shall be as generic as possible while at the same time being
   as simple as possible and following the syscall creation principles (cf.
-  *Documentation/adding-syscalls.txt*).
+  :doc:`/process/adding-syscalls`).
 * The only behavior change allowed on a helper is to fix a (logical) bug to
   match the initial semantic.
 * Helpers shall be reentrant, i.e. only take inputs from arguments (e.g. from
@@ -97,8 +124,8 @@ Adding a Landlock program with seccomp
 --------------------------------------
 
 The :manpage:`seccomp(2)` syscall can be used with the
-``SECCOMP_PREPEND_LANDLOCK_PROG`` operation to prepend a Landlock program to the
-current task's domain.
+``SECCOMP_PREPEND_LANDLOCK_PROG`` operation to prepend a Landlock program to
+the current task's domain.
 
 .. kernel-doc:: security/landlock/domain_syscall.c
     :functions: landlock_seccomp_prepend_prog
