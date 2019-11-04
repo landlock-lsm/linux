@@ -421,6 +421,7 @@ static const char * const reg_type_str[] = {
 	[PTR_TO_TP_BUFFER]	= "tp_buffer",
 	[PTR_TO_XDP_SOCK]	= "xdp_sock",
 	[PTR_TO_BTF_ID]		= "ptr_",
+	[PTR_TO_TASK]		= "task",
 };
 
 static char slot_type_char[] = {
@@ -1878,6 +1879,7 @@ static bool is_spillable_regtype(enum bpf_reg_type type)
 	case PTR_TO_TCP_SOCK:
 	case PTR_TO_TCP_SOCK_OR_NULL:
 	case PTR_TO_XDP_SOCK:
+	case PTR_TO_TASK:
 		return true;
 	default:
 		return false;
@@ -2599,6 +2601,9 @@ static int check_ptr_alignment(struct bpf_verifier_env *env,
 		break;
 	case PTR_TO_XDP_SOCK:
 		pointer_desc = "xdp_sock ";
+		break;
+	case PTR_TO_TASK:
+		pointer_desc = "task ";
 		break;
 	default:
 		break;
@@ -4527,6 +4532,7 @@ static int adjust_ptr_min_max_vals(struct bpf_verifier_env *env,
 	case PTR_TO_TCP_SOCK:
 	case PTR_TO_TCP_SOCK_OR_NULL:
 	case PTR_TO_XDP_SOCK:
+	case PTR_TO_TASK:
 		verbose(env, "R%d pointer arithmetic on %s prohibited\n",
 			dst, reg_type_str[ptr_reg->type]);
 		return -EACCES;
@@ -6278,6 +6284,7 @@ static int check_return_code(struct bpf_verifier_env *env)
 	case BPF_PROG_TYPE_CGROUP_DEVICE:
 	case BPF_PROG_TYPE_CGROUP_SYSCTL:
 	case BPF_PROG_TYPE_CGROUP_SOCKOPT:
+	case BPF_PROG_TYPE_LANDLOCK_HOOK:
 		break;
 	default:
 		return 0;

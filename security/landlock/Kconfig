@@ -1,0 +1,19 @@
+config SECURITY_LANDLOCK
+	bool "Landlock support"
+	depends on SECURITY
+	depends on BPF_SYSCALL
+	depends on SECCOMP_FILTER
+	default n
+	help
+	  This selects Landlock, a programmatic access control.  It enables to
+	  restrict processes on the fly (i.e. create a sandbox) or log some
+	  actions.  The security policy is a set of eBPF programs, dedicated to
+	  allow or deny a list of actions on specific kernel objects (e.g.
+	  process).
+
+	  You need to enable seccomp filter to apply a security policy to a
+	  process hierarchy (e.g. application with built-in sandboxing).
+
+	  See Documentation/security/landlock/ for further information.
+
+	  If you are unsure how to answer this question, answer N.
