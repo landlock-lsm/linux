@@ -70,6 +70,10 @@ static const struct bpf_func_proto *bpf_landlock_func_proto(
 		return &bpf_map_update_elem_proto;
 	case BPF_FUNC_map_delete_elem:
 		return &bpf_map_delete_elem_proto;
+	case BPF_FUNC_task_landlock_ptrace_ancestor:
+		if (get_hook_type(prog) == LANDLOCK_HOOK_PTRACE)
+			return &bpf_task_landlock_ptrace_ancestor_proto;
+		return NULL;
 	default:
 		return NULL;
 	}
