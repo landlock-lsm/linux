@@ -82,18 +82,12 @@ static int nsim_dev_dummy_fmsg_put(struct devlink_fmsg *fmsg, u32 binary_len)
 	if (err)
 		return err;
 
-	err = devlink_fmsg_arr_pair_nest_start(fmsg, "test_binary");
-	if (err)
-		return err;
-	binary = kmalloc(binary_len, GFP_KERNEL);
+	binary = kmalloc(binary_len, GFP_KERNEL | __GFP_NOWARN);
 	if (!binary)
 		return -ENOMEM;
 	get_random_bytes(binary, binary_len);
-	err = devlink_fmsg_binary_put(fmsg, binary, binary_len);
+	err = devlink_fmsg_binary_pair_put(fmsg, "test_binary", binary, binary_len);
 	kfree(binary);
-	if (err)
-		return err;
-	err = devlink_fmsg_arr_pair_nest_end(fmsg);
 	if (err)
 		return err;
 
@@ -291,8 +285,8 @@ int nsim_dev_health_init(struct nsim_dev *nsim_dev, struct devlink *devlink)
 	}
 
 	health->ddir = debugfs_create_dir("health", nsim_dev->ddir);
-	if (IS_ERR_OR_NULL(health->ddir)) {
-		err = PTR_ERR_OR_ZERO(health->ddir) ?: -EINVAL;
+	if (IS_ERR(health->ddir)) {
+		err = PTR_ERR(health->ddir);
 		goto err_dummy_reporter_destroy;
 	}
 

@@ -42,9 +42,9 @@ sja1105_spi_message_pack(void *buf, const struct sja1105_spi_message *msg)
  * - SPI_READ:  creates and sends an SPI read message from absolute
  *		address reg_addr, writing @len bytes into *buf
  */
-int sja1105_xfer_buf(const struct sja1105_private *priv,
-		     sja1105_spi_rw_mode_t rw, u64 reg_addr,
-		     u8 *buf, size_t len)
+static int sja1105_xfer(const struct sja1105_private *priv,
+			sja1105_spi_rw_mode_t rw, u64 reg_addr, u8 *buf,
+			size_t len, struct ptp_system_timestamp *ptp_sts)
 {
 	struct sja1105_chunk chunk = {
 		.len = min_t(size_t, len, SJA1105_SIZE_SPI_MSG_MAXLEN),
@@ -81,6 +81,7 @@ int sja1105_xfer_buf(const struct sja1105_private *priv,
 		struct spi_transfer *chunk_xfer = sja1105_chunk_xfer(xfers, i);
 		struct spi_transfer *hdr_xfer = sja1105_hdr_xfer(xfers, i);
 		u8 *hdr_buf = sja1105_hdr_buf(hdr_bufs, i);
+		struct spi_transfer *ptp_sts_xfer;
 		struct sja1105_spi_message msg;
 
 		/* Populate the transfer's header buffer */
@@ -101,6 +102,26 @@ int sja1105_xfer_buf(const struct sja1105_private *priv,
 		else
 			chunk_xfer->tx_buf = chunk.buf;
 		chunk_xfer->len = chunk.len;
+
+		/* Request timestamping for the transfer. Instead of letting
+		 * callers specify which byte they want to timestamp, we can
+		 * make certain assumptions:
+		 * - A read operation will request a software timestamp when
+		 *   what's being read is the PTP time. That is snapshotted by
+		 *   the switch hardware at the end of the command portion
+		 *   (hdr_xfer).
+		 * - A write operation will request a software timestamp on
+		 *   actions that modify the PTP time. Taking clock stepping as
+		 *   an example, the switch writes the PTP time at the end of
+		 *   the data portion (chunk_xfer).
+		 */
+		if (rw == SPI_READ)
+			ptp_sts_xfer = hdr_xfer;
+		else
+			ptp_sts_xfer = chunk_xfer;
+		ptp_sts_xfer->ptp_sts_word_pre = ptp_sts_xfer->len - 1;
+		ptp_sts_xfer->ptp_sts_word_post = ptp_sts_xfer->len - 1;
+		ptp_sts_xfer->ptp_sts = ptp_sts;
 
 		/* Calculate next chunk */
 		chunk.buf += chunk.len;
@@ -123,6 +144,13 @@ int sja1105_xfer_buf(const struct sja1105_private *priv,
 	return rc;
 }
 
+int sja1105_xfer_buf(const struct sja1105_private *priv,
+		     sja1105_spi_rw_mode_t rw, u64 reg_addr,
+		     u8 *buf, size_t len)
+{
+	return sja1105_xfer(priv, rw, reg_addr, buf, len, NULL);
+}
+
 /* If @rw is:
  * - SPI_WRITE: creates and sends an SPI write message at absolute
  *		address reg_addr
@@ -133,7 +161,8 @@ int sja1105_xfer_buf(const struct sja1105_private *priv,
  * CPU endianness and directly usable by software running on the core.
  */
 int sja1105_xfer_u64(const struct sja1105_private *priv,
-		     sja1105_spi_rw_mode_t rw, u64 reg_addr, u64 *value)
+		     sja1105_spi_rw_mode_t rw, u64 reg_addr, u64 *value,
+		     struct ptp_system_timestamp *ptp_sts)
 {
 	u8 packed_buf[8];
 	int rc;
@@ -141,7 +170,7 @@ int sja1105_xfer_u64(const struct sja1105_private *priv,
 	if (rw == SPI_WRITE)
 		sja1105_pack(packed_buf, value, 63, 0, 8);
 
-	rc = sja1105_xfer_buf(priv, rw, reg_addr, packed_buf, 8);
+	rc = sja1105_xfer(priv, rw, reg_addr, packed_buf, 8, ptp_sts);
 
 	if (rw == SPI_READ)
 		sja1105_unpack(packed_buf, value, 63, 0, 8);
@@ -151,7 +180,8 @@ int sja1105_xfer_u64(const struct sja1105_private *priv,
 
 /* Same as above, but transfers only a 4 byte word */
 int sja1105_xfer_u32(const struct sja1105_private *priv,
-		     sja1105_spi_rw_mode_t rw, u64 reg_addr, u32 *value)
+		     sja1105_spi_rw_mode_t rw, u64 reg_addr, u32 *value,
+		     struct ptp_system_timestamp *ptp_sts)
 {
 	u8 packed_buf[4];
 	u64 tmp;
@@ -165,7 +195,7 @@ int sja1105_xfer_u32(const struct sja1105_private *priv,
 		sja1105_pack(packed_buf, &tmp, 31, 0, 4);
 	}
 
-	rc = sja1105_xfer_buf(priv, rw, reg_addr, packed_buf, 4);
+	rc = sja1105_xfer(priv, rw, reg_addr, packed_buf, 4, ptp_sts);
 
 	if (rw == SPI_READ) {
 		sja1105_unpack(packed_buf, &tmp, 31, 0, 4);
@@ -175,114 +205,32 @@ int sja1105_xfer_u32(const struct sja1105_private *priv,
 	return rc;
 }
 
-/* Back-ported structure from UM11040 Table 112.
- * Reset control register (addr. 100440h)
- * In the SJA1105 E/T, only warm_rst and cold_rst are
- * supported (exposed in UM10944 as rst_ctrl), but the bit
- * offsets of warm_rst and cold_rst are actually reversed.
- */
-struct sja1105_reset_cmd {
-	u64 switch_rst;
-	u64 cfg_rst;
-	u64 car_rst;
-	u64 otp_rst;
-	u64 warm_rst;
-	u64 cold_rst;
-	u64 por_rst;
-};
-
-static void
-sja1105et_reset_cmd_pack(void *buf, const struct sja1105_reset_cmd *reset)
+static int sja1105et_reset_cmd(struct dsa_switch *ds)
 {
-	const int size = SJA1105_SIZE_RESET_CMD;
-
-	memset(buf, 0, size);
-
-	sja1105_pack(buf, &reset->cold_rst, 3, 3, size);
-	sja1105_pack(buf, &reset->warm_rst, 2, 2, size);
-}
-
-static void
-sja1105pqrs_reset_cmd_pack(void *buf, const struct sja1105_reset_cmd *reset)
-{
-	const int size = SJA1105_SIZE_RESET_CMD;
-
-	memset(buf, 0, size);
-
-	sja1105_pack(buf, &reset->switch_rst, 8, 8, size);
-	sja1105_pack(buf, &reset->cfg_rst,    7, 7, size);
-	sja1105_pack(buf, &reset->car_rst,    5, 5, size);
-	sja1105_pack(buf, &reset->otp_rst,    4, 4, size);
-	sja1105_pack(buf, &reset->warm_rst,   3, 3, size);
-	sja1105_pack(buf, &reset->cold_rst,   2, 2, size);
-	sja1105_pack(buf, &reset->por_rst,    1, 1, size);
-}
-
-static int sja1105et_reset_cmd(const void *ctx, const void *data)
-{
-	const struct sja1105_private *priv = ctx;
-	const struct sja1105_reset_cmd *reset = data;
+	struct sja1105_private *priv = ds->priv;
 	const struct sja1105_regs *regs = priv->info->regs;
-	struct device *dev = priv->ds->dev;
-	u8 packed_buf[SJA1105_SIZE_RESET_CMD];
+	u8 packed_buf[SJA1105_SIZE_RESET_CMD] = {0};
+	const int size = SJA1105_SIZE_RESET_CMD;
+	u64 cold_rst = 1;
 
-	if (reset->switch_rst ||
-	    reset->cfg_rst ||
-	    reset->car_rst ||
-	    reset->otp_rst ||
-	    reset->por_rst) {
-		dev_err(dev, "Only warm and cold reset is supported "
-			"for SJA1105 E/T!\n");
-		return -EINVAL;
-	}
-
-	if (reset->warm_rst)
-		dev_dbg(dev, "Warm reset requested\n");
-	if (reset->cold_rst)
-		dev_dbg(dev, "Cold reset requested\n");
-
-	sja1105et_reset_cmd_pack(packed_buf, reset);
+	sja1105_pack(packed_buf, &cold_rst, 3, 3, size);
 
 	return sja1105_xfer_buf(priv, SPI_WRITE, regs->rgu, packed_buf,
 				SJA1105_SIZE_RESET_CMD);
 }
 
-static int sja1105pqrs_reset_cmd(const void *ctx, const void *data)
+static int sja1105pqrs_reset_cmd(struct dsa_switch *ds)
 {
-	const struct sja1105_private *priv = ctx;
-	const struct sja1105_reset_cmd *reset = data;
+	struct sja1105_private *priv = ds->priv;
 	const struct sja1105_regs *regs = priv->info->regs;
-	struct device *dev = priv->ds->dev;
-	u8 packed_buf[SJA1105_SIZE_RESET_CMD];
+	u8 packed_buf[SJA1105_SIZE_RESET_CMD] = {0};
+	const int size = SJA1105_SIZE_RESET_CMD;
+	u64 cold_rst = 1;
 
-	if (reset->switch_rst)
-		dev_dbg(dev, "Main reset for all functional modules requested\n");
-	if (reset->cfg_rst)
-		dev_dbg(dev, "Chip configuration reset requested\n");
-	if (reset->car_rst)
-		dev_dbg(dev, "Clock and reset control logic reset requested\n");
-	if (reset->otp_rst)
-		dev_dbg(dev, "OTP read cycle for reading product "
-			"config settings requested\n");
-	if (reset->warm_rst)
-		dev_dbg(dev, "Warm reset requested\n");
-	if (reset->cold_rst)
-		dev_dbg(dev, "Cold reset requested\n");
-	if (reset->por_rst)
-		dev_dbg(dev, "Power-on reset requested\n");
-
-	sja1105pqrs_reset_cmd_pack(packed_buf, reset);
+	sja1105_pack(packed_buf, &cold_rst, 2, 2, size);
 
 	return sja1105_xfer_buf(priv, SPI_WRITE, regs->rgu, packed_buf,
 				SJA1105_SIZE_RESET_CMD);
-}
-
-static int sja1105_cold_reset(const struct sja1105_private *priv)
-{
-	struct sja1105_reset_cmd reset = {0};
-
-	reset.cold_rst = 1;
-	return priv->info->reset_cmd(priv, &reset);
 }
 
 int sja1105_inhibit_tx(const struct sja1105_private *priv,
@@ -293,7 +241,7 @@ int sja1105_inhibit_tx(const struct sja1105_private *priv,
 	int rc;
 
 	rc = sja1105_xfer_u32(priv, SPI_READ, regs->port_control,
-			      &inhibit_cmd);
+			      &inhibit_cmd, NULL);
 	if (rc < 0)
 		return rc;
 
@@ -303,7 +251,7 @@ int sja1105_inhibit_tx(const struct sja1105_private *priv,
 		inhibit_cmd &= ~port_bitmap;
 
 	return sja1105_xfer_u32(priv, SPI_WRITE, regs->port_control,
-				&inhibit_cmd);
+				&inhibit_cmd, NULL);
 }
 
 struct sja1105_status {
@@ -429,7 +377,7 @@ int sja1105_static_config_upload(struct sja1105_private *priv)
 	usleep_range(500, 1000);
 	do {
 		/* Put the SJA1105 in programming mode */
-		rc = sja1105_cold_reset(priv);
+		rc = priv->info->reset_cmd(priv->ds);
 		if (rc < 0) {
 			dev_err(dev, "Failed to reset switch, retrying...\n");
 			continue;
@@ -481,12 +429,6 @@ int sja1105_static_config_upload(struct sja1105_private *priv)
 		dev_info(dev, "Succeeded after %d tried\n", RETRIES - retries);
 	}
 
-	rc = sja1105_ptp_reset(priv->ds);
-	if (rc < 0)
-		dev_err(dev, "Failed to reset PTP clock: %d\n", rc);
-
-	dev_info(dev, "Reset switch and programmed static config\n");
-
 out:
 	kfree(config_buf);
 	return rc;
@@ -515,9 +457,11 @@ static struct sja1105_regs sja1105et_regs = {
 	.rmii_ref_clk = {0x100015, 0x10001C, 0x100023, 0x10002A, 0x100031},
 	.rmii_ext_tx_clk = {0x100018, 0x10001F, 0x100026, 0x10002D, 0x100034},
 	.ptpegr_ts = {0xC0, 0xC2, 0xC4, 0xC6, 0xC8},
+	.ptpschtm = 0x12, /* Spans 0x12 to 0x13 */
 	.ptp_control = 0x17,
 	.ptpclkval = 0x18, /* Spans 0x18 to 0x19 */
 	.ptpclkrate = 0x1A,
+	.ptpclkcorp = 0x1D,
 };
 
 static struct sja1105_regs sja1105pqrs_regs = {
@@ -545,9 +489,11 @@ static struct sja1105_regs sja1105pqrs_regs = {
 	.rmii_ext_tx_clk = {0x100017, 0x10001D, 0x100023, 0x100029, 0x10002F},
 	.qlevel = {0x604, 0x614, 0x624, 0x634, 0x644},
 	.ptpegr_ts = {0xC0, 0xC4, 0xC8, 0xCC, 0xD0},
+	.ptpschtm = 0x13, /* Spans 0x13 to 0x14 */
 	.ptp_control = 0x18,
 	.ptpclkval = 0x19,
 	.ptpclkrate = 0x1B,
+	.ptpclkcorp = 0x1E,
 };
 
 struct sja1105_info sja1105e_info = {
@@ -560,7 +506,7 @@ struct sja1105_info sja1105e_info = {
 	.reset_cmd		= sja1105et_reset_cmd,
 	.fdb_add_cmd		= sja1105et_fdb_add,
 	.fdb_del_cmd		= sja1105et_fdb_del,
-	.ptp_cmd		= sja1105et_ptp_cmd,
+	.ptp_cmd_packing	= sja1105et_ptp_cmd_packing,
 	.regs			= &sja1105et_regs,
 	.name			= "SJA1105E",
 };
@@ -574,7 +520,7 @@ struct sja1105_info sja1105t_info = {
 	.reset_cmd		= sja1105et_reset_cmd,
 	.fdb_add_cmd		= sja1105et_fdb_add,
 	.fdb_del_cmd		= sja1105et_fdb_del,
-	.ptp_cmd		= sja1105et_ptp_cmd,
+	.ptp_cmd_packing	= sja1105et_ptp_cmd_packing,
 	.regs			= &sja1105et_regs,
 	.name			= "SJA1105T",
 };
@@ -589,7 +535,7 @@ struct sja1105_info sja1105p_info = {
 	.reset_cmd		= sja1105pqrs_reset_cmd,
 	.fdb_add_cmd		= sja1105pqrs_fdb_add,
 	.fdb_del_cmd		= sja1105pqrs_fdb_del,
-	.ptp_cmd		= sja1105pqrs_ptp_cmd,
+	.ptp_cmd_packing	= sja1105pqrs_ptp_cmd_packing,
 	.regs			= &sja1105pqrs_regs,
 	.name			= "SJA1105P",
 };
@@ -604,7 +550,7 @@ struct sja1105_info sja1105q_info = {
 	.reset_cmd		= sja1105pqrs_reset_cmd,
 	.fdb_add_cmd		= sja1105pqrs_fdb_add,
 	.fdb_del_cmd		= sja1105pqrs_fdb_del,
-	.ptp_cmd		= sja1105pqrs_ptp_cmd,
+	.ptp_cmd_packing	= sja1105pqrs_ptp_cmd_packing,
 	.regs			= &sja1105pqrs_regs,
 	.name			= "SJA1105Q",
 };
@@ -619,7 +565,7 @@ struct sja1105_info sja1105r_info = {
 	.reset_cmd		= sja1105pqrs_reset_cmd,
 	.fdb_add_cmd		= sja1105pqrs_fdb_add,
 	.fdb_del_cmd		= sja1105pqrs_fdb_del,
-	.ptp_cmd		= sja1105pqrs_ptp_cmd,
+	.ptp_cmd_packing	= sja1105pqrs_ptp_cmd_packing,
 	.regs			= &sja1105pqrs_regs,
 	.name			= "SJA1105R",
 };
@@ -635,6 +581,6 @@ struct sja1105_info sja1105s_info = {
 	.reset_cmd		= sja1105pqrs_reset_cmd,
 	.fdb_add_cmd		= sja1105pqrs_fdb_add,
 	.fdb_del_cmd		= sja1105pqrs_fdb_del,
-	.ptp_cmd		= sja1105pqrs_ptp_cmd,
+	.ptp_cmd_packing	= sja1105pqrs_ptp_cmd_packing,
 	.name			= "SJA1105S",
 };

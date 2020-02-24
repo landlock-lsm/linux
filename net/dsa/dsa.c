@@ -331,6 +331,91 @@ int call_dsa_notifiers(unsigned long val, struct net_device *dev,
 }
 EXPORT_SYMBOL_GPL(call_dsa_notifiers);
 
+int dsa_devlink_param_get(struct devlink *dl, u32 id,
+			  struct devlink_param_gset_ctx *ctx)
+{
+	struct dsa_devlink_priv *dl_priv;
+	struct dsa_switch *ds;
+
+	dl_priv = devlink_priv(dl);
+	ds = dl_priv->ds;
+
+	if (!ds->ops->devlink_param_get)
+		return -EOPNOTSUPP;
+
+	return ds->ops->devlink_param_get(ds, id, ctx);
+}
+EXPORT_SYMBOL_GPL(dsa_devlink_param_get);
+
+int dsa_devlink_param_set(struct devlink *dl, u32 id,
+			  struct devlink_param_gset_ctx *ctx)
+{
+	struct dsa_devlink_priv *dl_priv;
+	struct dsa_switch *ds;
+
+	dl_priv = devlink_priv(dl);
+	ds = dl_priv->ds;
+
+	if (!ds->ops->devlink_param_set)
+		return -EOPNOTSUPP;
+
+	return ds->ops->devlink_param_set(ds, id, ctx);
+}
+EXPORT_SYMBOL_GPL(dsa_devlink_param_set);
+
+int dsa_devlink_params_register(struct dsa_switch *ds,
+				const struct devlink_param *params,
+				size_t params_count)
+{
+	return devlink_params_register(ds->devlink, params, params_count);
+}
+EXPORT_SYMBOL_GPL(dsa_devlink_params_register);
+
+void dsa_devlink_params_unregister(struct dsa_switch *ds,
+				   const struct devlink_param *params,
+				   size_t params_count)
+{
+	devlink_params_unregister(ds->devlink, params, params_count);
+}
+EXPORT_SYMBOL_GPL(dsa_devlink_params_unregister);
+
+int dsa_devlink_resource_register(struct dsa_switch *ds,
+				  const char *resource_name,
+				  u64 resource_size,
+				  u64 resource_id,
+				  u64 parent_resource_id,
+				  const struct devlink_resource_size_params *size_params)
+{
+	return devlink_resource_register(ds->devlink, resource_name,
+					 resource_size, resource_id,
+					 parent_resource_id,
+					 size_params);
+}
+EXPORT_SYMBOL_GPL(dsa_devlink_resource_register);
+
+void dsa_devlink_resources_unregister(struct dsa_switch *ds)
+{
+	devlink_resources_unregister(ds->devlink, NULL);
+}
+EXPORT_SYMBOL_GPL(dsa_devlink_resources_unregister);
+
+void dsa_devlink_resource_occ_get_register(struct dsa_switch *ds,
+					   u64 resource_id,
+					   devlink_resource_occ_get_t *occ_get,
+					   void *occ_get_priv)
+{
+	return devlink_resource_occ_get_register(ds->devlink, resource_id,
+						 occ_get, occ_get_priv);
+}
+EXPORT_SYMBOL_GPL(dsa_devlink_resource_occ_get_register);
+
+void dsa_devlink_resource_occ_get_unregister(struct dsa_switch *ds,
+					     u64 resource_id)
+{
+	devlink_resource_occ_get_unregister(ds->devlink, resource_id);
+}
+EXPORT_SYMBOL_GPL(dsa_devlink_resource_occ_get_unregister);
+
 static int __init dsa_init_module(void)
 {
 	int rc;

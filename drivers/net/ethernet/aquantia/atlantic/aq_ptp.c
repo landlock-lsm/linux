@@ -533,7 +533,7 @@ void aq_ptp_tx_hwtstamp(struct aq_nic_s *aq_nic, u64 timestamp)
 	struct skb_shared_hwtstamps hwtstamp;
 
 	if (!skb) {
-		netdev_err(aq_nic->ndev, "have timestamp but tx_queus empty\n");
+		netdev_err(aq_nic->ndev, "have timestamp but tx_queues empty\n");
 		return;
 	}
 
@@ -678,6 +678,8 @@ static int aq_ptp_poll(struct napi_struct *napi, int budget)
 
 		err = aq_nic->aq_hw_ops->hw_ring_hwts_rx_fill(aq_nic->aq_hw,
 							      &aq_ptp->hwts_rx);
+		if (err < 0)
+			goto err_exit;
 
 		was_cleaned = true;
 	}
@@ -713,7 +715,7 @@ static int aq_ptp_poll(struct napi_struct *napi, int budget)
 	if (work_done < budget) {
 		napi_complete_done(napi, work_done);
 		aq_nic->aq_hw_ops->hw_irq_enable(aq_nic->aq_hw,
-					1 << aq_ptp->ptp_ring_param.vec_idx);
+					BIT_ULL(aq_ptp->ptp_ring_param.vec_idx));
 	}
 
 err_exit:
@@ -1055,7 +1057,7 @@ static struct ptp_clock_info aq_ptp_clock = {
 		ptp_offset[__idx].ingress = (__ingress); } \
 		while (0)
 
-static void aq_ptp_offset_init_from_fw(const struct hw_aq_ptp_offset *offsets)
+static void aq_ptp_offset_init_from_fw(const struct hw_atl_ptp_offset *offsets)
 {
 	int i;
 
@@ -1096,7 +1098,7 @@ static void aq_ptp_offset_init_from_fw(const struct hw_aq_ptp_offset *offsets)
 	}
 }
 
-static void aq_ptp_offset_init(const struct hw_aq_ptp_offset *offsets)
+static void aq_ptp_offset_init(const struct hw_atl_ptp_offset *offsets)
 {
 	memset(ptp_offset, 0, sizeof(ptp_offset));
 
@@ -1104,7 +1106,7 @@ static void aq_ptp_offset_init(const struct hw_aq_ptp_offset *offsets)
 }
 
 static void aq_ptp_gpio_init(struct ptp_clock_info *info,
-			     struct hw_aq_info *hw_info)
+			     struct hw_atl_info *hw_info)
 {
 	struct ptp_pin_desc pin_desc[MAX_PTP_GPIO_COUNT];
 	u32 extts_pin_cnt = 0;
@@ -1205,7 +1207,7 @@ int aq_ptp_init(struct aq_nic_s *aq_nic, unsigned int idx_vec)
 	aq_ptp->ptp_info = aq_ptp_clock;
 	aq_ptp_gpio_init(&aq_ptp->ptp_info, &mbox.info);
 	clock = ptp_clock_register(&aq_ptp->ptp_info, &aq_nic->ndev->dev);
-	if (!clock || IS_ERR(clock)) {
+	if (IS_ERR(clock)) {
 		netdev_err(aq_nic->ndev, "ptp_clock_register failed\n");
 		err = PTR_ERR(clock);
 		goto err_exit;
@@ -1375,7 +1377,7 @@ static int aq_ptp_check_sync1588(struct aq_ptp_s *aq_ptp)
 	return 0;
 }
 
-void aq_ptp_poll_sync_work_cb(struct work_struct *w)
+static void aq_ptp_poll_sync_work_cb(struct work_struct *w)
 {
 	struct delayed_work *dw = to_delayed_work(w);
 	struct aq_ptp_s *aq_ptp = container_of(dw, struct aq_ptp_s, poll_sync);

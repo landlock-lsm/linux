@@ -1,48 +1,40 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Landlock helpers
+ * Landlock test helpers
  *
- * Copyright © 2017-2019 Mickaël Salaün <mic@digikod.net>
- * Copyright © 2019 ANSSI
+ * Copyright © 2017-2020 Mickaël Salaün <mic@digikod.net>
+ * Copyright © 2019-2020 ANSSI
  */
 
-#include <bpf/bpf.h>
 #include <errno.h>
-#include <linux/filter.h>
-#include <linux/landlock.h>
-#include <linux/seccomp.h>
-#include <sys/prctl.h>
 #include <sys/syscall.h>
 
 #include "../kselftest_harness.h"
-#include "../../../../samples/bpf/bpf_load.h"
 
-#ifndef SECCOMP_PREPEND_LANDLOCK_PROG
-#define SECCOMP_PREPEND_LANDLOCK_PROG	4
-#endif
-
-#ifndef seccomp
-static int __attribute__((unused)) seccomp(unsigned int op, unsigned int flags,
-		void *args)
+#ifndef landlock
+static inline int landlock(unsigned int command, unsigned int options,
+		size_t attr_size, void *attr_ptr)
 {
 	errno = 0;
-	return syscall(__NR_seccomp, op, flags, args);
+	return syscall(__NR_landlock, command, options, attr_size, attr_ptr, 0,
+			NULL);
 }
 #endif
 
-static int __attribute__((unused)) ll_bpf_load_program(
-		const struct bpf_insn *bpf_insns, size_t insns_len,
-		char *log_buf, size_t log_buf_sz,
-		const enum bpf_attach_type attach_type)
-{
-	struct bpf_load_program_attr load_attr;
+FIXTURE(ruleset_rw) {
+	struct landlock_attr_ruleset attr_ruleset;
+	int ruleset_fd;
+};
 
-	memset(&load_attr, 0, sizeof(struct bpf_load_program_attr));
-	load_attr.prog_type = BPF_PROG_TYPE_LANDLOCK_HOOK;
-	load_attr.expected_attach_type = attach_type;
-	load_attr.insns = bpf_insns;
-	load_attr.insns_cnt = insns_len / sizeof(struct bpf_insn);
-	load_attr.license = "GPL";
+FIXTURE_SETUP(ruleset_rw) {
+	self->attr_ruleset.handled_access_fs = LANDLOCK_ACCESS_FS_READ |
+		LANDLOCK_ACCESS_FS_WRITE;
+	self->ruleset_fd = landlock(LANDLOCK_CMD_CREATE_RULESET,
+			LANDLOCK_OPT_CREATE_RULESET,
+			sizeof(self->attr_ruleset), &self->attr_ruleset);
+	ASSERT_LE(0, self->ruleset_fd);
+}
 
-	return bpf_load_program_xattr(&load_attr, log_buf, log_buf_sz);
+FIXTURE_TEARDOWN(ruleset_rw) {
+	ASSERT_EQ(0, close(self->ruleset_fd));
 }

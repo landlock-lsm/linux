@@ -25,6 +25,9 @@
 #ifndef __always_inline
 #define __always_inline __attribute__((always_inline))
 #endif
+#ifndef __weak
+#define __weak __attribute__((weak))
+#endif
 
 /*
  * Helper structure used by eBPF C program
@@ -37,5 +40,19 @@ struct bpf_map_def {
 	unsigned int max_entries;
 	unsigned int map_flags;
 };
+
+enum libbpf_pin_type {
+	LIBBPF_PIN_NONE,
+	/* PIN_BY_NAME: pin maps by name (in /sys/fs/bpf by default) */
+	LIBBPF_PIN_BY_NAME,
+};
+
+enum libbpf_tristate {
+	TRI_NO = 0,
+	TRI_YES = 1,
+	TRI_MODULE = 2,
+};
+
+#define __kconfig __attribute__((section(".kconfig")))
 
 #endif

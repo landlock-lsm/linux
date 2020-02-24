@@ -158,8 +158,6 @@ class HeaderParser(object):
                 break
 
         self.reader.close()
-        print('Parsed description of %d helper function(s)' % len(self.helpers),
-              file=sys.stderr)
 
 ###############################################################################
 
@@ -466,7 +464,6 @@ class PrinterHelpers(Printer):
             'const struct sk_buff': 'const struct __sk_buff',
             'struct sk_msg_buff': 'struct sk_msg_md',
             'struct xdp_buff': 'struct xdp_md',
-            'struct task_struct': 'void',
     }
 
     def print_header(self):

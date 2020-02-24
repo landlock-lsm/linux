@@ -9,17 +9,14 @@
 #ifndef _LINUX_LANDLOCK_H
 #define _LINUX_LANDLOCK_H
 
-#include <linux/errno.h>
+#include <linux/fs.h>
 
-#if defined(CONFIG_SECCOMP_FILTER) && defined(CONFIG_SECURITY_LANDLOCK)
-extern int landlock_seccomp_prepend_prog(unsigned int flags,
-		const int __user *user_bpf_fd);
-#else /* CONFIG_SECCOMP_FILTER && CONFIG_SECURITY_LANDLOCK */
-static inline int landlock_seccomp_prepend_prog(unsigned int flags,
-		const int __user *user_bpf_fd)
+#ifdef CONFIG_SECURITY_LANDLOCK
+extern void landlock_release_inodes(struct super_block *sb);
+#else
+static inline void landlock_release_inodes(struct super_block *sb)
 {
-		return -EINVAL;
 }
-#endif /* CONFIG_SECCOMP_FILTER && CONFIG_SECURITY_LANDLOCK */
+#endif
 
 #endif /* _LINUX_LANDLOCK_H */

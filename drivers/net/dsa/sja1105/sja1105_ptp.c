@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (c) 2019, Vladimir Oltean <olteanv@gmail.com>
  */
+#include <linux/spi/spi.h>
 #include "sja1105.h"
 
 /* The adjfine API clamps ppb between [-32,768,000, 32,768,000], and
@@ -82,6 +83,7 @@ static int sja1105_init_avb_params(struct sja1105_private *priv,
 static int sja1105_change_rxtstamping(struct sja1105_private *priv,
 				      bool on)
 {
+	struct sja1105_ptp_data *ptp_data = &priv->ptp_data;
 	struct sja1105_general_params_entry *general_params;
 	struct sja1105_table *table;
 	int rc;
@@ -100,8 +102,10 @@ static int sja1105_change_rxtstamping(struct sja1105_private *priv,
 		kfree_skb(priv->tagger_data.stampable_skb);
 		priv->tagger_data.stampable_skb = NULL;
 	}
+	ptp_cancel_worker_sync(ptp_data->clock);
+	skb_queue_purge(&ptp_data->skb_rxtstamp_queue);
 
-	return sja1105_static_config_reload(priv);
+	return sja1105_static_config_reload(priv, SJA1105_RX_HWTSTAMPING);
 }
 
 int sja1105_hwtstamp_set(struct dsa_switch *ds, int port, struct ifreq *ifr)
@@ -192,42 +196,54 @@ int sja1105_get_ts_info(struct dsa_switch *ds, int port,
 	return 0;
 }
 
-int sja1105et_ptp_cmd(const struct dsa_switch *ds,
-		      const struct sja1105_ptp_cmd *cmd)
+void sja1105et_ptp_cmd_packing(u8 *buf, struct sja1105_ptp_cmd *cmd,
+			       enum packing_op op)
 {
-	const struct sja1105_private *priv = ds->priv;
-	const struct sja1105_regs *regs = priv->info->regs;
 	const int size = SJA1105_SIZE_PTP_CMD;
-	u8 buf[SJA1105_SIZE_PTP_CMD] = {0};
 	/* No need to keep this as part of the structure */
 	u64 valid = 1;
 
-	sja1105_pack(buf, &valid,           31, 31, size);
-	sja1105_pack(buf, &cmd->resptp,      2,  2, size);
-	sja1105_pack(buf, &cmd->corrclk4ts,  1,  1, size);
-	sja1105_pack(buf, &cmd->ptpclkadd,   0,  0, size);
-
-	return sja1105_xfer_buf(priv, SPI_WRITE, regs->ptp_control, buf,
-				SJA1105_SIZE_PTP_CMD);
+	sja1105_packing(buf, &valid,           31, 31, size, op);
+	sja1105_packing(buf, &cmd->ptpstrtsch, 30, 30, size, op);
+	sja1105_packing(buf, &cmd->ptpstopsch, 29, 29, size, op);
+	sja1105_packing(buf, &cmd->resptp,      2,  2, size, op);
+	sja1105_packing(buf, &cmd->corrclk4ts,  1,  1, size, op);
+	sja1105_packing(buf, &cmd->ptpclkadd,   0,  0, size, op);
 }
 
-int sja1105pqrs_ptp_cmd(const struct dsa_switch *ds,
-			const struct sja1105_ptp_cmd *cmd)
+void sja1105pqrs_ptp_cmd_packing(u8 *buf, struct sja1105_ptp_cmd *cmd,
+				 enum packing_op op)
 {
-	const struct sja1105_private *priv = ds->priv;
-	const struct sja1105_regs *regs = priv->info->regs;
 	const int size = SJA1105_SIZE_PTP_CMD;
-	u8 buf[SJA1105_SIZE_PTP_CMD] = {0};
 	/* No need to keep this as part of the structure */
 	u64 valid = 1;
 
-	sja1105_pack(buf, &valid,           31, 31, size);
-	sja1105_pack(buf, &cmd->resptp,      3,  3, size);
-	sja1105_pack(buf, &cmd->corrclk4ts,  2,  2, size);
-	sja1105_pack(buf, &cmd->ptpclkadd,   0,  0, size);
+	sja1105_packing(buf, &valid,           31, 31, size, op);
+	sja1105_packing(buf, &cmd->ptpstrtsch, 30, 30, size, op);
+	sja1105_packing(buf, &cmd->ptpstopsch, 29, 29, size, op);
+	sja1105_packing(buf, &cmd->resptp,      3,  3, size, op);
+	sja1105_packing(buf, &cmd->corrclk4ts,  2,  2, size, op);
+	sja1105_packing(buf, &cmd->ptpclkadd,   0,  0, size, op);
+}
 
-	return sja1105_xfer_buf(priv, SPI_WRITE, regs->ptp_control, buf,
-				SJA1105_SIZE_PTP_CMD);
+int sja1105_ptp_commit(struct dsa_switch *ds, struct sja1105_ptp_cmd *cmd,
+		       sja1105_spi_rw_mode_t rw)
+{
+	const struct sja1105_private *priv = ds->priv;
+	const struct sja1105_regs *regs = priv->info->regs;
+	u8 buf[SJA1105_SIZE_PTP_CMD] = {0};
+	int rc;
+
+	if (rw == SPI_WRITE)
+		priv->info->ptp_cmd_packing(buf, cmd, PACK);
+
+	rc = sja1105_xfer_buf(priv, rw, regs->ptp_control, buf,
+			      SJA1105_SIZE_PTP_CMD);
+
+	if (rw == SPI_READ)
+		priv->info->ptp_cmd_packing(buf, cmd, UNPACK);
+
+	return rc;
 }
 
 /* The switch returns partial timestamps (24 bits for SJA1105 E/T, which wrap
@@ -335,42 +351,40 @@ static int sja1105_ptpegr_ts_poll(struct dsa_switch *ds, int port, u64 *ts)
 }
 
 /* Caller must hold ptp_data->lock */
-static int sja1105_ptpclkval_read(struct sja1105_private *priv, u64 *ticks)
+static int sja1105_ptpclkval_read(struct sja1105_private *priv, u64 *ticks,
+				  struct ptp_system_timestamp *ptp_sts)
 {
 	const struct sja1105_regs *regs = priv->info->regs;
 
-	return sja1105_xfer_u64(priv, SPI_READ, regs->ptpclkval, ticks);
+	return sja1105_xfer_u64(priv, SPI_READ, regs->ptpclkval, ticks,
+				ptp_sts);
 }
 
 /* Caller must hold ptp_data->lock */
-static int sja1105_ptpclkval_write(struct sja1105_private *priv, u64 ticks)
+static int sja1105_ptpclkval_write(struct sja1105_private *priv, u64 ticks,
+				   struct ptp_system_timestamp *ptp_sts)
 {
 	const struct sja1105_regs *regs = priv->info->regs;
 
-	return sja1105_xfer_u64(priv, SPI_WRITE, regs->ptpclkval, &ticks);
+	return sja1105_xfer_u64(priv, SPI_WRITE, regs->ptpclkval, &ticks,
+				ptp_sts);
 }
 
-#define rxtstamp_to_tagger(d) \
-	container_of((d), struct sja1105_tagger_data, rxtstamp_work)
-#define tagger_to_sja1105(d) \
-	container_of((d), struct sja1105_private, tagger_data)
-
-static void sja1105_rxtstamp_work(struct work_struct *work)
+static long sja1105_rxtstamp_work(struct ptp_clock_info *ptp)
 {
-	struct sja1105_tagger_data *tagger_data = rxtstamp_to_tagger(work);
-	struct sja1105_private *priv = tagger_to_sja1105(tagger_data);
-	struct sja1105_ptp_data *ptp_data = &priv->ptp_data;
+	struct sja1105_ptp_data *ptp_data = ptp_caps_to_data(ptp);
+	struct sja1105_private *priv = ptp_data_to_sja1105(ptp_data);
 	struct dsa_switch *ds = priv->ds;
 	struct sk_buff *skb;
 
 	mutex_lock(&ptp_data->lock);
 
-	while ((skb = skb_dequeue(&tagger_data->skb_rxtstamp_queue)) != NULL) {
+	while ((skb = skb_dequeue(&ptp_data->skb_rxtstamp_queue)) != NULL) {
 		struct skb_shared_hwtstamps *shwt = skb_hwtstamps(skb);
 		u64 ticks, ts;
 		int rc;
 
-		rc = sja1105_ptpclkval_read(priv, &ticks);
+		rc = sja1105_ptpclkval_read(priv, &ticks, NULL);
 		if (rc < 0) {
 			dev_err(ds->dev, "Failed to read PTP clock: %d\n", rc);
 			kfree_skb(skb);
@@ -387,6 +401,9 @@ static void sja1105_rxtstamp_work(struct work_struct *work)
 	}
 
 	mutex_unlock(&ptp_data->lock);
+
+	/* Don't restart */
+	return -1;
 }
 
 /* Called from dsa_skb_defer_rx_timestamp */
@@ -394,16 +411,16 @@ bool sja1105_port_rxtstamp(struct dsa_switch *ds, int port,
 			   struct sk_buff *skb, unsigned int type)
 {
 	struct sja1105_private *priv = ds->priv;
-	struct sja1105_tagger_data *tagger_data = &priv->tagger_data;
+	struct sja1105_ptp_data *ptp_data = &priv->ptp_data;
 
-	if (!test_bit(SJA1105_HWTS_RX_EN, &tagger_data->state))
+	if (!test_bit(SJA1105_HWTS_RX_EN, &priv->tagger_data.state))
 		return false;
 
 	/* We need to read the full PTP clock to reconstruct the Rx
 	 * timestamp. For that we need a sleepable context.
 	 */
-	skb_queue_tail(&tagger_data->skb_rxtstamp_queue, skb);
-	schedule_work(&tagger_data->rxtstamp_work);
+	skb_queue_tail(&ptp_data->skb_rxtstamp_queue, skb);
+	ptp_schedule_worker(ptp_data->clock, 0);
 	return true;
 }
 
@@ -423,7 +440,7 @@ bool sja1105_port_txtstamp(struct dsa_switch *ds, int port,
 	return true;
 }
 
-int sja1105_ptp_reset(struct dsa_switch *ds)
+static int sja1105_ptp_reset(struct dsa_switch *ds)
 {
 	struct sja1105_private *priv = ds->priv;
 	struct sja1105_ptp_data *ptp_data = &priv->ptp_data;
@@ -433,26 +450,49 @@ int sja1105_ptp_reset(struct dsa_switch *ds)
 	mutex_lock(&ptp_data->lock);
 
 	cmd.resptp = 1;
+
 	dev_dbg(ds->dev, "Resetting PTP clock\n");
-	rc = priv->info->ptp_cmd(ds, &cmd);
+	rc = sja1105_ptp_commit(ds, &cmd, SPI_WRITE);
+
+	sja1105_tas_clockstep(priv->ds);
 
 	mutex_unlock(&ptp_data->lock);
 
 	return rc;
 }
 
-static int sja1105_ptp_gettime(struct ptp_clock_info *ptp,
-			       struct timespec64 *ts)
+/* Caller must hold ptp_data->lock */
+int __sja1105_ptp_gettimex(struct dsa_switch *ds, u64 *ns,
+			   struct ptp_system_timestamp *ptp_sts)
+{
+	struct sja1105_private *priv = ds->priv;
+	u64 ticks;
+	int rc;
+
+	rc = sja1105_ptpclkval_read(priv, &ticks, ptp_sts);
+	if (rc < 0) {
+		dev_err(ds->dev, "Failed to read PTP clock: %d\n", rc);
+		return rc;
+	}
+
+	*ns = sja1105_ticks_to_ns(ticks);
+
+	return 0;
+}
+
+static int sja1105_ptp_gettimex(struct ptp_clock_info *ptp,
+				struct timespec64 *ts,
+				struct ptp_system_timestamp *ptp_sts)
 {
 	struct sja1105_ptp_data *ptp_data = ptp_caps_to_data(ptp);
 	struct sja1105_private *priv = ptp_data_to_sja1105(ptp_data);
-	u64 ticks = 0;
+	u64 now = 0;
 	int rc;
 
 	mutex_lock(&ptp_data->lock);
 
-	rc = sja1105_ptpclkval_read(priv, &ticks);
-	*ts = ns_to_timespec64(sja1105_ticks_to_ns(ticks));
+	rc = __sja1105_ptp_gettimex(priv->ds, &now, ptp_sts);
+	*ts = ns_to_timespec64(now);
 
 	mutex_unlock(&ptp_data->lock);
 
@@ -470,28 +510,42 @@ static int sja1105_ptp_mode_set(struct sja1105_private *priv,
 
 	ptp_data->cmd.ptpclkadd = mode;
 
-	return priv->info->ptp_cmd(priv->ds, &ptp_data->cmd);
+	return sja1105_ptp_commit(priv->ds, &ptp_data->cmd, SPI_WRITE);
 }
 
 /* Write to PTPCLKVAL while PTPCLKADD is 0 */
+int __sja1105_ptp_settime(struct dsa_switch *ds, u64 ns,
+			  struct ptp_system_timestamp *ptp_sts)
+{
+	struct sja1105_private *priv = ds->priv;
+	u64 ticks = ns_to_sja1105_ticks(ns);
+	int rc;
+
+	rc = sja1105_ptp_mode_set(priv, PTP_SET_MODE);
+	if (rc < 0) {
+		dev_err(priv->ds->dev, "Failed to put PTPCLK in set mode\n");
+		return rc;
+	}
+
+	rc = sja1105_ptpclkval_write(priv, ticks, ptp_sts);
+
+	sja1105_tas_clockstep(priv->ds);
+
+	return rc;
+}
+
 static int sja1105_ptp_settime(struct ptp_clock_info *ptp,
 			       const struct timespec64 *ts)
 {
 	struct sja1105_ptp_data *ptp_data = ptp_caps_to_data(ptp);
 	struct sja1105_private *priv = ptp_data_to_sja1105(ptp_data);
-	u64 ticks = ns_to_sja1105_ticks(timespec64_to_ns(ts));
+	u64 ns = timespec64_to_ns(ts);
 	int rc;
 
 	mutex_lock(&ptp_data->lock);
 
-	rc = sja1105_ptp_mode_set(priv, PTP_SET_MODE);
-	if (rc < 0) {
-		dev_err(priv->ds->dev, "Failed to put PTPCLK in set mode\n");
-		goto out;
-	}
+	rc = __sja1105_ptp_settime(priv->ds, ns, NULL);
 
-	rc = sja1105_ptpclkval_write(priv, ticks);
-out:
 	mutex_unlock(&ptp_data->lock);
 
 	return rc;
@@ -516,7 +570,10 @@ static int sja1105_ptp_adjfine(struct ptp_clock_info *ptp, long scaled_ppm)
 
 	mutex_lock(&ptp_data->lock);
 
-	rc = sja1105_xfer_u32(priv, SPI_WRITE, regs->ptpclkrate, &clkrate32);
+	rc = sja1105_xfer_u32(priv, SPI_WRITE, regs->ptpclkrate, &clkrate32,
+			      NULL);
+
+	sja1105_tas_adjfreq(priv->ds);
 
 	mutex_unlock(&ptp_data->lock);
 
@@ -524,24 +581,35 @@ static int sja1105_ptp_adjfine(struct ptp_clock_info *ptp, long scaled_ppm)
 }
 
 /* Write to PTPCLKVAL while PTPCLKADD is 1 */
-static int sja1105_ptp_adjtime(struct ptp_clock_info *ptp, s64 delta)
+int __sja1105_ptp_adjtime(struct dsa_switch *ds, s64 delta)
 {
-	struct sja1105_ptp_data *ptp_data = ptp_caps_to_data(ptp);
-	struct sja1105_private *priv = ptp_data_to_sja1105(ptp_data);
+	struct sja1105_private *priv = ds->priv;
 	s64 ticks = ns_to_sja1105_ticks(delta);
 	int rc;
-
-	mutex_lock(&ptp_data->lock);
 
 	rc = sja1105_ptp_mode_set(priv, PTP_ADD_MODE);
 	if (rc < 0) {
 		dev_err(priv->ds->dev, "Failed to put PTPCLK in add mode\n");
-		goto out;
+		return rc;
 	}
 
-	rc = sja1105_ptpclkval_write(priv, ticks);
+	rc = sja1105_ptpclkval_write(priv, ticks, NULL);
 
-out:
+	sja1105_tas_clockstep(priv->ds);
+
+	return rc;
+}
+
+static int sja1105_ptp_adjtime(struct ptp_clock_info *ptp, s64 delta)
+{
+	struct sja1105_ptp_data *ptp_data = ptp_caps_to_data(ptp);
+	struct sja1105_private *priv = ptp_data_to_sja1105(ptp_data);
+	int rc;
+
+	mutex_lock(&ptp_data->lock);
+
+	rc = __sja1105_ptp_adjtime(priv->ds, delta);
+
 	mutex_unlock(&ptp_data->lock);
 
 	return rc;
@@ -558,13 +626,13 @@ int sja1105_ptp_clock_register(struct dsa_switch *ds)
 		.name		= "SJA1105 PHC",
 		.adjfine	= sja1105_ptp_adjfine,
 		.adjtime	= sja1105_ptp_adjtime,
-		.gettime64	= sja1105_ptp_gettime,
+		.gettimex64	= sja1105_ptp_gettimex,
 		.settime64	= sja1105_ptp_settime,
+		.do_aux_work	= sja1105_rxtstamp_work,
 		.max_adj	= SJA1105_MAX_ADJ_PPB,
 	};
 
-	skb_queue_head_init(&tagger_data->skb_rxtstamp_queue);
-	INIT_WORK(&tagger_data->rxtstamp_work, sja1105_rxtstamp_work);
+	skb_queue_head_init(&ptp_data->skb_rxtstamp_queue);
 	spin_lock_init(&tagger_data->meta_lock);
 
 	ptp_data->clock = ptp_clock_register(&ptp_data->caps, ds->dev);
@@ -585,13 +653,13 @@ void sja1105_ptp_clock_unregister(struct dsa_switch *ds)
 	if (IS_ERR_OR_NULL(ptp_data->clock))
 		return;
 
-	cancel_work_sync(&priv->tagger_data.rxtstamp_work);
-	skb_queue_purge(&priv->tagger_data.skb_rxtstamp_queue);
+	ptp_cancel_worker_sync(ptp_data->clock);
+	skb_queue_purge(&ptp_data->skb_rxtstamp_queue);
 	ptp_clock_unregister(ptp_data->clock);
 	ptp_data->clock = NULL;
 }
 
-void sja1105_ptp_txtstamp_skb(struct dsa_switch *ds, int slot,
+void sja1105_ptp_txtstamp_skb(struct dsa_switch *ds, int port,
 			      struct sk_buff *skb)
 {
 	struct sja1105_private *priv = ds->priv;
@@ -604,14 +672,14 @@ void sja1105_ptp_txtstamp_skb(struct dsa_switch *ds, int slot,
 
 	mutex_lock(&ptp_data->lock);
 
-	rc = sja1105_ptpclkval_read(priv, &ticks);
+	rc = sja1105_ptpclkval_read(priv, &ticks, NULL);
 	if (rc < 0) {
 		dev_err(ds->dev, "Failed to read PTP clock: %d\n", rc);
 		kfree_skb(skb);
 		goto out;
 	}
 
-	rc = sja1105_ptpegr_ts_poll(ds, slot, &ts);
+	rc = sja1105_ptpegr_ts_poll(ds, port, &ts);
 	if (rc < 0) {
 		dev_err(ds->dev, "timed out polling for tstamp\n");
 		kfree_skb(skb);

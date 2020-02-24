@@ -204,6 +204,18 @@ __be32 fib_result_prefsrc(struct net *net, struct fib_result *res);
 #define FIB_RES_DEV(res)	(FIB_RES_NHC(res)->nhc_dev)
 #define FIB_RES_OIF(res)	(FIB_RES_NHC(res)->nhc_oif)
 
+struct fib_rt_info {
+	struct fib_info		*fi;
+	u32			tb_id;
+	__be32			dst;
+	int			dst_len;
+	u8			tos;
+	u8			type;
+	u8			offload:1,
+				trap:1,
+				unused:6;
+};
+
 struct fib_entry_notifier_info {
 	struct fib_notifier_info info; /* must be first */
 	u32 dst;
@@ -311,6 +323,11 @@ static inline int fib_lookup(struct net *net, const struct flowi4 *flp,
 	return err;
 }
 
+static inline bool fib4_has_custom_rules(const struct net *net)
+{
+	return false;
+}
+
 static inline bool fib4_rule_default(const struct fib_rule *rule)
 {
 	return true;
@@ -376,6 +393,11 @@ out:
 	rcu_read_unlock();
 
 	return err;
+}
+
+static inline bool fib4_has_custom_rules(const struct net *net)
+{
+	return net->ipv4.fib_has_custom_rules;
 }
 
 bool fib4_rule_default(const struct fib_rule *rule);
@@ -454,6 +476,7 @@ int fib_nh_common_init(struct fib_nh_common *nhc, struct nlattr *fc_encap,
 void fib_nh_common_release(struct fib_nh_common *nhc);
 
 /* Exported by fib_trie.c */
+void fib_alias_hw_flags_set(struct net *net, const struct fib_rt_info *fri);
 void fib_trie_init(void);
 struct fib_table *fib_trie_table(u32 id, struct fib_table *alias);
 

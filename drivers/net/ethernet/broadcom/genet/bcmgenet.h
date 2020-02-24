@@ -144,6 +144,8 @@ struct bcmgenet_mib_counters {
 	u32	alloc_rx_buff_failed;
 	u32	rx_dma_failed;
 	u32	tx_dma_failed;
+	u32	tx_realloc_tsb;
+	u32	tx_realloc_tsb_failed;
 };
 
 #define UMAC_HD_BKP_CTRL		0x004
@@ -251,6 +253,7 @@ struct bcmgenet_mib_counters {
 #define RBUF_CHK_CTRL			0x14
 #define  RBUF_RXCHK_EN			(1 << 0)
 #define  RBUF_SKIP_FCS			(1 << 4)
+#define  RBUF_L3_PARSE_DIS		(1 << 5)
 
 #define RBUF_ENERGY_CTRL		0x9c
 #define  RBUF_EEE_EN			(1 << 0)
@@ -663,7 +666,7 @@ struct bcmgenet_priv {
 	bool desc_rxchk_en;
 	bool crc_fwd_en;
 
-	unsigned int dma_rx_chk_bit;
+	u32 dma_max_burst_length;
 
 	u32 msg_enable;
 
@@ -720,8 +723,8 @@ GENET_IO_MACRO(rbuf, GENET_RBUF_OFF);
 
 /* MDIO routines */
 int bcmgenet_mii_init(struct net_device *dev);
-int bcmgenet_mii_connect(struct net_device *dev);
 int bcmgenet_mii_config(struct net_device *dev, bool init);
+int bcmgenet_mii_probe(struct net_device *dev);
 void bcmgenet_mii_exit(struct net_device *dev);
 void bcmgenet_phy_power_set(struct net_device *dev, bool enable);
 void bcmgenet_mii_setup(struct net_device *dev);

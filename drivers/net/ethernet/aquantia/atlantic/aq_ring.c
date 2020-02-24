@@ -30,8 +30,8 @@ static int aq_get_rxpage(struct aq_rxpage *rxpage, unsigned int order,
 			 struct device *dev)
 {
 	struct page *page;
-	dma_addr_t daddr;
 	int ret = -ENOMEM;
+	dma_addr_t daddr;
 
 	page = dev_alloc_pages(order);
 	if (unlikely(!page))
@@ -118,6 +118,7 @@ err_exit:
 		aq_ring_free(self);
 		self = NULL;
 	}
+
 	return self;
 }
 
@@ -144,6 +145,7 @@ err_exit:
 		aq_ring_free(self);
 		self = NULL;
 	}
+
 	return self;
 }
 
@@ -175,6 +177,7 @@ err_exit:
 		aq_ring_free(self);
 		self = NULL;
 	}
+
 	return self;
 }
 
@@ -207,6 +210,7 @@ int aq_ring_init(struct aq_ring_s *self)
 	self->hw_head = 0;
 	self->sw_head = 0;
 	self->sw_tail = 0;
+
 	return 0;
 }
 
@@ -268,9 +272,12 @@ bool aq_ring_tx_clean(struct aq_ring_s *self)
 			}
 		}
 
-		if (unlikely(buff->is_eop))
-			dev_kfree_skb_any(buff->skb);
+		if (unlikely(buff->is_eop)) {
+			++self->stats.rx.packets;
+			self->stats.tx.bytes += buff->skb->len;
 
+			dev_kfree_skb_any(buff->skb);
+		}
 		buff->pa = 0U;
 		buff->eop_index = 0xffffU;
 		self->sw_head = aq_ring_next_dx(self, self->sw_head);
@@ -347,7 +354,8 @@ int aq_ring_rx_clean(struct aq_ring_s *self,
 				err = 0;
 				goto err_exit;
 			}
-			if (buff->is_error || buff->is_cso_err) {
+			if (buff->is_error ||
+			    (buff->is_lro && buff->is_cso_err)) {
 				buff_ = buff;
 				do {
 					next_ = buff_->next,

@@ -8,7 +8,7 @@
 #include <string.h>
 
 /* defined in test_progs.h */
-struct test_env env;
+struct test_env env = {};
 
 struct prog_test_def {
 	const char *test_name;
@@ -29,10 +29,19 @@ struct prog_test_def {
 
 static bool should_run(struct test_selector *sel, int num, const char *name)
 {
-	if (sel->name && sel->name[0] && !strstr(name, sel->name))
-		return false;
+	int i;
 
-	if (!sel->num_set)
+	for (i = 0; i < sel->blacklist.cnt; i++) {
+		if (strstr(name, sel->blacklist.strs[i]))
+			return false;
+	}
+
+	for (i = 0; i < sel->whitelist.cnt; i++) {
+		if (strstr(name, sel->whitelist.strs[i]))
+			return true;
+	}
+
+	if (!sel->whitelist.cnt && !sel->num_set)
 		return true;
 
 	return num < sel->num_set_len && sel->num_set[num];
@@ -45,7 +54,7 @@ static void dump_test_log(const struct prog_test_def *test, bool failed)
 
 	fflush(stdout); /* exports env.log_buf & env.log_cnt */
 
-	if (env.verbose || test->force_log || failed) {
+	if (env.verbosity > VERBOSE_NONE || test->force_log || failed) {
 		if (env.log_cnt) {
 			env.log_buf[env.log_cnt] = '\0';
 			fprintf(env.stdout, "%s", env.log_buf);
@@ -334,6 +343,7 @@ const char argp_program_doc[] = "BPF selftests test runner";
 enum ARG_KEYS {
 	ARG_TEST_NUM = 'n',
 	ARG_TEST_NAME = 't',
+	ARG_TEST_NAME_BLACKLIST = 'b',
 	ARG_VERIFIER_STATS = 's',
 	ARG_VERBOSE = 'v',
 };
@@ -341,22 +351,59 @@ enum ARG_KEYS {
 static const struct argp_option opts[] = {
 	{ "num", ARG_TEST_NUM, "NUM", 0,
 	  "Run test number NUM only " },
-	{ "name", ARG_TEST_NAME, "NAME", 0,
-	  "Run tests with names containing NAME" },
+	{ "name", ARG_TEST_NAME, "NAMES", 0,
+	  "Run tests with names containing any string from NAMES list" },
+	{ "name-blacklist", ARG_TEST_NAME_BLACKLIST, "NAMES", 0,
+	  "Don't run tests with names containing any string from NAMES list" },
 	{ "verifier-stats", ARG_VERIFIER_STATS, NULL, 0,
 	  "Output verifier statistics", },
 	{ "verbose", ARG_VERBOSE, "LEVEL", OPTION_ARG_OPTIONAL,
-	  "Verbose output (use -vv for extra verbose output)" },
+	  "Verbose output (use -vv or -vvv for progressively verbose output)" },
 	{},
 };
 
 static int libbpf_print_fn(enum libbpf_print_level level,
 			   const char *format, va_list args)
 {
-	if (!env.very_verbose && level == LIBBPF_DEBUG)
+	if (env.verbosity < VERBOSE_VERY && level == LIBBPF_DEBUG)
 		return 0;
 	vprintf(format, args);
 	return 0;
+}
+
+static int parse_str_list(const char *s, struct str_set *set)
+{
+	char *input, *state = NULL, *next, **tmp, **strs = NULL;
+	int cnt = 0;
+
+	input = strdup(s);
+	if (!input)
+		return -ENOMEM;
+
+	set->cnt = 0;
+	set->strs = NULL;
+
+	while ((next = strtok_r(state ? NULL : input, ",", &state))) {
+		tmp = realloc(strs, sizeof(*strs) * (cnt + 1));
+		if (!tmp)
+			goto err;
+		strs = tmp;
+
+		strs[cnt] = strdup(next);
+		if (!strs[cnt])
+			goto err;
+
+		cnt++;
+	}
+
+	set->cnt = cnt;
+	set->strs = (const char **)strs;
+	free(input);
+	return 0;
+err:
+	free(strs);
+	free(input);
+	return -ENOMEM;
 }
 
 int parse_num_list(const char *s, struct test_selector *sel)
@@ -419,6 +466,8 @@ int parse_num_list(const char *s, struct test_selector *sel)
 	return 0;
 }
 
+extern int extra_prog_load_log_flags;
+
 static error_t parse_arg(int key, char *arg, struct argp_state *state)
 {
 	struct test_env *env = state->input;
@@ -447,12 +496,24 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 
 		if (subtest_str) {
 			*subtest_str = '\0';
-			env->subtest_selector.name = strdup(subtest_str + 1);
-			if (!env->subtest_selector.name)
+			if (parse_str_list(subtest_str + 1,
+					   &env->subtest_selector.whitelist))
 				return -ENOMEM;
 		}
-		env->test_selector.name = strdup(arg);
-		if (!env->test_selector.name)
+		if (parse_str_list(arg, &env->test_selector.whitelist))
+			return -ENOMEM;
+		break;
+	}
+	case ARG_TEST_NAME_BLACKLIST: {
+		char *subtest_str = strchr(arg, '/');
+
+		if (subtest_str) {
+			*subtest_str = '\0';
+			if (parse_str_list(subtest_str + 1,
+					   &env->subtest_selector.blacklist))
+				return -ENOMEM;
+		}
+		if (parse_str_list(arg, &env->test_selector.blacklist))
 			return -ENOMEM;
 		break;
 	}
@@ -460,9 +521,14 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		env->verifier_stats = true;
 		break;
 	case ARG_VERBOSE:
+		env->verbosity = VERBOSE_NORMAL;
 		if (arg) {
 			if (strcmp(arg, "v") == 0) {
-				env->very_verbose = true;
+				env->verbosity = VERBOSE_VERY;
+				extra_prog_load_log_flags = 1;
+			} else if (strcmp(arg, "vv") == 0) {
+				env->verbosity = VERBOSE_SUPER;
+				extra_prog_load_log_flags = 2;
 			} else {
 				fprintf(stderr,
 					"Unrecognized verbosity setting ('%s'), only -v and -vv are supported\n",
@@ -470,7 +536,6 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 				return -EINVAL;
 			}
 		}
-		env->verbose = true;
 		break;
 	case ARGP_KEY_ARG:
 		argp_usage(state);
@@ -489,7 +554,7 @@ static void stdio_hijack(void)
 	env.stdout = stdout;
 	env.stderr = stderr;
 
-	if (env.verbose) {
+	if (env.verbosity > VERBOSE_NONE) {
 		/* nothing to do, output to stdout by default */
 		return;
 	}
@@ -611,7 +676,11 @@ int main(int argc, char **argv)
 	printf("Summary: %d/%d PASSED, %d SKIPPED, %d FAILED\n",
 	       env.succ_cnt, env.sub_succ_cnt, env.skip_cnt, env.fail_cnt);
 
+	free(env.test_selector.blacklist.strs);
+	free(env.test_selector.whitelist.strs);
 	free(env.test_selector.num_set);
+	free(env.subtest_selector.blacklist.strs);
+	free(env.subtest_selector.whitelist.strs);
 	free(env.subtest_selector.num_set);
 
 	return env.fail_cnt ? EXIT_FAILURE : EXIT_SUCCESS;

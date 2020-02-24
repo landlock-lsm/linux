@@ -730,6 +730,18 @@ static netdev_tx_t ftgmac100_hard_start_xmit(struct sk_buff *skb,
 	 */
 	nfrags = skb_shinfo(skb)->nr_frags;
 
+	/* Setup HW checksumming */
+	csum_vlan = 0;
+	if (skb->ip_summed == CHECKSUM_PARTIAL &&
+	    !ftgmac100_prep_tx_csum(skb, &csum_vlan))
+		goto drop;
+
+	/* Add VLAN tag */
+	if (skb_vlan_tag_present(skb)) {
+		csum_vlan |= FTGMAC100_TXDES1_INS_VLANTAG;
+		csum_vlan |= skb_vlan_tag_get(skb) & 0xffff;
+	}
+
 	/* Get header len */
 	len = skb_headlen(skb);
 
@@ -756,19 +768,6 @@ static netdev_tx_t ftgmac100_hard_start_xmit(struct sk_buff *skb,
 	if (nfrags == 0)
 		f_ctl_stat |= FTGMAC100_TXDES0_LTS;
 	txdes->txdes3 = cpu_to_le32(map);
-
-	/* Setup HW checksumming */
-	csum_vlan = 0;
-	if (skb->ip_summed == CHECKSUM_PARTIAL &&
-	    !ftgmac100_prep_tx_csum(skb, &csum_vlan))
-		goto drop;
-
-	/* Add VLAN tag */
-	if (skb_vlan_tag_present(skb)) {
-		csum_vlan |= FTGMAC100_TXDES1_INS_VLANTAG;
-		csum_vlan |= skb_vlan_tag_get(skb) & 0xffff;
-	}
-
 	txdes->txdes1 = cpu_to_le32(csum_vlan);
 
 	/* Next descriptor */
@@ -1537,16 +1536,7 @@ static int ftgmac100_stop(struct net_device *netdev)
 	return 0;
 }
 
-/* optional */
-static int ftgmac100_do_ioctl(struct net_device *netdev, struct ifreq *ifr, int cmd)
-{
-	if (!netdev->phydev)
-		return -ENXIO;
-
-	return phy_mii_ioctl(netdev->phydev, ifr, cmd);
-}
-
-static void ftgmac100_tx_timeout(struct net_device *netdev)
+static void ftgmac100_tx_timeout(struct net_device *netdev, unsigned int txqueue)
 {
 	struct ftgmac100 *priv = netdev_priv(netdev);
 
@@ -1598,7 +1588,7 @@ static const struct net_device_ops ftgmac100_netdev_ops = {
 	.ndo_start_xmit		= ftgmac100_hard_start_xmit,
 	.ndo_set_mac_address	= ftgmac100_set_mac_addr,
 	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_do_ioctl		= ftgmac100_do_ioctl,
+	.ndo_do_ioctl		= phy_do_ioctl,
 	.ndo_tx_timeout		= ftgmac100_tx_timeout,
 	.ndo_set_rx_mode	= ftgmac100_set_rx_mode,
 	.ndo_set_features	= ftgmac100_set_features,
@@ -1613,7 +1603,7 @@ static int ftgmac100_setup_mdio(struct net_device *netdev)
 {
 	struct ftgmac100 *priv = netdev_priv(netdev);
 	struct platform_device *pdev = to_platform_device(priv->dev);
-	int phy_intf = PHY_INTERFACE_MODE_RGMII;
+	phy_interface_t phy_intf = PHY_INTERFACE_MODE_RGMII;
 	struct device_node *np = pdev->dev.of_node;
 	int i, err = 0;
 	u32 reg;
@@ -1638,8 +1628,8 @@ static int ftgmac100_setup_mdio(struct net_device *netdev)
 	/* Get PHY mode from device-tree */
 	if (np) {
 		/* Default to RGMII. It's a gigabit part after all */
-		phy_intf = of_get_phy_mode(np);
-		if (phy_intf < 0)
+		err = of_get_phy_mode(np, &phy_intf);
+		if (err)
 			phy_intf = PHY_INTERFACE_MODE_RGMII;
 
 		/* Aspeed only supports these. I don't know about other IP
@@ -1859,7 +1849,7 @@ static int ftgmac100_probe(struct platform_device *pdev)
 		}
 
 		/* Indicate that we support PAUSE frames (see comment in
-		 * Documentation/networking/phy.txt)
+		 * Documentation/networking/phy.rst)
 		 */
 		phy_support_asym_pause(phy);
 

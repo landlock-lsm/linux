@@ -20,6 +20,11 @@
  */
 #define SJA1105_AGEING_TIME_MS(ms)	((ms) / 10)
 
+typedef enum {
+	SPI_READ = 0,
+	SPI_WRITE = 1,
+} sja1105_spi_rw_mode_t;
+
 #include "sja1105_tas.h"
 #include "sja1105_ptp.h"
 
@@ -35,6 +40,8 @@ struct sja1105_regs {
 	u64 ptp_control;
 	u64 ptpclkval;
 	u64 ptpclkrate;
+	u64 ptpclkcorp;
+	u64 ptpschtm;
 	u64 ptpegr_ts[SJA1105_NUM_PORTS];
 	u64 pad_mii_tx[SJA1105_NUM_PORTS];
 	u64 pad_mii_id[SJA1105_NUM_PORTS];
@@ -71,15 +78,15 @@ struct sja1105_info {
 	const struct sja1105_dynamic_table_ops *dyn_ops;
 	const struct sja1105_table_ops *static_ops;
 	const struct sja1105_regs *regs;
-	int (*ptp_cmd)(const struct dsa_switch *ds,
-		       const struct sja1105_ptp_cmd *cmd);
-	int (*reset_cmd)(const void *ctx, const void *data);
+	int (*reset_cmd)(struct dsa_switch *ds);
 	int (*setup_rgmii_delay)(const void *ctx, int port);
 	/* Prototypes from include/net/dsa.h */
 	int (*fdb_add_cmd)(struct dsa_switch *ds, int port,
 			   const unsigned char *addr, u16 vid);
 	int (*fdb_del_cmd)(struct dsa_switch *ds, int port,
 			   const unsigned char *addr, u16 vid);
+	void (*ptp_cmd_packing)(u8 *buf, struct sja1105_ptp_cmd *cmd,
+				enum packing_op op);
 	const char *name;
 };
 
@@ -109,22 +116,27 @@ struct sja1105_spi_message {
 	u64 address;
 };
 
-typedef enum {
-	SPI_READ = 0,
-	SPI_WRITE = 1,
-} sja1105_spi_rw_mode_t;
-
 /* From sja1105_main.c */
-int sja1105_static_config_reload(struct sja1105_private *priv);
+enum sja1105_reset_reason {
+	SJA1105_VLAN_FILTERING = 0,
+	SJA1105_RX_HWTSTAMPING,
+	SJA1105_AGEING_TIME,
+	SJA1105_SCHEDULING,
+};
+
+int sja1105_static_config_reload(struct sja1105_private *priv,
+				 enum sja1105_reset_reason reason);
 
 /* From sja1105_spi.c */
 int sja1105_xfer_buf(const struct sja1105_private *priv,
 		     sja1105_spi_rw_mode_t rw, u64 reg_addr,
 		     u8 *buf, size_t len);
 int sja1105_xfer_u32(const struct sja1105_private *priv,
-		     sja1105_spi_rw_mode_t rw, u64 reg_addr, u32 *value);
+		     sja1105_spi_rw_mode_t rw, u64 reg_addr, u32 *value,
+		     struct ptp_system_timestamp *ptp_sts);
 int sja1105_xfer_u64(const struct sja1105_private *priv,
-		     sja1105_spi_rw_mode_t rw, u64 reg_addr, u64 *value);
+		     sja1105_spi_rw_mode_t rw, u64 reg_addr, u64 *value,
+		     struct ptp_system_timestamp *ptp_sts);
 int sja1105_static_config_upload(struct sja1105_private *priv);
 int sja1105_inhibit_tx(const struct sja1105_private *priv,
 		       unsigned long port_bitmap, bool tx_inhibited);

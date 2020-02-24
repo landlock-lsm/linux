@@ -201,7 +201,7 @@ struct slib {
  * @scount: SBAL count
  * @sflags: whole SBAL flags
  * @length: length
- * @addr: address
+ * @addr: absolute data address
 */
 struct qdio_buffer_element {
 	u8 eflags;
@@ -211,7 +211,7 @@ struct qdio_buffer_element {
 	u8 scount;
 	u8 sflags;
 	u32 length;
-	void *addr;
+	u64 addr;
 } __attribute__ ((packed, aligned(16)));
 
 /**
@@ -227,7 +227,7 @@ struct qdio_buffer {
  * @sbal: absolute SBAL address
  */
 struct sl_element {
-	unsigned long sbal;
+	u64 sbal;
 } __attribute__ ((packed));
 
 /**
@@ -276,6 +276,7 @@ struct qdio_outbuf_state {
 #define CHSC_AC2_MULTI_BUFFER_AVAILABLE	0x0080
 #define CHSC_AC2_MULTI_BUFFER_ENABLED	0x0040
 #define CHSC_AC2_DATA_DIV_AVAILABLE	0x0010
+#define CHSC_AC2_SNIFFER_AVAILABLE	0x0008
 #define CHSC_AC2_DATA_DIV_ENABLED	0x0002
 
 #define CHSC_AC3_FORMAT2_CQ_AVAILABLE	0x8000

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0+
+/* SPDX-License-Identifier: GPL-2.0+ */
 // Copyright (c) 2016-2017 Hisilicon Limited.
 
 #ifndef __HNAE3_H
@@ -130,7 +130,6 @@ enum hnae3_module_type {
 	HNAE3_MODULE_TYPE_CR		= 0x04,
 	HNAE3_MODULE_TYPE_KR		= 0x05,
 	HNAE3_MODULE_TYPE_TP		= 0x06,
-
 };
 
 enum hnae3_fec_mode {
@@ -165,11 +164,7 @@ enum hnae3_reset_type {
 	HNAE3_IMP_RESET,
 	HNAE3_UNKNOWN_RESET,
 	HNAE3_NONE_RESET,
-};
-
-enum hnae3_flr_state {
-	HNAE3_FLR_DOWN,
-	HNAE3_FLR_DONE,
+	HNAE3_MAX_RESET,
 };
 
 enum hnae3_port_base_vlan_state {
@@ -576,7 +571,7 @@ struct hnae3_ae_algo {
 	const struct pci_device_id *pdev_id_table;
 };
 
-#define HNAE3_INT_NAME_LEN        (IFNAMSIZ + 16)
+#define HNAE3_INT_NAME_LEN        32
 #define HNAE3_ITR_COUNTDOWN_START 100
 
 struct hnae3_tc_info {

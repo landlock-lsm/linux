@@ -817,8 +817,6 @@ static int lpc_mii_init(struct netdata_local *pldat)
 	pldat->mii_bus->priv = pldat;
 	pldat->mii_bus->parent = &pldat->pdev->dev;
 
-	platform_set_drvdata(pldat->pdev, pldat->mii_bus);
-
 	node = of_get_child_by_name(pldat->pdev->dev.of_node, "mdio");
 	err = of_mdiobus_register(pldat->mii_bus, node);
 	of_node_put(node);
@@ -1151,19 +1149,6 @@ static void lpc_eth_set_multicast_list(struct net_device *ndev)
 	spin_unlock_irqrestore(&pldat->lock, flags);
 }
 
-static int lpc_eth_ioctl(struct net_device *ndev, struct ifreq *req, int cmd)
-{
-	struct phy_device *phydev = ndev->phydev;
-
-	if (!netif_running(ndev))
-		return -EINVAL;
-
-	if (!phydev)
-		return -ENODEV;
-
-	return phy_mii_ioctl(phydev, req, cmd);
-}
-
 static int lpc_eth_open(struct net_device *ndev)
 {
 	struct netdata_local *pldat = netdev_priv(ndev);
@@ -1231,7 +1216,7 @@ static const struct net_device_ops lpc_netdev_ops = {
 	.ndo_stop		= lpc_eth_close,
 	.ndo_start_xmit		= lpc_eth_hard_start_xmit,
 	.ndo_set_rx_mode	= lpc_eth_set_multicast_list,
-	.ndo_do_ioctl		= lpc_eth_ioctl,
+	.ndo_do_ioctl		= phy_do_ioctl_running,
 	.ndo_set_mac_address	= lpc_set_mac_address,
 	.ndo_validate_addr	= eth_validate_addr,
 };

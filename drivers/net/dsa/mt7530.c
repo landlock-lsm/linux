@@ -1223,7 +1223,8 @@ mt7530_port_vlan_del(struct dsa_switch *ds, int port,
 }
 
 static enum dsa_tag_protocol
-mtk_get_tag_protocol(struct dsa_switch *ds, int port)
+mtk_get_tag_protocol(struct dsa_switch *ds, int port,
+		     enum dsa_tag_protocol mp)
 {
 	struct mt7530_priv *priv = ds->priv;
 
@@ -1340,7 +1341,9 @@ mt7530_setup(struct dsa_switch *ds)
 
 	if (!dsa_is_unused_port(ds, 5)) {
 		priv->p5_intf_sel = P5_INTF_SEL_GMAC5;
-		interface = of_get_phy_mode(dsa_to_port(ds, 5)->dn);
+		ret = of_get_phy_mode(dsa_to_port(ds, 5)->dn, &interface);
+		if (ret && ret != -ENODEV)
+			return ret;
 	} else {
 		/* Scan the ethernet nodes. look for GMAC1, lookup used phy */
 		for_each_child_of_node(dn, mac_np) {
@@ -1354,7 +1357,9 @@ mt7530_setup(struct dsa_switch *ds)
 
 			phy_node = of_parse_phandle(mac_np, "phy-handle", 0);
 			if (phy_node->parent == priv->dev->of_node->parent) {
-				interface = of_get_phy_mode(mac_np);
+				ret = of_get_phy_mode(mac_np, &interface);
+				if (ret && ret != -ENODEV)
+					return ret;
 				id = of_mdio_parse_addr(ds->dev, phy_node);
 				if (id == 0)
 					priv->p5_intf_sel = P5_INTF_SEL_PHY_P0;

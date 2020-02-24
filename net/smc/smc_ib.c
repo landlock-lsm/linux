@@ -15,6 +15,7 @@
 #include <linux/random.h>
 #include <linux/workqueue.h>
 #include <linux/scatterlist.h>
+#include <linux/wait.h>
 #include <rdma/ib_verbs.h>
 #include <rdma/ib_cache.h>
 
@@ -520,9 +521,9 @@ static void smc_ib_cleanup_per_ibdev(struct smc_ib_device *smcibdev)
 	if (!smcibdev->initialized)
 		return;
 	smcibdev->initialized = 0;
-	smc_wr_remove_dev(smcibdev);
 	ib_destroy_cq(smcibdev->roce_cq_recv);
 	ib_destroy_cq(smcibdev->roce_cq_send);
+	smc_wr_remove_dev(smcibdev);
 }
 
 static struct ib_client smc_ib_client;
@@ -543,7 +544,8 @@ static void smc_ib_add_dev(struct ib_device *ibdev)
 
 	smcibdev->ibdev = ibdev;
 	INIT_WORK(&smcibdev->port_event_work, smc_ib_port_event_work);
-
+	atomic_set(&smcibdev->lnk_cnt, 0);
+	init_waitqueue_head(&smcibdev->lnks_deleted);
 	spin_lock(&smc_ib_devices.lock);
 	list_add_tail(&smcibdev->list, &smc_ib_devices.list);
 	spin_unlock(&smc_ib_devices.lock);
@@ -565,7 +567,7 @@ static void smc_ib_add_dev(struct ib_device *ibdev)
 	schedule_work(&smcibdev->port_event_work);
 }
 
-/* callback function for ib_register_client() */
+/* callback function for ib_unregister_client() */
 static void smc_ib_remove_dev(struct ib_device *ibdev, void *client_data)
 {
 	struct smc_ib_device *smcibdev;
@@ -575,6 +577,7 @@ static void smc_ib_remove_dev(struct ib_device *ibdev, void *client_data)
 	spin_lock(&smc_ib_devices.lock);
 	list_del_init(&smcibdev->list); /* remove from smc_ib_devices */
 	spin_unlock(&smc_ib_devices.lock);
+	smc_smcr_terminate_all(smcibdev);
 	smc_ib_cleanup_per_ibdev(smcibdev);
 	ib_unregister_event_handler(&smcibdev->event_handler);
 	kfree(smcibdev);

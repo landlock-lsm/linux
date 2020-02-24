@@ -31,15 +31,14 @@
  *	Must be transmitted as zero and ignored on receive.
  *
  * SWITCH_ID - VID[8:6]:
- *	Index of switch within DSA tree. Must be between 0 and
- *	DSA_MAX_SWITCHES - 1.
+ *	Index of switch within DSA tree. Must be between 0 and 7.
  *
  * RSV - VID[5:4]:
  *	To be used for further expansion of PORT or for other purposes.
  *	Must be transmitted as zero and ignored on receive.
  *
  * PORT - VID[3:0]:
- *	Index of switch port. Must be between 0 and DSA_MAX_PORTS - 1.
+ *	Index of switch port. Must be between 0 and 15.
  */
 
 #define DSA_8021Q_DIR_SHIFT		10
@@ -106,7 +105,7 @@ static int dsa_8021q_restore_pvid(struct dsa_switch *ds, int port)
 	slave = dsa_to_port(ds, port)->slave;
 
 	err = br_vlan_get_pvid(slave, &pvid);
-	if (err < 0)
+	if (!pvid || err < 0)
 		/* There is no pvid on the bridge for this port, which is
 		 * perfectly valid. Nothing to restore, bye-bye!
 		 */
@@ -342,13 +341,4 @@ struct sk_buff *dsa_8021q_remove_header(struct sk_buff *skb)
 }
 EXPORT_SYMBOL_GPL(dsa_8021q_remove_header);
 
-static const struct dsa_device_ops dsa_8021q_netdev_ops = {
-	.name		= "8021q",
-	.proto		= DSA_TAG_PROTO_8021Q,
-	.overhead	= VLAN_HLEN,
-};
-
 MODULE_LICENSE("GPL v2");
-MODULE_ALIAS_DSA_TAG_DRIVER(DSA_TAG_PROTO_8021Q);
-
-module_dsa_tag_driver(dsa_8021q_netdev_ops);

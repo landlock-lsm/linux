@@ -279,6 +279,12 @@ resource_test()
 	devlink -N testns1 dev reload $DL_HANDLE netns testns2
 	check_fail $? "Unexpected successful reload from netns \"testns1\" into netns \"testns2\""
 
+	devlink -N testns2 resource set $DL_HANDLE path IPv4/fib size ' -1'
+	check_err $? "Failed to reset IPv4/fib resource size"
+
+	devlink -N testns2 dev reload $DL_HANDLE netns 1
+	check_err $? "Failed to reload devlink back"
+
 	ip netns del testns2
 	ip netns del testns1
 
@@ -424,6 +430,15 @@ dummy_reporter_test()
 	check_err $? "Failed recover dummy reporter"
 
 	check_reporter_info dummy healthy 3 3 10 true
+
+	echo 8192> $DEBUGFS_DIR/health/binary_len
+	check_fail $? "Failed set dummy reporter binary len to 8192"
+
+	local dump=$(devlink health dump show $DL_HANDLE reporter dummy -j)
+	check_err $? "Failed show dump of dummy reporter"
+
+	devlink health dump clear $DL_HANDLE reporter dummy
+	check_err $? "Failed clear dump of dummy reporter"
 
 	log_test "dummy reporter test"
 }

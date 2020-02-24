@@ -70,11 +70,6 @@ static const struct hns3_stats hns3_rxq_stats[] = {
 #define HNS3_NIC_LB_TEST_TX_CNT_ERR	2
 #define HNS3_NIC_LB_TEST_RX_CNT_ERR	3
 
-struct hns3_link_mode_mapping {
-	u32 hns3_link_mode;
-	u32 ethtool_link_mode;
-};
-
 static int hns3_lp_setup(struct net_device *ndev, enum hnae3_loop loop, bool en)
 {
 	struct hnae3_handle *h = hns3_get_handle(ndev);
@@ -428,9 +423,8 @@ static void *hns3_update_strings(u8 *data, const struct hns3_stats *stats,
 			data[ETH_GSTRING_LEN - 1] = '\0';
 
 			/* first, prepend the prefix string */
-			n1 = snprintf(data, MAX_PREFIX_SIZE, "%s%d_",
-				      prefix, i);
-			n1 = min_t(uint, n1, MAX_PREFIX_SIZE - 1);
+			n1 = scnprintf(data, MAX_PREFIX_SIZE, "%s%d_",
+				       prefix, i);
 			size_left = (ETH_GSTRING_LEN - 1) - n1;
 
 			/* now, concatenate the stats string to it */
@@ -985,7 +979,7 @@ static int hns3_set_ringparam(struct net_device *ndev,
 	}
 
 	netdev_info(ndev,
-		    "Changing Tx/Rx ring depth from %d/%d to %d/%d\n",
+		    "Changing Tx/Rx ring depth from %u/%u to %u/%u\n",
 		    old_tx_desc_num, old_rx_desc_num,
 		    new_tx_desc_num, new_rx_desc_num);
 
@@ -1097,7 +1091,7 @@ static int hns3_get_coalesce_per_queue(struct net_device *netdev, u32 queue,
 
 	if (queue >= queue_num) {
 		netdev_err(netdev,
-			   "Invalid queue value %d! Queue max id=%d\n",
+			   "Invalid queue value %u! Queue max id=%u\n",
 			   queue, queue_num - 1);
 		return -EINVAL;
 	}
@@ -1147,14 +1141,14 @@ static int hns3_check_gl_coalesce_para(struct net_device *netdev,
 	rx_gl = hns3_gl_round_down(cmd->rx_coalesce_usecs);
 	if (rx_gl != cmd->rx_coalesce_usecs) {
 		netdev_info(netdev,
-			    "rx_usecs(%d) rounded down to %d, because it must be multiple of 2.\n",
+			    "rx_usecs(%u) rounded down to %u, because it must be multiple of 2.\n",
 			    cmd->rx_coalesce_usecs, rx_gl);
 	}
 
 	tx_gl = hns3_gl_round_down(cmd->tx_coalesce_usecs);
 	if (tx_gl != cmd->tx_coalesce_usecs) {
 		netdev_info(netdev,
-			    "tx_usecs(%d) rounded down to %d, because it must be multiple of 2.\n",
+			    "tx_usecs(%u) rounded down to %u, because it must be multiple of 2.\n",
 			    cmd->tx_coalesce_usecs, tx_gl);
 	}
 
@@ -1182,7 +1176,7 @@ static int hns3_check_rl_coalesce_para(struct net_device *netdev,
 	rl = hns3_rl_round_down(cmd->rx_coalesce_usecs_high);
 	if (rl != cmd->rx_coalesce_usecs_high) {
 		netdev_info(netdev,
-			    "usecs_high(%d) rounded down to %d, because it must be multiple of 4.\n",
+			    "usecs_high(%u) rounded down to %u, because it must be multiple of 4.\n",
 			    cmd->rx_coalesce_usecs_high, rl);
 	}
 
@@ -1211,7 +1205,7 @@ static int hns3_check_coalesce_para(struct net_device *netdev,
 	if (cmd->use_adaptive_tx_coalesce == 1 ||
 	    cmd->use_adaptive_rx_coalesce == 1) {
 		netdev_info(netdev,
-			    "adaptive-tx=%d and adaptive-rx=%d, tx_usecs or rx_usecs will changed dynamically.\n",
+			    "adaptive-tx=%u and adaptive-rx=%u, tx_usecs or rx_usecs will changed dynamically.\n",
 			    cmd->use_adaptive_tx_coalesce,
 			    cmd->use_adaptive_rx_coalesce);
 	}

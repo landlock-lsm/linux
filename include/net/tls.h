@@ -40,6 +40,7 @@
 #include <linux/socket.h>
 #include <linux/tcp.h>
 #include <linux/skmsg.h>
+#include <linux/mutex.h>
 #include <linux/netdevice.h>
 #include <linux/rcupdate.h>
 
@@ -99,7 +100,6 @@ struct tls_rec {
 	struct list_head list;
 	int tx_ready;
 	int tx_flags;
-	int inplace_crypto;
 
 	struct sk_msg msg_plaintext;
 	struct sk_msg msg_encrypted;
@@ -247,6 +247,10 @@ struct tls_context {
 
 	bool in_tcp_sendpages;
 	bool pending_open_record_frags;
+
+	struct mutex tx_lock; /* protects partially_sent_* fields and
+			       * per-type TX fields
+			       */
 	unsigned long flags;
 
 	/* cache cold stuff */
@@ -332,6 +336,8 @@ int tls_set_sw_offload(struct sock *sk, struct tls_context *ctx, int tx);
 void tls_sw_strparser_arm(struct sock *sk, struct tls_context *ctx);
 void tls_sw_strparser_done(struct tls_context *tls_ctx);
 int tls_sw_sendmsg(struct sock *sk, struct msghdr *msg, size_t size);
+int tls_sw_sendpage_locked(struct sock *sk, struct page *page,
+			   int offset, size_t size, int flags);
 int tls_sw_sendpage(struct sock *sk, struct page *page,
 		    int offset, size_t size, int flags);
 void tls_sw_cancel_work_tx(struct tls_context *tls_ctx);
@@ -370,7 +376,7 @@ int tls_push_sg(struct sock *sk, struct tls_context *ctx,
 		int flags);
 int tls_push_partial_record(struct sock *sk, struct tls_context *ctx,
 			    int flags);
-bool tls_free_partial_record(struct sock *sk, struct tls_context *ctx);
+void tls_free_partial_record(struct sock *sk, struct tls_context *ctx);
 
 static inline struct tls_msg *tls_msg(struct sk_buff *skb)
 {
@@ -635,6 +641,7 @@ int tls_sw_fallback_init(struct sock *sk,
 #ifdef CONFIG_TLS_DEVICE
 void tls_device_init(void);
 void tls_device_cleanup(void);
+void tls_device_sk_destruct(struct sock *sk);
 int tls_set_device_offload(struct sock *sk, struct tls_context *ctx);
 void tls_device_free_resources_tx(struct sock *sk);
 int tls_set_device_offload_rx(struct sock *sk, struct tls_context *ctx);
@@ -643,6 +650,14 @@ void tls_device_rx_resync_new_rec(struct sock *sk, u32 rcd_len, u32 seq);
 void tls_offload_tx_resync_request(struct sock *sk, u32 got_seq, u32 exp_seq);
 int tls_device_decrypted(struct sock *sk, struct tls_context *tls_ctx,
 			 struct sk_buff *skb, struct strp_msg *rxm);
+
+static inline bool tls_is_sk_rx_device_offloaded(struct sock *sk)
+{
+	if (!sk_fullsock(sk) ||
+	    smp_load_acquire(&sk->sk_destruct) != tls_device_sk_destruct)
+		return false;
+	return tls_get_ctx(sk)->rx_conf == TLS_HW;
+}
 #else
 static inline void tls_device_init(void) {}
 static inline void tls_device_cleanup(void) {}
