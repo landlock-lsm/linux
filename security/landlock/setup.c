@@ -10,6 +10,7 @@
 #include <linux/lsm_hooks.h>
 
 #include "cred.h"
+#include "ptrace.h"
 #include "setup.h"
 
 struct lsm_blob_sizes landlock_blob_sizes __lsm_ro_after_init = {
@@ -20,6 +21,7 @@ static int __init landlock_init(void)
 {
 	pr_info(LANDLOCK_NAME ": Registering hooks\n");
 	landlock_add_hooks_cred();
+	landlock_add_hooks_ptrace();
 	return 0;
 }
 
