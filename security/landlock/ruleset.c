@@ -17,6 +17,7 @@
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/workqueue.h>
+#include <uapi/linux/landlock.h>
 
 #include "object.h"
 #include "ruleset.h"
@@ -40,6 +41,8 @@ struct landlock_ruleset *landlock_create_ruleset(u64 fs_access_mask)
 	struct landlock_ruleset *ruleset;
 
 	/* Safely handles 32-bits conversion. */
+	BUILD_BUG_ON(!__same_type(fs_access_mask, ((struct
+		landlock_attr_ruleset *)NULL)->handled_access_fs));
 	BUILD_BUG_ON(!__same_type(fs_access_mask, _LANDLOCK_ACCESS_FS_LAST));
 
 	/* Checks content. */
