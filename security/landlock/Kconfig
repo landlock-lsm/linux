@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config SECURITY_LANDLOCK
+	bool "Landlock support"
+	depends on SECURITY
+	default n
+	help
+	  This selects Landlock, a safe sandboxing mechanism.  It enables to
+	  restrict processes on the fly (i.e. enforce an access control policy),
+	  which can complement seccomp-bpf.  The security policy is a set of access
+	  rights tied to an object, which could be a file, a socket or a process.
+
+	  See Documentation/security/landlock/ for further information.
+
+	  If you are unsure how to answer this question, answer N.
