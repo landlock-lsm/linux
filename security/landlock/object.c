@@ -29,6 +29,7 @@
 #include <linux/spinlock.h>
 #include <linux/workqueue.h>
 
+#include "fs.h"
 #include "object.h"
 
 struct landlock_object *landlock_create_object(
@@ -138,6 +139,7 @@ static bool release_object(struct landlock_object *object)
 
 	switch (object->type) {
 	case LANDLOCK_OBJECT_INODE:
+		landlock_release_inode(underlying_object, object);
 		break;
 	default:
 		WARN_ON_ONCE(1);

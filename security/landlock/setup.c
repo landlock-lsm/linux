@@ -10,11 +10,15 @@
 #include <linux/lsm_hooks.h>
 
 #include "cred.h"
+#include "fs.h"
 #include "ptrace.h"
 #include "setup.h"
 
+bool landlock_initialized __lsm_ro_after_init = false;
+
 struct lsm_blob_sizes landlock_blob_sizes __lsm_ro_after_init = {
 	.lbs_cred = sizeof(struct landlock_cred_security),
+	.lbs_inode = sizeof(struct landlock_inode_security),
 };
 
 static int __init landlock_init(void)
@@ -22,6 +26,8 @@ static int __init landlock_init(void)
 	pr_info(LANDLOCK_NAME ": Registering hooks\n");
 	landlock_add_hooks_cred();
 	landlock_add_hooks_ptrace();
+	landlock_add_hooks_fs();
+	landlock_initialized = true;
 	return 0;
 }
 

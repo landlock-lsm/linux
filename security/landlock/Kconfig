@@ -3,6 +3,7 @@
 config SECURITY_LANDLOCK
 	bool "Landlock support"
 	depends on SECURITY
+	select SECURITY_PATH
 	default n
 	help
 	  This selects Landlock, a safe sandboxing mechanism.  It enables to
