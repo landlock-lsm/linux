@@ -21,13 +21,9 @@
 #include <unistd.h>
 
 #ifndef landlock
-
-#ifndef __NR_landlock
-#define __NR_landlock 436
-#endif
-
-static inline int landlock(unsigned int command, unsigned int options,
-		size_t attr_size, void *attr_ptr)
+static inline int landlock(const unsigned int command,
+		const unsigned int options,
+		const size_t attr_size, void *const attr_ptr)
 {
 	errno = 0;
 	return syscall(__NR_landlock, command, options, attr_size, attr_ptr, 0,
@@ -39,7 +35,7 @@ static inline int landlock(unsigned int command, unsigned int options,
 #define ENV_FS_RW_NAME "LL_FS_RW"
 #define ENV_PATH_TOKEN ":"
 
-static int parse_path(char *env_path, const char ***path_list)
+static int parse_path(char *env_path, const char ***const path_list)
 {
 	int i, path_nb = 0;
 
@@ -57,8 +53,10 @@ static int parse_path(char *env_path, const char ***path_list)
 	return path_nb;
 }
 
-static int populate_ruleset(const struct landlock_attr_features *attr_features,
-		const char *env_var, int ruleset_fd, __u64 allowed_access)
+static int populate_ruleset(
+		const struct landlock_attr_features *const attr_features,
+		const char *const env_var, const int ruleset_fd,
+		const __u64 allowed_access)
 {
 	int path_nb, i;
 	char *env_path_name;
@@ -82,11 +80,11 @@ static int populate_ruleset(const struct landlock_attr_features *attr_features,
 		goto err_free_name;
 	}
 
-	/* follow a best-effort approach */
+	/* Follows a best-effort approach. */
 	path_beneath.allowed_access &= attr_features->access_fs;
 	for (i = 0; i < path_nb; i++) {
-		path_beneath.parent_fd = open(path_list[i],
-				O_PATH | O_NOFOLLOW | O_CLOEXEC);
+		path_beneath.parent_fd = open(path_list[i], O_PATH |
+				O_CLOEXEC);
 		if (path_beneath.parent_fd < 0) {
 			fprintf(stderr, "Failed to open \"%s\": %s\n",
 					path_list[i],
@@ -112,20 +110,13 @@ err_free_name:
 }
 
 #define ACCESS_FS_ROUGHLY_READ ( \
-	LANDLOCK_ACCESS_FS_READ | \
-	LANDLOCK_ACCESS_FS_READDIR | \
-	LANDLOCK_ACCESS_FS_GETATTR | \
 	LANDLOCK_ACCESS_FS_EXECUTE | \
+	LANDLOCK_ACCESS_FS_READ_FILE | \
+	LANDLOCK_ACCESS_FS_READ_DIR | \
 	LANDLOCK_ACCESS_FS_CHROOT)
 
 #define ACCESS_FS_ROUGHLY_WRITE ( \
-	LANDLOCK_ACCESS_FS_WRITE | \
-	LANDLOCK_ACCESS_FS_TRUNCATE | \
-	LANDLOCK_ACCESS_FS_LOCK | \
-	LANDLOCK_ACCESS_FS_CHMOD | \
-	LANDLOCK_ACCESS_FS_CHOWN | \
-	LANDLOCK_ACCESS_FS_CHGRP | \
-	LANDLOCK_ACCESS_FS_IOCTL | \
+	LANDLOCK_ACCESS_FS_WRITE_FILE | \
 	LANDLOCK_ACCESS_FS_LINK_TO | \
 	LANDLOCK_ACCESS_FS_RENAME_FROM | \
 	LANDLOCK_ACCESS_FS_RENAME_TO | \
@@ -139,14 +130,13 @@ err_free_name:
 	LANDLOCK_ACCESS_FS_MAKE_BLOCK | \
 	LANDLOCK_ACCESS_FS_MAKE_SYM)
 
-int main(int argc, char * const argv[], char * const *envp)
+int main(const int argc, char *const argv[], char *const *const envp)
 {
-	char *cmd_path;
-	char * const *cmd_argv;
+	const char *cmd_path;
+	char *const *cmd_argv;
 	int ruleset_fd;
 	struct landlock_attr_features attr_features;
 	struct landlock_attr_ruleset ruleset = {
-		/* only restrict open and getattr */
 		.handled_access_fs = ACCESS_FS_ROUGHLY_READ |
 			ACCESS_FS_ROUGHLY_WRITE,
 	};
@@ -162,9 +152,9 @@ int main(int argc, char * const argv[], char * const *envp)
 		fprintf(stderr, "* %s: list of paths allowed to be used in a read-write way.\n",
 				ENV_FS_RO_NAME);
 		fprintf(stderr, "\nexample:\n"
-				"%s=\"/bin:/lib:/usr\" "
-				"%s=\"/dev/pts\" "
-				"%s /bin/bash -i\n",
+				"%s=\"/bin:/lib:/usr:/proc:/etc:/dev/urandom\" "
+				"%s=\"/dev/null:/dev/full:/dev/zero:/dev/pts:/tmp\" "
+				"%s bash -i\n",
 				ENV_FS_RO_NAME, ENV_FS_RW_NAME, argv[0]);
 		return 1;
 	}
@@ -182,7 +172,7 @@ int main(int argc, char * const argv[], char * const *envp)
 		}
 		return 1;
 	}
-	/* follow a best-effort approach */
+	/* Follows a best-effort approach. */
 	ruleset.handled_access_fs &= attr_features.access_fs;
 	ruleset_fd = landlock(LANDLOCK_CMD_CREATE_RULESET,
 			LANDLOCK_OPT_CREATE_RULESET, sizeof(ruleset),
@@ -215,9 +205,10 @@ int main(int argc, char * const argv[], char * const *envp)
 
 	cmd_path = argv[1];
 	cmd_argv = argv + 1;
-	execve(cmd_path, cmd_argv, envp);
-	fprintf(stderr, "Failed to execute \"%s\"\n", cmd_path);
-	fprintf(stderr, "Hint: access to the binary or its shared libraries may be denied.\n");
+	execvpe(cmd_path, cmd_argv, envp);
+	fprintf(stderr, "Failed to execute \"%s\": %s\n", cmd_path,
+			strerror(errno));
+	fprintf(stderr, "Hint: access to the binary, the interpreter or shared libraries may be denied.\n");
 	return 1;
 
 err_close_ruleset:

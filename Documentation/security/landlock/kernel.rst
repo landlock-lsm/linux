@@ -15,9 +15,8 @@ LSM).  Indeed, a Landlock rule shall not interfere with other access-controls
 enforced on the system, only add more restrictions.
 
 Any user can enforce Landlock rulesets on their processes.  They are merged and
-evaluated according to the inherited ones in a way that ensure that only more
+evaluated according to the inherited ones in a way that ensures that only more
 constraints can be added.
-
 
 Guiding principles for safe access controls
 ===========================================
@@ -25,7 +24,7 @@ Guiding principles for safe access controls
 * A Landlock rule shall be focused on access control on kernel objects instead
   of syscall filtering (i.e. syscall arguments), which is the purpose of
   seccomp-bpf.
-* To avoid multiple kind of side-channel attacks (e.g. leak of security
+* To avoid multiple kinds of side-channel attacks (e.g. leak of security
   policies, CPU-based attacks), Landlock rules shall not be able to
   programmatically communicate with user space.
 * Kernel access check shall not slow down access request from unsandboxed
@@ -33,12 +32,38 @@ Guiding principles for safe access controls
 * Computation related to Landlock operations (e.g. enforce a ruleset) shall
   only impact the processes requesting them.
 
+Tests
+=====
 
-Landlock rulesets and domains
-=============================
+Userspace tests for backward compatibility, ptrace restrictions and filesystem
+support can be found here: `tools/testing/selftests/landlock/`_.
 
-A domain is a read-only ruleset tied to a set of subjects (i.e. tasks).  A
-domain can transition to a new one which is the intersection of the constraints
-from the current and a new ruleset.  The definition of a subject is implicit
-for a task sandboxing itself, which makes the reasoning much easier and helps
-avoid pitfalls.
+Kernel structures
+=================
+
+Object
+------
+
+.. kernel-doc:: security/landlock/object.h
+    :identifiers:
+
+Ruleset and domain
+------------------
+
+A domain is a read-only ruleset tied to a set of subjects (i.e. tasks'
+credentials).  Each time a ruleset is enforced on a task, the current domain is
+duplicated and the ruleset is imported as a new layer of rules in the new
+domain.  Indeed, once in a domain, each rule is tied to a layer level.  To
+grant access to an object, at least one rule of each layer must allow the
+requested action on the object.  A task can then only transit to a new domain
+which is the intersection of the constraints from the current domain and those
+of a ruleset provided by the task.
+
+The definition of a subject is implicit for a task sandboxing itself, which
+makes the reasoning much easier and helps avoid pitfalls.
+
+.. kernel-doc:: security/landlock/ruleset.h
+    :identifiers:
+
+.. Links
+.. _tools/testing/selftests/landlock/: https://github.com/landlock-lsm/linux/tree/landlock-v15/tools/testing/selftests/landlock/

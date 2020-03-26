@@ -7,13 +7,15 @@
  */
 
 #include <errno.h>
+#include <linux/landlock.h>
 #include <sys/syscall.h>
 
 #include "../kselftest_harness.h"
 
 #ifndef landlock
-static inline int landlock(unsigned int command, unsigned int options,
-		size_t attr_size, void *attr_ptr)
+static inline int landlock(const unsigned int command,
+		const unsigned int options,
+		const size_t attr_size, void *const attr_ptr)
 {
 	errno = 0;
 	return syscall(__NR_landlock, command, options, attr_size, attr_ptr, 0,
@@ -27,8 +29,8 @@ FIXTURE(ruleset_rw) {
 };
 
 FIXTURE_SETUP(ruleset_rw) {
-	self->attr_ruleset.handled_access_fs = LANDLOCK_ACCESS_FS_READ |
-		LANDLOCK_ACCESS_FS_WRITE;
+	self->attr_ruleset.handled_access_fs = LANDLOCK_ACCESS_FS_READ_FILE |
+		LANDLOCK_ACCESS_FS_WRITE_FILE;
 	self->ruleset_fd = landlock(LANDLOCK_CMD_CREATE_RULESET,
 			LANDLOCK_OPT_CREATE_RULESET,
 			sizeof(self->attr_ruleset), &self->attr_ruleset);

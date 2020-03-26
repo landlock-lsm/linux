@@ -11,8 +11,6 @@
 
 #include <linux/lsm_hooks.h>
 
-#define LANDLOCK_NAME "landlock"
-
 extern bool landlock_initialized;
 
 extern struct lsm_blob_sizes landlock_blob_sizes;

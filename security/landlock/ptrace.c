@@ -14,6 +14,7 @@
 #include <linux/rcupdate.h>
 #include <linux/sched.h>
 
+#include "common.h"
 #include "cred.h"
 #include "ptrace.h"
 #include "ruleset.h"
@@ -28,8 +29,8 @@
  * Checks if the @parent domain is less or equal to (i.e. an ancestor, which
  * means a subset of) the @child domain.
  */
-static bool domain_scope_le(const struct landlock_ruleset *parent,
-		const struct landlock_ruleset *child)
+static bool domain_scope_le(const struct landlock_ruleset *const parent,
+		const struct landlock_ruleset *const child)
 {
 	const struct landlock_hierarchy *walker;
 
@@ -46,8 +47,8 @@ static bool domain_scope_le(const struct landlock_ruleset *parent,
 	return false;
 }
 
-static bool task_is_scoped(struct task_struct *parent,
-		struct task_struct *child)
+static bool task_is_scoped(const struct task_struct *const parent,
+		const struct task_struct *const child)
 {
 	bool is_scoped;
 	const struct landlock_ruleset *dom_parent, *dom_child;
@@ -60,7 +61,8 @@ static bool task_is_scoped(struct task_struct *parent,
 	return is_scoped;
 }
 
-static int task_ptrace(struct task_struct *parent, struct task_struct *child)
+static int task_ptrace(const struct task_struct *const parent,
+		const struct task_struct *const child)
 {
 	/* Quick return for non-landlocked tasks. */
 	if (!landlocked(parent))
@@ -83,8 +85,8 @@ static int task_ptrace(struct task_struct *parent, struct task_struct *child)
  * Determines whether a process may access another, returning 0 if permission
  * granted, -errno if denied.
  */
-static int hook_ptrace_access_check(struct task_struct *child,
-		unsigned int mode)
+static int hook_ptrace_access_check(struct task_struct *const child,
+		const unsigned int mode)
 {
 	return task_ptrace(current, child);
 }
@@ -101,7 +103,7 @@ static int hook_ptrace_access_check(struct task_struct *child,
  * Determines whether the nominated task is permitted to trace the current
  * process, returning 0 if permission is granted, -errno if denied.
  */
-static int hook_ptrace_traceme(struct task_struct *parent)
+static int hook_ptrace_traceme(struct task_struct *const parent)
 {
 	return task_ptrace(parent, current);
 }

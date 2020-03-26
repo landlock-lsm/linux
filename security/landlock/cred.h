@@ -32,15 +32,15 @@ static inline struct landlock_ruleset *landlock_get_current_domain(void)
 }
 
 /*
- * The caller needs an RCU lock.
+ * The call needs to come from an RCU read-side critical section.
  */
 static inline struct landlock_ruleset *landlock_get_task_domain(
-		struct task_struct *task)
+		const struct task_struct *const task)
 {
 	return landlock_cred(__task_cred(task))->domain;
 }
 
-static inline bool landlocked(struct task_struct *task)
+static inline bool landlocked(const struct task_struct *const task)
 {
 	bool has_dom;
 

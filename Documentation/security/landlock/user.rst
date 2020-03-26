@@ -7,9 +7,8 @@ Landlock rules
 
 A Landlock rule enables to describe an action on an object.  An object is
 currently a file hierarchy, and the related filesystem actions are defined in
-`Access rights`_.  A set of rules are aggregated in a ruleset, which can then
-restricts the thread enforcing it, and its future children.
-
+`Access rights`_.  A set of rules is aggregated in a ruleset, which can then
+restrict the thread enforcing it, and its future children.
 
 Defining and enforcing a security policy
 ----------------------------------------
@@ -29,8 +28,8 @@ with older kernels.  This can be done thanks to the `landlock` syscall (cf.
         return 1;
     }
 
-Then, we need to create the ruleset that will contains our rules.  For this
-example, the ruleset will contains rules which only allow read actions, but
+Then, we need to create the ruleset that will contain our rules.  For this
+example, the ruleset will contain rules which only allow read actions, but
 write actions will be denied.  The ruleset then needs to handle both of these
 kind of actions.  To have a backward compatibility, these actions should be
 ANDed with the supported ones.
@@ -40,14 +39,10 @@ ANDed with the supported ones.
     int ruleset_fd;
     struct landlock_attr_ruleset ruleset = {
         .handled_access_fs =
-            LANDLOCK_ACCESS_FS_READ |
-            LANDLOCK_ACCESS_FS_READDIR |
             LANDLOCK_ACCESS_FS_EXECUTE |
-            LANDLOCK_ACCESS_FS_WRITE |
-            LANDLOCK_ACCESS_FS_TRUNCATE |
-            LANDLOCK_ACCESS_FS_CHMOD |
-            LANDLOCK_ACCESS_FS_CHOWN |
-            LANDLOCK_ACCESS_FS_CHGRP |
+            LANDLOCK_ACCESS_FS_WRITE_FILE |
+            LANDLOCK_ACCESS_FS_READ_FILE |
+            LANDLOCK_ACCESS_FS_READ_DIR |
             LANDLOCK_ACCESS_FS_LINK_TO |
             LANDLOCK_ACCESS_FS_RENAME_FROM |
             LANDLOCK_ACCESS_FS_RENAME_TO |
@@ -72,7 +67,7 @@ ANDed with the supported ones.
 
 We can now add a new rule to this ruleset thanks to the returned file
 descriptor referring to this ruleset.  The rule will only enable to read the
-file hierarchy ``/usr``.  Without other rule, write actions would then be
+file hierarchy ``/usr``.  Without another rule, write actions would then be
 denied by the ruleset.  To add ``/usr`` to the ruleset, we open it with the
 ``O_PATH`` flag and fill the &struct landlock_attr_path_beneath with this file
 descriptor.
@@ -83,9 +78,9 @@ descriptor.
     struct landlock_attr_path_beneath path_beneath = {
         .ruleset_fd = ruleset_fd,
         .allowed_access =
-            LANDLOCK_ACCESS_FS_READ |
-            LANDLOCK_ACCESS_FS_READDIR |
-            LANDLOCK_ACCESS_FS_EXECUTE,
+            LANDLOCK_ACCESS_FS_EXECUTE |
+            LANDLOCK_ACCESS_FS_READ_FILE |
+            LANDLOCK_ACCESS_FS_READ_DIR,
     };
 
     path_beneath.allowed_access &= attr_features.access_fs;
@@ -133,26 +128,31 @@ The current thread is now ready to sandbox itself with the ruleset.
     }
     close(ruleset_fd);
 
-If this last system call succeeds, the current thread is now restricted and
-this policy will be enforced on all its subsequently created children as well.
-Once a thread is landlocked, there is no way to remove its security policy,
-only adding more restrictions is allowed.  These threads are now in a new
-Landlock domain, merge of their parent one (if any) with the new ruleset.
+If the last `landlock` system call succeeds, the current thread is now
+restricted and this policy will be enforced on all its subsequently created
+children as well.  Once a thread is landlocked, there is no way to remove its
+security policy; only adding more restrictions is allowed.  These threads are
+now in a new Landlock domain, merge of their parent one (if any) with the new
+ruleset.
 
-A full working code can be found in `samples/landlock/sandboxer.c`_.
-
+Full working code can be found in `samples/landlock/sandboxer.c`_.
 
 Inheritance
 -----------
 
-Every new thread resulting from a :manpage:`clone(2)` inherits Landlock program
+Every new thread resulting from a :manpage:`clone(2)` inherits Landlock domain
 restrictions from its parent.  This is similar to the seccomp inheritance (cf.
 :doc:`/userspace-api/seccomp_filter`) or any other LSM dealing with task's
-:manpage:`credentials(7)`.  For instance, one process' thread may apply
+:manpage:`credentials(7)`.  For instance, one process's thread may apply
 Landlock rules to itself, but they will not be automatically applied to other
 sibling threads (unlike POSIX thread credential changes, cf.
 :manpage:`nptl(7)`).
 
+When a thread sandbox itself, we have the grantee that the related security
+policy will stay enforced on all this thread's descendants.  This enables to
+create standalone and modular security policies per application, which will
+automatically be composed between themselves according to their runtime parent
+policies.
 
 Ptrace restrictions
 -------------------
@@ -163,42 +163,40 @@ To be allowed to use :manpage:`ptrace(2)` and related syscalls on a target
 process, a sandboxed process should have a subset of the target process rules,
 which means the tracee must be in a sub-domain of the tracer.
 
-
 .. _syscall:
 
 The `landlock` syscall and its arguments
 ========================================
 
 .. kernel-doc:: security/landlock/syscall.c
-    :functions: sys_landlock
+    :identifiers: sys_landlock
 
 Commands
 --------
 
 .. kernel-doc:: include/uapi/linux/landlock.h
-    :functions: landlock_cmd
+    :identifiers: landlock_cmd
 
 Options
 -------
 
 .. kernel-doc:: include/uapi/linux/landlock.h
-    :functions: options_intro
-                options_get_features options_create_ruleset
-                options_add_rule options_enforce_ruleset
+    :identifiers: options_intro
+                  options_get_features options_create_ruleset
+                  options_add_rule options_enforce_ruleset
 
 Attributes
 ----------
 
 .. kernel-doc:: include/uapi/linux/landlock.h
-    :functions: landlock_attr_features landlock_attr_ruleset
-                landlock_attr_path_beneath landlock_attr_enforce
+    :identifiers: landlock_attr_features landlock_attr_ruleset
+                  landlock_attr_path_beneath landlock_attr_enforce
 
 Access rights
 -------------
 
 .. kernel-doc:: include/uapi/linux/landlock.h
-    :functions: fs_access
-
+    :identifiers: fs_access
 
 Questions and answers
 =====================
@@ -220,14 +218,10 @@ fine-grained restrictions).  Moreover, their complexity can lead to security
 issues, especially when untrusted processes can manipulate them (cf.
 `Controlling access to user namespaces <https://lwn.net/Articles/673597/>`_).
 
-
 Additional documentation
 ========================
 
 See https://landlock.io
 
-
 .. Links
-.. _samples/landlock/sandboxer.c: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/samples/landlock/sandboxer.c
-.. _tools/testing/selftests/landlock/: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/tools/testing/selftests/landlock/
-.. _tools/testing/selftests/landlock/test_ptrace.c: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/tools/testing/selftests/landlock/test_ptrace.c
+.. _samples/landlock/sandboxer.c: https://github.com/landlock-lsm/linux/tree/landlock-v15/samples/landlock/sandboxer.c

@@ -18,25 +18,25 @@
 
 struct landlock_inode_security {
 	/*
-	 * We need an allocated object to be able to safely untie a rule from
-	 * an object (i.e. unlink then free a rule), cf. put_rule().  This
-	 * object is guarded by the underlying object's lock.
+	 * @object: Weak pointer to an allocated object.  All writes (i.e.
+	 * creating a new object or removing one) are protected by the
+	 * underlying inode->i_lock.  Disassociating @object from the inode is
+	 * additionally protected by @object->lock, from the time @object's
+	 * usage refcount drops to zero to the time this pointer is nulled out.
+	 * Cf. release_inode().
 	 */
 	struct landlock_object __rcu *object;
 };
 
 static inline struct landlock_inode_security *inode_landlock(
-		const struct inode *inode)
+		const struct inode *const inode)
 {
 	return inode->i_security + landlock_blob_sizes.lbs_inode;
 }
 
 __init void landlock_add_hooks_fs(void);
 
-void landlock_release_inode(struct inode *inode,
-		struct landlock_object *object);
-
-int landlock_append_fs_rule(struct landlock_ruleset *ruleset,
-		struct path *path, u64 actions);
+int landlock_append_fs_rule(struct landlock_ruleset *const ruleset,
+		const struct path *const path, u32 access_hierarchy);
 
 #endif /* _SECURITY_LANDLOCK_FS_H */

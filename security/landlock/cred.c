@@ -9,12 +9,13 @@
 #include <linux/cred.h>
 #include <linux/lsm_hooks.h>
 
+#include "common.h"
 #include "cred.h"
 #include "ruleset.h"
 #include "setup.h"
 
-static int hook_cred_prepare(struct cred *new, const struct cred *old,
-		gfp_t gfp)
+static int hook_cred_prepare(struct cred *const new,
+		const struct cred *const old, const gfp_t gfp)
 {
 	const struct landlock_cred_security *cred_old = landlock_cred(old);
 	struct landlock_cred_security *cred_new = landlock_cred(new);
@@ -24,15 +25,13 @@ static int hook_cred_prepare(struct cred *new, const struct cred *old,
 	if (dom_old) {
 		landlock_get_ruleset(dom_old);
 		cred_new->domain = dom_old;
-	} else {
-		cred_new->domain = NULL;
 	}
 	return 0;
 }
 
-static void hook_cred_free(struct cred *cred)
+static void hook_cred_free(struct cred *const cred)
 {
-	landlock_put_ruleset_enqueue(landlock_cred(cred)->domain);
+	landlock_put_ruleset_deferred(landlock_cred(cred)->domain);
 }
 
 static struct security_hook_list landlock_hooks[] __lsm_ro_after_init = {

@@ -4,10 +4,23 @@ test_src := $(wildcard test_*.c)
 
 TEST_GEN_PROGS := $(test_src:.c=)
 
-usr_include := ../../../../usr/include
+TEST_GEN_PROGS_EXTENDED := true
 
-CFLAGS += -Wall -O2 -I$(usr_include)
-
+KSFT_KHDR_INSTALL := 1
 include ../lib.mk
 
-$(TEST_GEN_PROGS): ../kselftest_harness.h $(usr_include)/linux/landlock.h
+# Cf. tools/testing/selftests/arm64/Makefile
+ifeq ($(KBUILD_OUTPUT),)
+khdr_dir = $(top_srcdir)/usr/include
+else
+khdr_dir = $(KBUILD_OUTPUT)/kselftest/usr/include
+endif
+
+CFLAGS += -Wall -O2 -I$(khdr_dir)
+
+$(khdr_dir)/linux/landlock.h: khdr
+
+$(TEST_GEN_PROGS): $(khdr_dir)/linux/landlock.h ../kselftest_harness.h common.h
+
+$(OUTPUT)/true: true.c
+	$(CC) -Os -static -o $@ $<

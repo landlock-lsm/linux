@@ -10,6 +10,7 @@
 #include <linux/anon_inodes.h>
 #include <linux/build_bug.h>
 #include <linux/capability.h>
+#include <linux/compiler_types.h>
 #include <linux/dcache.h>
 #include <linux/err.h>
 #include <linux/errno.h>
@@ -17,10 +18,9 @@
 #include <linux/landlock.h>
 #include <linux/limits.h>
 #include <linux/path.h>
-#include <linux/rcupdate.h>
-#include <linux/refcount.h>
 #include <linux/sched.h>
 #include <linux/security.h>
+#include <linux/stddef.h>
 #include <linux/syscalls.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
@@ -37,16 +37,19 @@
  * Extend copy_struct_from_user() to handle NULL @src, which allows for future
  * use of @src even if it is not used right now.
  *
- * @dst: kernel space pointer or NULL
- * @ksize: size of the data pointed by @dst
- * @src: user space pointer or NULL
- * @usize: size of the data pointed by @src
+ * @dst: Kernel space pointer or NULL.
+ * @ksize: Actual size of the data pointed to by @dst.
+ * @ksize_min: Minimal required size to be copied.
+ * @src: User space pointer or NULL.
+ * @usize: (Alleged) size of the data pointed to by @src.
  */
-static int copy_struct_if_any_from_user(void *dst, size_t ksize,
-		const void __user *src, size_t usize)
+static int copy_struct_if_any_from_user(void *const dst, const size_t ksize,
+		const size_t ksize_min, const void __user *const src,
+		const size_t usize)
 {
 	int ret;
 
+	/* Checks kernel buffer size inconsistencies. */
 	if (dst) {
 		if (WARN_ON_ONCE(ksize == 0))
 			return -EFAULT;
@@ -54,6 +57,14 @@ static int copy_struct_if_any_from_user(void *dst, size_t ksize,
 		if (WARN_ON_ONCE(ksize != 0))
 			return -EFAULT;
 	}
+
+	/* Checks minimal size. */
+	if (WARN_ON_ONCE(ksize < ksize_min))
+		return -EFAULT;
+	if (usize < ksize_min)
+		return -EINVAL;
+
+	/* Handles empty user buffer. */
 	if (!src) {
 		if (usize != 0)
 			return -EFAULT;
@@ -61,12 +72,18 @@ static int copy_struct_if_any_from_user(void *dst, size_t ksize,
 			memset(dst, 0, ksize);
 		return 0;
 	}
+
+	/* Checks user buffer size inconsistency and limit. */
 	if (usize == 0)
 		return -ENODATA;
 	if (usize > PAGE_SIZE)
 		return -E2BIG;
+
+	/* Copies user buffer and fills with zeros. */
 	if (dst)
 		return copy_struct_from_user(dst, ksize, src, usize);
+
+	/* Checks unknown user data. */
 	ret = check_zeroed_user(src, usize);
 	if (ret <= 0)
 		return ret ?: -E2BIG;
@@ -87,10 +104,11 @@ static int copy_struct_if_any_from_user(void *dst, size_t ksize,
 #define _LANDLOCK_OPT_ENFORCE_RULESET_LAST	LANDLOCK_OPT_ENFORCE_RULESET
 #define _LANDLOCK_OPT_ENFORCE_RULESET_MASK	((_LANDLOCK_OPT_ENFORCE_RULESET_LAST << 1) - 1)
 
-static int syscall_get_features(size_t attr_size, void __user *attr_ptr)
+static int syscall_get_features(const size_t attr_size,
+		void __user *const attr_ptr)
 {
 	size_t data_size, fill_size;
-	struct landlock_attr_features supported = {
+	const struct landlock_attr_features supported = {
 		.options_get_features = _LANDLOCK_OPT_GET_FEATURES_MASK,
 		.options_create_ruleset = _LANDLOCK_OPT_CREATE_RULESET_MASK,
 		.options_add_rule = _LANDLOCK_OPT_ADD_RULE_MASK,
@@ -99,16 +117,26 @@ static int syscall_get_features(size_t attr_size, void __user *attr_ptr)
 		.size_attr_ruleset = sizeof(struct landlock_attr_ruleset),
 		.size_attr_path_beneath = sizeof(struct
 				landlock_attr_path_beneath),
+		.size_attr_enforce = sizeof(struct landlock_attr_enforce),
 	};
 
+	BUILD_BUG_ON(!__same_type(supported.access_fs,
+		((struct landlock_attr_ruleset *)NULL)->handled_access_fs));
+	BUILD_BUG_ON(!__same_type(supported.access_fs,
+		((struct landlock_attr_path_beneath *)NULL)->allowed_access));
+
+	/* Checks attribute consistency. */
 	if (attr_size == 0)
 		return -ENODATA;
 	if (attr_size > PAGE_SIZE)
 		return -E2BIG;
+
+	/* Copy features to user space. */
 	data_size = min(sizeof(supported), attr_size);
 	if (copy_to_user(attr_ptr, &supported, data_size))
 		return -EFAULT;
-	/* Fills the rest with zeros. */
+
+	/* Fills with zeros. */
 	fill_size = attr_size - data_size;
 	if (fill_size > 0 && clear_user(attr_ptr + data_size, fill_size))
 		return -EFAULT;
@@ -118,7 +146,8 @@ static int syscall_get_features(size_t attr_size, void __user *attr_ptr)
 /* Ruleset handling */
 
 #ifdef CONFIG_PROC_FS
-static void fop_ruleset_show_fdinfo(struct seq_file *m, struct file *filp)
+static void fop_ruleset_show_fdinfo(struct seq_file *const m,
+		struct file *const filp)
 {
 	const struct landlock_ruleset *ruleset = filp->private_data;
 
@@ -127,7 +156,8 @@ static void fop_ruleset_show_fdinfo(struct seq_file *m, struct file *filp)
 }
 #endif
 
-static int fop_ruleset_release(struct inode *inode, struct file *filp)
+static int fop_ruleset_release(struct inode *const inode,
+		struct file *const filp)
 {
 	struct landlock_ruleset *ruleset = filp->private_data;
 
@@ -135,15 +165,16 @@ static int fop_ruleset_release(struct inode *inode, struct file *filp)
 	return 0;
 }
 
-static ssize_t fop_dummy_read(struct file *filp, char __user *buf, size_t size,
-		loff_t *ppos)
+static ssize_t fop_dummy_read(struct file *const filp, char __user *const buf,
+		const size_t size, loff_t *const ppos)
 {
 	/* Dummy handler to enable FMODE_CAN_READ. */
 	return -EINVAL;
 }
 
-static ssize_t fop_dummy_write(struct file *filp, const char __user *buf,
-			       size_t size, loff_t *ppos)
+static ssize_t fop_dummy_write(struct file *const filp,
+		const char __user *const buf, const size_t size,
+		loff_t *const ppos)
 {
 	/* Dummy handler to enable FMODE_CAN_WRITE. */
 	return -EINVAL;
@@ -157,31 +188,38 @@ static ssize_t fop_dummy_write(struct file *filp, const char __user *buf,
  */
 static const struct file_operations ruleset_fops = {
 #ifdef CONFIG_PROC_FS
-	.show_fdinfo	= fop_ruleset_show_fdinfo,
+	.show_fdinfo = fop_ruleset_show_fdinfo,
 #endif
-	.release	= fop_ruleset_release,
-	.read		= fop_dummy_read,
-	.write		= fop_dummy_write,
+	.release = fop_ruleset_release,
+	.read = fop_dummy_read,
+	.write = fop_dummy_write,
 };
 
-static int syscall_create_ruleset(size_t attr_size, void __user *attr_ptr)
+static int syscall_create_ruleset(const size_t attr_size,
+		const void __user *const attr_ptr)
 {
 	struct landlock_attr_ruleset attr_ruleset;
 	struct landlock_ruleset *ruleset;
 	int err, ruleset_fd;
 
-	/* Copies raw userspace struct. */
+	/* Copies raw user space buffer. */
 	err = copy_struct_if_any_from_user(&attr_ruleset, sizeof(attr_ruleset),
+			offsetofend(typeof(attr_ruleset), handled_access_fs),
 			attr_ptr, attr_size);
 	if (err)
 		return err;
 
-	/* Checks arguments and transform to kernel struct. */
+	/* Checks content (and 32-bits cast). */
+	if ((attr_ruleset.handled_access_fs | _LANDLOCK_ACCESS_FS_MASK) !=
+			_LANDLOCK_ACCESS_FS_MASK)
+		return -EINVAL;
+
+	/* Checks arguments and transforms to kernel struct. */
 	ruleset = landlock_create_ruleset(attr_ruleset.handled_access_fs);
 	if (IS_ERR(ruleset))
 		return PTR_ERR(ruleset);
 
-	/* Creates anonymous FD referring to the ruleset, with safe flags. */
+	/* Creates anonymous FD referring to the ruleset. */
 	ruleset_fd = anon_inode_getfd("landlock-ruleset", &ruleset_fops,
 			ruleset, O_RDWR | O_CLOEXEC);
 	if (ruleset_fd < 0)
@@ -193,7 +231,8 @@ static int syscall_create_ruleset(size_t attr_size, void __user *attr_ptr)
  * Returns an owned ruleset from a FD. It is thus needed to call
  * landlock_put_ruleset() on the return value.
  */
-static struct landlock_ruleset *get_ruleset_from_fd(u64 fd, fmode_t mode)
+static struct landlock_ruleset *get_ruleset_from_fd(const u64 fd,
+		const fmode_t mode)
 {
 	struct fd ruleset_f;
 	struct landlock_ruleset *ruleset;
@@ -203,12 +242,15 @@ static struct landlock_ruleset *get_ruleset_from_fd(u64 fd, fmode_t mode)
 		((struct landlock_attr_path_beneath *)NULL)->ruleset_fd));
 	BUILD_BUG_ON(!__same_type(fd,
 		((struct landlock_attr_enforce *)NULL)->ruleset_fd));
+
 	/* Checks 32-bits overflow. fdget() checks for INT_MAX/FD. */
 	if (fd > U32_MAX)
 		return ERR_PTR(-EINVAL);
 	ruleset_f = fdget(fd);
 	if (!ruleset_f.file)
 		return ERR_PTR(-EBADF);
+
+	/* Checks FD type and access right. */
 	err = 0;
 	if (ruleset_f.file->f_op != &ruleset_fops)
 		err = -EBADR;
@@ -224,10 +266,10 @@ static struct landlock_ruleset *get_ruleset_from_fd(u64 fd, fmode_t mode)
 
 /* Path handling */
 
-static inline bool is_user_mountable(struct dentry *dentry)
+static inline bool is_user_mountable(const struct dentry *const dentry)
 {
 	/*
-	 * Check pseudo-filesystems that will never be mountable (e.g. sockfs,
+	 * Checks pseudo-filesystems that will never be mountable (e.g. sockfs,
 	 * pipefs, bdev), cf. fs/libfs.c:init_pseudo().
 	 */
 	return d_is_positive(dentry) &&
@@ -238,38 +280,29 @@ static inline bool is_user_mountable(struct dentry *dentry)
 /*
  * @path: Must call put_path(@path) after the call if it succeeded.
  */
-static int get_path_from_fd(u64 fd, struct path *path)
+static int get_path_from_fd(const u64 fd, struct path *const path)
 {
 	struct fd f;
-	int err;
+	int err = 0;
 
 	BUILD_BUG_ON(!__same_type(fd,
 		((struct landlock_attr_path_beneath *)NULL)->parent_fd));
-	/* Checks 32-bits overflow. fdget_raw() checks for INT_MAX/FD. */
+
+	/* Checks 32-bits overflow.  fdget_raw() checks for INT_MAX/FD. */
 	if (fd > U32_MAX)
 		return -EINVAL;
+
 	/* Handles O_PATH. */
 	f = fdget_raw(fd);
 	if (!f.file)
 		return -EBADF;
+
 	/*
-	 * Forbids to add to a ruleset a path which is forbidden to open (by
-	 * Landlock, another LSM, DAC...).  Because the file was open with
-	 * O_PATH, the file mode doesn't have FMODE_READ nor FMODE_WRITE.
-	 *
-	 * WARNING: security_file_open() was only called in do_dentry_open()
-	 * until now.  The main difference now is that f_op may be NULL.  This
-	 * field doesn't seem to be dereferenced by any upstream LSM though.
-	 */
-	err = security_file_open(f.file);
-	if (err)
-		goto out_fdput;
-	/*
-	 * Only allows O_PATH FD: enable to restrict ambiant (FS) accesses
-	 * without requiring to open and risk leaking or misuing a FD.  Accept
+	 * Only allows O_PATH FD: enables to restrict ambient (FS) accesses
+	 * without requiring to open and risk leaking or misusing a FD.  Accept
 	 * removed, but still open directory (S_DEAD).
 	 */
-	if (!(f.file->f_mode & FMODE_PATH) || !f.file->f_path.mnt ||
+	if (!(f.file->f_mode & FMODE_PATH) ||
 			!is_user_mountable(f.file->f_path.dentry)) {
 		err = -EBADR;
 		goto out_fdput;
@@ -283,37 +316,45 @@ out_fdput:
 	return err;
 }
 
-static int syscall_add_rule_path_beneath(size_t attr_size,
-		void __user *attr_ptr)
+static int syscall_add_rule_path_beneath(const size_t attr_size,
+		const void __user *const attr_ptr)
 {
 	struct landlock_attr_path_beneath attr_path_beneath;
 	struct path path;
 	struct landlock_ruleset *ruleset;
 	int err;
 
-	/* Copies raw userspace struct. */
+	/* Copies raw user space buffer. */
 	err = copy_struct_if_any_from_user(&attr_path_beneath,
-			sizeof(attr_path_beneath), attr_ptr, attr_size);
+			sizeof(attr_path_beneath),
+			offsetofend(typeof(attr_path_beneath), allowed_access),
+			attr_ptr, attr_size);
 	if (err)
 		return err;
 
-	/* Gets the ruleset. */
+	/* Gets and checks the ruleset. */
 	ruleset = get_ruleset_from_fd(attr_path_beneath.ruleset_fd,
 			FMODE_CAN_WRITE);
 	if (IS_ERR(ruleset))
 		return PTR_ERR(ruleset);
 
-	/* Checks content (fs_access_mask is upgraded to 64-bits). */
+	/*
+	 * Checks that allowed_access matches the @ruleset constraints
+	 * (ruleset->fs_access_mask is automatically upgraded to 64-bits).
+	 * Allows empty allowed_access i.e., deny @ruleset->fs_access_mask .
+	 */
 	if ((attr_path_beneath.allowed_access | ruleset->fs_access_mask) !=
 			ruleset->fs_access_mask) {
 		err = -EINVAL;
 		goto out_put_ruleset;
 	}
 
+	/* Gets and checks the new rule. */
 	err = get_path_from_fd(attr_path_beneath.parent_fd, &path);
 	if (err)
 		goto out_put_ruleset;
 
+	/* Imports the new rule. */
 	err = landlock_append_fs_rule(ruleset, &path,
 			attr_path_beneath.allowed_access);
 	path_put(&path);
@@ -325,8 +366,8 @@ out_put_ruleset:
 
 /* Enforcement */
 
-static int syscall_enforce_ruleset(size_t attr_size,
-		void __user *attr_ptr)
+static int syscall_enforce_ruleset(const size_t attr_size,
+		const void __user *const attr_ptr)
 {
 	struct landlock_ruleset *new_dom, *ruleset;
 	struct cred *new_cred;
@@ -348,28 +389,32 @@ static int syscall_enforce_ruleset(size_t attr_size,
 			return err;
 	}
 
-	/* Copies raw userspace struct. */
+	/* Copies raw user space buffer. */
 	err = copy_struct_if_any_from_user(&attr_enforce, sizeof(attr_enforce),
+			offsetofend(typeof(attr_enforce), ruleset_fd),
 			attr_ptr, attr_size);
 	if (err)
 		return err;
 
-	/* Get the ruleset. */
+	/* Gets and checks the ruleset. */
 	ruleset = get_ruleset_from_fd(attr_enforce.ruleset_fd, FMODE_CAN_READ);
 	if (IS_ERR(ruleset))
 		return PTR_ERR(ruleset);
+
 	/* Informs about useless ruleset. */
 	if (!atomic_read(&ruleset->nb_rules)) {
 		err = -ENOMSG;
 		goto out_put_ruleset;
 	}
 
+	/* Prepares new credentials. */
 	new_cred = prepare_creds();
 	if (!new_cred) {
 		err = -ENOMEM;
 		goto out_put_ruleset;
 	}
 	new_llcred = landlock_cred(new_cred);
+
 	/*
 	 * There is no possible race condition while copying and manipulating
 	 * the current credentials because they are dedicated per thread.
@@ -379,6 +424,7 @@ static int syscall_enforce_ruleset(size_t attr_size,
 		err = PTR_ERR(new_dom);
 		goto out_put_creds;
 	}
+
 	/* Replaces the old (prepared) domain. */
 	landlock_put_ruleset(new_llcred->domain);
 	new_llcred->domain = new_dom;
@@ -388,6 +434,7 @@ static int syscall_enforce_ruleset(size_t attr_size,
 
 out_put_creds:
 	abort_creds(new_cred);
+	return err;
 
 out_put_ruleset:
 	landlock_put_ruleset(ruleset);
@@ -420,9 +467,10 @@ out_put_ruleset:
  * EOPNOTSUPP (unknown command or option) and then EINVAL (invalid attribute).
  * The other error codes may be specific to each command.
  */
-SYSCALL_DEFINE6(landlock, unsigned int, command, unsigned int, options,
-		size_t, attr1_size, void __user *, attr1_ptr,
-		size_t, attr2_size, void __user *, attr2_ptr)
+SYSCALL_DEFINE6(landlock, const unsigned int, command,
+		const unsigned int, options,
+		const size_t, attr1_size, void __user *const, attr1_ptr,
+		const size_t, attr2_size, void __user *const, attr2_ptr)
 {
 	/*
 	 * Enables user space to identify if Landlock is disabled, thanks to a
@@ -439,6 +487,7 @@ SYSCALL_DEFINE6(landlock, unsigned int, command, unsigned int, options,
 			return syscall_get_features(attr1_size, attr1_ptr);
 		}
 		return -EOPNOTSUPP;
+
 	case LANDLOCK_CMD_CREATE_RULESET:
 		if (options == LANDLOCK_OPT_CREATE_RULESET) {
 			if (attr2_size || attr2_ptr)
@@ -446,6 +495,7 @@ SYSCALL_DEFINE6(landlock, unsigned int, command, unsigned int, options,
 			return syscall_create_ruleset(attr1_size, attr1_ptr);
 		}
 		return -EOPNOTSUPP;
+
 	case LANDLOCK_CMD_ADD_RULE:
 		/*
 		 * A future extension could add a
@@ -458,6 +508,7 @@ SYSCALL_DEFINE6(landlock, unsigned int, command, unsigned int, options,
 					attr1_ptr);
 		}
 		return -EOPNOTSUPP;
+
 	case LANDLOCK_CMD_ENFORCE_RULESET:
 		if (options == LANDLOCK_OPT_ENFORCE_RULESET) {
 			if (attr2_size || attr2_ptr)

@@ -12,7 +12,7 @@
 #include <linux/landlock.h>
 #include <sys/prctl.h>
 
-#include "test.h"
+#include "common.h"
 
 #define FDINFO_TEMPLATE "/proc/self/fdinfo/%d"
 #define FDINFO_SIZE 128
@@ -56,10 +56,11 @@ TEST(features)
 		.access_fs = ~0ULL,
 		.size_attr_ruleset = ~0ULL,
 		.size_attr_path_beneath = ~0ULL,
+		.size_attr_enforce = ~0ULL,
 	};
 
 	ASSERT_EQ(0, landlock(LANDLOCK_CMD_GET_FEATURES,
-				LANDLOCK_OPT_CREATE_RULESET,
+				LANDLOCK_OPT_GET_FEATURES,
 				sizeof(attr_features), &attr_features));
 	ASSERT_EQ(((LANDLOCK_OPT_GET_FEATURES << 1) - 1),
 			attr_features.options_get_features);
@@ -69,12 +70,44 @@ TEST(features)
 			attr_features.options_add_rule);
 	ASSERT_EQ(((LANDLOCK_OPT_ENFORCE_RULESET << 1) - 1),
 			attr_features.options_enforce_ruleset);
-	ASSERT_EQ(((LANDLOCK_ACCESS_FS_MAP << 1) - 1),
+	ASSERT_EQ(((LANDLOCK_ACCESS_FS_CHROOT << 1) - 1),
 			attr_features.access_fs);
 	ASSERT_EQ(sizeof(struct landlock_attr_ruleset),
 		attr_features.size_attr_ruleset);
 	ASSERT_EQ(sizeof(struct landlock_attr_path_beneath),
 		attr_features.size_attr_path_beneath);
+	ASSERT_EQ(sizeof(struct landlock_attr_enforce),
+		attr_features.size_attr_enforce);
+}
+
+TEST(empty_attr_ruleset) {
+	int err;
+
+	/* Similar to struct landlock_attr_create.handled_access_fs = 0 */
+	err = landlock(LANDLOCK_CMD_CREATE_RULESET,
+			LANDLOCK_OPT_CREATE_RULESET, 0, NULL);
+	ASSERT_EQ(errno, EINVAL);
+	ASSERT_EQ(err, -1);
+}
+
+TEST(empty_attr_path_beneath) {
+	int err;
+
+	/* Similar to struct landlock_attr_path_beneath.*_fd = 0 */
+	err = landlock(LANDLOCK_CMD_ADD_RULE,
+			LANDLOCK_OPT_ADD_RULE_PATH_BENEATH, 0, NULL);
+	ASSERT_EQ(errno, EINVAL);
+	ASSERT_EQ(err, -1);
+}
+
+TEST(empty_attr_enforce) {
+	int err;
+
+	/* Similar to struct landlock_attr_enforce.ruleset_fd = 0 */
+	err = landlock(LANDLOCK_CMD_ENFORCE_RULESET,
+			LANDLOCK_OPT_ENFORCE_RULESET, 0, NULL);
+	ASSERT_EQ(errno, EINVAL);
+	ASSERT_EQ(err, -1);
 }
 
 TEST_HARNESS_MAIN

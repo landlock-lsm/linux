@@ -169,6 +169,11 @@ struct landlock_attr_features {
 	 * ``sizeof(struct landlock_path_beneath)``).
 	 */
 	__aligned_u64 size_attr_path_beneath;
+	/**
+	 * @size_attr_enforce: Size of the &struct landlock_attr_enforce as
+	 * known by the kernel (i.e.  ``sizeof(struct landlock_enforce)``).
+	 */
+	__aligned_u64 size_attr_enforce;
 };
 
 /**
@@ -235,18 +240,10 @@ struct landlock_attr_enforce {
  * files and directories.  Files or directories opened before the sandboxing
  * are not subject to these restrictions.
  *
- * - %LANDLOCK_ACCESS_FS_READ: Open or map a file with read access.
- * - %LANDLOCK_ACCESS_FS_READDIR: List the content of a directory.
- * - %LANDLOCK_ACCESS_FS_GETATTR: Read metadata of a file or a directory.
- * - %LANDLOCK_ACCESS_FS_WRITE: Write to a file.
- * - %LANDLOCK_ACCESS_FS_TRUNCATE: Truncate a file.
- * - %LANDLOCK_ACCESS_FS_LOCK: Lock a file.
- * - %LANDLOCK_ACCESS_FS_CHMOD: Change DAC permissions on a file or a
- *   directory.
- * - %LANDLOCK_ACCESS_FS_CHOWN: Change the owner of a file or a directory.
- * - %LANDLOCK_ACCESS_FS_CHGRP: Change the group of a file or a directory.
- * - %LANDLOCK_ACCESS_FS_IOCTL: Send various command to a special file, cf.
- *   :manpage:`ioctl(2)`.
+ * - %LANDLOCK_ACCESS_FS_EXECUTE: Execute a file.
+ * - %LANDLOCK_ACCESS_FS_WRITE_FILE: Write to a file.
+ * - %LANDLOCK_ACCESS_FS_READ_FILE: Open a file with read access.
+ * - %LANDLOCK_ACCESS_FS_READ_DIR: Open a directory or list its content.
  * - %LANDLOCK_ACCESS_FS_LINK_TO: Link a file into a directory.
  * - %LANDLOCK_ACCESS_FS_RENAME_FROM: Rename a file or a directory.
  * - %LANDLOCK_ACCESS_FS_RENAME_TO: Rename a file or a directory.
@@ -259,49 +256,47 @@ struct landlock_attr_enforce {
  * - %LANDLOCK_ACCESS_FS_MAKE_FIFO: Create a named pipe.
  * - %LANDLOCK_ACCESS_FS_MAKE_BLOCK: Create a block device.
  * - %LANDLOCK_ACCESS_FS_MAKE_SYM: Create a symbolic link.
- * - %LANDLOCK_ACCESS_FS_EXECUTE: Execute a file.
  * - %LANDLOCK_ACCESS_FS_CHROOT: Change the root directory of the current
  *   process.
- * - %LANDLOCK_ACCESS_FS_OPEN: Open a file or a directory.  This flag is set
- *   for any actions (e.g. read, write, execute) requested to open a file or
- *   directory.
- * - %LANDLOCK_ACCESS_FS_MAP: Map a file.  This flag is set for any actions
- *   (e.g. read, write, execute) requested to map a file.
  *
- * There is currently no restriction for directory walking e.g.,
- * :manpage:`chdir(2)`.
+ * .. warning::
+ *
+ *   It is currently not possible to restrict some file-related actions
+ *   accessible through these syscall families: :manpage:`chdir(2)`,
+ *   :manpage:`truncate(2)`, :manpage:`stat(2)`, :manpage:`flock(2)`,
+ *   :manpage:`chmod(2)`, :manpage:`chown(2)`, :manpage:`setxattr(2)`,
+ *   :manpage:`ioctl(2)`, :manpage:`fcntl(2)`.
+ *   Future evolutions of Landlock will make possible to restrict them.
  */
-#define LANDLOCK_ACCESS_FS_READ			(1ULL << 0)
-#define LANDLOCK_ACCESS_FS_READDIR		(1ULL << 1)
-#define LANDLOCK_ACCESS_FS_GETATTR		(1ULL << 2)
-#define LANDLOCK_ACCESS_FS_WRITE		(1ULL << 3)
-#define LANDLOCK_ACCESS_FS_TRUNCATE		(1ULL << 4)
-#define LANDLOCK_ACCESS_FS_LOCK			(1ULL << 5)
-#define LANDLOCK_ACCESS_FS_CHMOD		(1ULL << 6)
-#define LANDLOCK_ACCESS_FS_CHOWN		(1ULL << 7)
-#define LANDLOCK_ACCESS_FS_CHGRP		(1ULL << 8)
-#define LANDLOCK_ACCESS_FS_IOCTL		(1ULL << 9)
-#define LANDLOCK_ACCESS_FS_LINK_TO		(1ULL << 10)
-#define LANDLOCK_ACCESS_FS_RENAME_FROM		(1ULL << 11)
-#define LANDLOCK_ACCESS_FS_RENAME_TO		(1ULL << 12)
-#define LANDLOCK_ACCESS_FS_RMDIR		(1ULL << 13)
-#define LANDLOCK_ACCESS_FS_UNLINK		(1ULL << 14)
-#define LANDLOCK_ACCESS_FS_MAKE_CHAR		(1ULL << 15)
-#define LANDLOCK_ACCESS_FS_MAKE_DIR		(1ULL << 16)
-#define LANDLOCK_ACCESS_FS_MAKE_REG		(1ULL << 17)
-#define LANDLOCK_ACCESS_FS_MAKE_SOCK		(1ULL << 18)
-#define LANDLOCK_ACCESS_FS_MAKE_FIFO		(1ULL << 19)
-#define LANDLOCK_ACCESS_FS_MAKE_BLOCK		(1ULL << 20)
-#define LANDLOCK_ACCESS_FS_MAKE_SYM		(1ULL << 21)
-#define LANDLOCK_ACCESS_FS_EXECUTE		(1ULL << 22)
-#define LANDLOCK_ACCESS_FS_CHROOT		(1ULL << 23)
-#define LANDLOCK_ACCESS_FS_OPEN			(1ULL << 24)
-#define LANDLOCK_ACCESS_FS_MAP			(1ULL << 25)
+#define LANDLOCK_ACCESS_FS_EXECUTE		(1ULL << 0)
+#define LANDLOCK_ACCESS_FS_WRITE_FILE		(1ULL << 1)
+#define LANDLOCK_ACCESS_FS_READ_FILE		(1ULL << 2)
+#define LANDLOCK_ACCESS_FS_READ_DIR		(1ULL << 3)
+#define LANDLOCK_ACCESS_FS_LINK_TO		(1ULL << 4)
+#define LANDLOCK_ACCESS_FS_RENAME_FROM		(1ULL << 5)
+#define LANDLOCK_ACCESS_FS_RENAME_TO		(1ULL << 6)
+#define LANDLOCK_ACCESS_FS_RMDIR		(1ULL << 7)
+#define LANDLOCK_ACCESS_FS_UNLINK		(1ULL << 8)
+#define LANDLOCK_ACCESS_FS_MAKE_CHAR		(1ULL << 9)
+#define LANDLOCK_ACCESS_FS_MAKE_DIR		(1ULL << 10)
+#define LANDLOCK_ACCESS_FS_MAKE_REG		(1ULL << 11)
+#define LANDLOCK_ACCESS_FS_MAKE_SOCK		(1ULL << 12)
+#define LANDLOCK_ACCESS_FS_MAKE_FIFO		(1ULL << 13)
+#define LANDLOCK_ACCESS_FS_MAKE_BLOCK		(1ULL << 14)
+#define LANDLOCK_ACCESS_FS_MAKE_SYM		(1ULL << 15)
+#define LANDLOCK_ACCESS_FS_CHROOT		(1ULL << 16)
 
 /*
  * Potential future access:
+ * - %LANDLOCK_ACCESS_FS_OPEN (for O_PATH)
+ * - %LANDLOCK_ACCESS_FS_GETATTR
  * - %LANDLOCK_ACCESS_FS_SETATTR
+ * - %LANDLOCK_ACCESS_FS_LOCK
+ * - %LANDLOCK_ACCESS_FS_CHMOD
+ * - %LANDLOCK_ACCESS_FS_CHOWN
+ * - %LANDLOCK_ACCESS_FS_CHGRP
  * - %LANDLOCK_ACCESS_FS_APPEND
+ * - %LANDLOCK_ACCESS_FS_TRUNCATE
  * - %LANDLOCK_ACCESS_FS_LINK_FROM
  * - %LANDLOCK_ACCESS_FS_MOUNT_FROM
  * - %LANDLOCK_ACCESS_FS_MOUNT_TO
@@ -310,6 +305,7 @@ struct landlock_attr_enforce {
  * - %LANDLOCK_ACCESS_FS_RECEIVE
  * - %LANDLOCK_ACCESS_FS_CHDIR
  * - %LANDLOCK_ACCESS_FS_FCNTL
+ * - %LANDLOCK_ACCESS_FS_IOCTL
  */
 
 #endif /* _UAPI__LINUX_LANDLOCK_H__ */

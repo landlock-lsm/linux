@@ -698,6 +698,7 @@ struct inode {
 		struct rcu_head		i_rcu;
 	};
 	atomic64_t		i_version;
+	atomic64_t		i_sequence; /* see futex */
 	atomic_t		i_count;
 	atomic_t		i_dio_count;
 	atomic_t		i_writecount;
@@ -1510,6 +1511,11 @@ struct super_block {
 
 	/* Pending fsnotify inode refs */
 	atomic_long_t s_fsnotify_inode_refs;
+
+#ifdef CONFIG_SECURITY_LANDLOCK
+	/* References to Landlock underlying objects */
+	atomic_long_t s_landlock_inode_refs;
+#endif
 
 	/* Being remounted read-only */
 	int s_readonly_remount;

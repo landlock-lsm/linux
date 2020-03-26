@@ -7,17 +7,16 @@
  */
 
 #include <linux/bug.h>
+#include <linux/compiler_types.h>
 #include <linux/err.h>
 #include <linux/errno.h>
 #include <linux/kernel.h>
-#include <linux/list.h>
+#include <linux/limits.h>
 #include <linux/rbtree.h>
-#include <linux/rcupdate.h>
 #include <linux/refcount.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/workqueue.h>
-#include <uapi/linux/landlock.h>
 
 #include "object.h"
 #include "ruleset.h"
@@ -31,24 +30,20 @@ static struct landlock_ruleset *create_ruleset(void)
 		return ERR_PTR(-ENOMEM);
 	refcount_set(&ruleset->usage, 1);
 	mutex_init(&ruleset->lock);
-	atomic_set(&ruleset->nb_rules, 0);
-	ruleset->root = RB_ROOT;
+	/*
+	 * root = RB_ROOT
+	 * hierarchy = NULL
+	 * top_layer_level = 0
+	 * nb_rules = 0
+	 * fs_access_mask = 0
+	 */
 	return ruleset;
 }
 
-struct landlock_ruleset *landlock_create_ruleset(u64 fs_access_mask)
+struct landlock_ruleset *landlock_create_ruleset(const u32 fs_access_mask)
 {
 	struct landlock_ruleset *ruleset;
 
-	/* Safely handles 32-bits conversion. */
-	BUILD_BUG_ON(!__same_type(fs_access_mask, ((struct
-		landlock_attr_ruleset *)NULL)->handled_access_fs));
-	BUILD_BUG_ON(!__same_type(fs_access_mask, _LANDLOCK_ACCESS_FS_LAST));
-
-	/* Checks content. */
-	if ((fs_access_mask | _LANDLOCK_ACCESS_FS_MASK) !=
-			_LANDLOCK_ACCESS_FS_MASK)
-		return ERR_PTR(-EINVAL);
 	/* Informs about useless ruleset. */
 	if (!fs_access_mask)
 		return ERR_PTR(-ENOMSG);
@@ -58,209 +53,144 @@ struct landlock_ruleset *landlock_create_ruleset(u64 fs_access_mask)
 	return ruleset;
 }
 
-/*
- * The underlying kernel object must be held by the caller.
- */
-static struct landlock_ruleset_elem *create_ruleset_elem(
-		struct landlock_object *object)
-{
-	struct landlock_ruleset_elem *ruleset_elem;
-
-	ruleset_elem = kzalloc(sizeof(*ruleset_elem), GFP_KERNEL);
-	if (!ruleset_elem)
-		return ERR_PTR(-ENOMEM);
-	RB_CLEAR_NODE(&ruleset_elem->node);
-	RCU_INIT_POINTER(ruleset_elem->ref.object, object);
-	return ruleset_elem;
-}
-
-static struct landlock_rule *create_rule(struct landlock_object *object,
-		struct landlock_access *access)
+static struct landlock_rule *duplicate_rule(struct landlock_rule *const src)
 {
 	struct landlock_rule *new_rule;
 
-	if (WARN_ON_ONCE(!object))
-		return ERR_PTR(-EFAULT);
-	if (WARN_ON_ONCE(!access))
-		return ERR_PTR(-EFAULT);
 	new_rule = kzalloc(sizeof(*new_rule), GFP_KERNEL);
 	if (!new_rule)
 		return ERR_PTR(-ENOMEM);
-	refcount_set(&new_rule->usage, 1);
-	INIT_LIST_HEAD(&new_rule->list);
-	new_rule->access = *access;
-
-	spin_lock(&object->lock);
-	list_add_tail(&new_rule->list, &object->rules);
-	spin_unlock(&object->lock);
+	RB_CLEAR_NODE(&new_rule->node);
+	landlock_get_object(src->object);
+	new_rule->object = src->object;
+	new_rule->layer_level = src->layer_level;
+	new_rule->layer_depth = src->layer_depth;
+	new_rule->access = src->access;
 	return new_rule;
 }
 
-/*
- * An inserted rule can not be removed, only disabled (cf. struct
- * landlock_ruleset_elem).
- *
- * The underlying kernel object must be held by the caller.
- *
- * @rule: Allocated struct owned by this function. The caller must hold the
- * underlying kernel object (e.g., with a FD).
- */
-int landlock_insert_ruleset_rule(struct landlock_ruleset *ruleset,
-		struct landlock_object *object, struct landlock_access *access,
-		struct landlock_rule *rule)
+static void put_rule(struct landlock_rule *const rule)
 {
-	struct rb_node **new;
-	struct rb_node *parent = NULL;
-	struct landlock_ruleset_elem *ruleset_elem;
+	might_sleep();
+	if (!rule)
+		return;
+	landlock_put_object(rule->object);
+	kfree(rule);
+}
+
+/*
+ * Assumptions:
+ * - An inserted rule can not be removed.
+ * - The underlying kernel object must be held by the caller.
+ *
+ * @rule: Read-only payload to be inserted (not own by this function).
+ * @is_merge: If true, intersects access rights and updates the rule's layer
+ * (e.g. merge two rulesets), else do a union of access rights and keep the
+ * rule's layer (e.g. extend a ruleset)
+ */
+int landlock_insert_rule(struct landlock_ruleset *const ruleset,
+		struct landlock_rule *const rule, const bool is_merge)
+{
+	struct rb_node **walker_node;
+	struct rb_node *parent_node = NULL;
 	struct landlock_rule *new_rule;
 
 	might_sleep();
-	/* Accesses may be set when creating a new rule. */
-	if (rule) {
-		if (WARN_ON_ONCE(access))
-			return -EINVAL;
-	} else {
-		if (WARN_ON_ONCE(!access))
-			return -EFAULT;
-	}
-
 	lockdep_assert_held(&ruleset->lock);
-	new = &(ruleset->root.rb_node);
-	while (*new) {
-		struct landlock_ruleset_elem *this = rb_entry(*new,
-				struct landlock_ruleset_elem, node);
+	walker_node = &(ruleset->root.rb_node);
+	while (*walker_node) {
+		struct landlock_rule *this = rb_entry(*walker_node,
+				struct landlock_rule, node);
 		uintptr_t this_object;
-		struct landlock_rule *this_rule;
-		struct landlock_access new_access;
 
-		this_object = (uintptr_t)rcu_access_pointer(this->ref.object);
-		if (this_object != (uintptr_t)object) {
-			parent = *new;
-			if (this_object < (uintptr_t)object)
-				new = &((*new)->rb_right);
+		this_object = (uintptr_t)this->object;
+		if (this_object != (uintptr_t)rule->object) {
+			parent_node = *walker_node;
+			if (this_object < (uintptr_t)rule->object)
+				walker_node = &((*walker_node)->rb_right);
 			else
-				new = &((*new)->rb_left);
+				walker_node = &((*walker_node)->rb_left);
 			continue;
 		}
 
-		/* Do not increment ruleset->nb_rules. */
-		this_rule = rcu_dereference_protected(this->ref.rule,
-				lockdep_is_held(&ruleset->lock));
-		/*
-		 * Checks if it is a new object with the same address as a
-		 * previously disabled one.  There is no possible race
-		 * condition because an object can not be disabled/deleted
-		 * while being inserted in this tree.
-		 */
-		if (landlock_rule_is_disabled(this_rule)) {
-			if (rule) {
-				refcount_inc(&rule->usage);
-				new_rule = rule;
-			} else {
-				/* Replace the previous rule with a new one. */
-				new_rule = create_rule(object, access);
-				if (IS_ERR(new_rule))
-					return PTR_ERR(new_rule);
-			}
-			rcu_assign_pointer(this->ref.rule, new_rule);
-			landlock_put_rule(object, this_rule);
-			return 0;
-		}
+		/* If there is a matching rule, updates it. */
+		if (is_merge) {
+			/* Intersects access rights. */
+			this->access.self &= rule->access.self;
+			this->access.beneath &= rule->access.beneath;
 
-		/* this_rule is potentially enabled. */
-		if (refcount_read(&this_rule->usage) == 1) {
-			if (rule) {
-				/* merge rule: intersection of access rights */
-				this_rule->access.self &= rule->access.self;
-				this_rule->access.beneath &=
-					rule->access.beneath;
-			} else {
-				/* extend rule: union of access rights */
-				this_rule->access.self |= access->self;
-				this_rule->access.beneath |= access->beneath;
-			}
-			return 0;
-		}
-
-		/*
-		 * If this_rule is shared with another ruleset, then create a
-		 * new object rule.
-		 */
-		if (rule) {
-			/* Merging a rule means an intersection of access. */
-			new_access.self = this_rule->access.self &
-				rule->access.self;
-			new_access.beneath = this_rule->access.beneath &
-				rule->access.beneath;
+			/* Updates the rule layer. */
+			if (this->layer_level + 1 == ruleset->top_layer_level)
+				/* Extend the contiguous underlying level. */
+				this->layer_depth++;
+			else
+				/*
+				 * Creates a new separated layer.  The previous
+				 * level may still have other rules referring
+				 * to it.  In any case, this new layer is a
+				 * subset of the previous access rights.
+				 */
+				this->layer_depth = 1;
+			this->layer_level = ruleset->top_layer_level;
 		} else {
-			/* Extending a rule means a union of access. */
-			new_access.self = this_rule->access.self |
-				access->self;
-			new_access.beneath = this_rule->access.self |
-				access->beneath;
+			/* Extends access rights. */
+			this->access.self |= rule->access.self;
+			this->access.beneath |= rule->access.beneath;
 		}
-		new_rule = create_rule(object, &new_access);
-		if (IS_ERR(new_rule))
-			return PTR_ERR(new_rule);
-		rcu_assign_pointer(this->ref.rule, new_rule);
-		landlock_put_rule(object, this_rule);
 		return 0;
 	}
 
-	/* There is no match for @object. */
-	ruleset_elem = create_ruleset_elem(object);
-	if (IS_ERR(ruleset_elem))
-		return PTR_ERR(ruleset_elem);
-	if (rule) {
-		refcount_inc(&rule->usage);
-		new_rule = rule;
-	} else {
-		new_rule = create_rule(object, access);
-		if (IS_ERR(new_rule)) {
-			kfree(ruleset_elem);
-			return PTR_ERR(new_rule);
-		}
+	/* There is no match for @rule->object. */
+	new_rule = duplicate_rule(rule);
+	if (IS_ERR(new_rule))
+		return PTR_ERR(new_rule);
+	if (is_merge) {
+		new_rule->layer_depth = 1;
+		new_rule->layer_level = ruleset->top_layer_level;
 	}
-	RCU_INIT_POINTER(ruleset_elem->ref.rule, new_rule);
-	/*
-	 * Because of the missing RCU context annotation in struct rb_node,
-	 * Sparse emits a warning when encountering rb_link_node_rcu(), but
-	 * this function call is still safe.
-	 */
-	rb_link_node_rcu(&ruleset_elem->node, parent, new);
-	rb_insert_color(&ruleset_elem->node, &ruleset->root);
+	rb_link_node(&new_rule->node, parent_node, walker_node);
+	rb_insert_color(&new_rule->node, &ruleset->root);
 	atomic_inc(&ruleset->nb_rules);
 	return 0;
 }
 
-static int merge_ruleset(struct landlock_ruleset *dst,
-		struct landlock_ruleset *src)
+static inline void get_hierarchy(struct landlock_hierarchy *const hierarchy)
 {
-	struct rb_node *node;
+	if (hierarchy)
+		refcount_inc(&hierarchy->usage);
+}
+
+static void put_hierarchy(struct landlock_hierarchy *hierarchy)
+{
+	while (hierarchy && refcount_dec_and_test(&hierarchy->usage)) {
+		const struct landlock_hierarchy *const freeme = hierarchy;
+
+		hierarchy = hierarchy->parent;
+		kfree(freeme);
+	}
+}
+
+static int merge_ruleset(struct landlock_ruleset *const dst,
+		struct landlock_ruleset *const src)
+{
+	struct landlock_rule *walker_rule, *next_rule;
 	int err = 0;
 
 	might_sleep();
 	if (!src)
 		return 0;
-	if (WARN_ON_ONCE(!dst))
+	/* Only merge into a domain. */
+	if (WARN_ON_ONCE(!dst || !dst->hierarchy))
 		return -EFAULT;
-	if (WARN_ON_ONCE(!dst->hierarchy))
-		return -EINVAL;
 
 	mutex_lock(&dst->lock);
 	mutex_lock_nested(&src->lock, 1);
 	dst->fs_access_mask |= src->fs_access_mask;
-	for (node = rb_first(&src->root); node; node = rb_next(node)) {
-		struct landlock_ruleset_elem *elem = rb_entry(node,
-				struct landlock_ruleset_elem, node);
-		struct landlock_object *object =
-			rcu_dereference_protected(elem->ref.object,
-					lockdep_is_held(&src->lock));
-		struct landlock_rule *rule =
-			rcu_dereference_protected(elem->ref.rule,
-					lockdep_is_held(&src->lock));
 
-		err = landlock_insert_ruleset_rule(dst, object, NULL, rule);
+	/* Merges the @src tree. */
+	rbtree_postorder_for_each_entry_safe(walker_rule, next_rule,
+			&src->root, node) {
+		err = landlock_insert_rule(dst, walker_rule, true);
 		if (err)
 			goto out_unlock;
 	}
@@ -271,154 +201,122 @@ out_unlock:
 	return err;
 }
 
-void landlock_get_ruleset(struct landlock_ruleset *ruleset)
+static struct landlock_ruleset *inherit_ruleset(
+		struct landlock_ruleset *const parent)
 {
-	if (!ruleset)
-		return;
-	refcount_inc(&ruleset->usage);
-}
-
-static void put_hierarchy(struct landlock_hierarchy *hierarchy)
-{
-	if (hierarchy && refcount_dec_and_test(&hierarchy->usage))
-		kfree(hierarchy);
-}
-
-static void put_ruleset(struct landlock_ruleset *ruleset)
-{
-	struct rb_node *orig;
+	struct landlock_rule *walker_rule, *next_rule;
+	struct landlock_ruleset *new_ruleset;
+	int err = 0;
 
 	might_sleep();
-	for (orig = rb_first(&ruleset->root); orig; orig = rb_next(orig)) {
-		struct landlock_ruleset_elem *freeme;
-		struct landlock_object *object;
-		struct landlock_rule *rule;
+	new_ruleset = create_ruleset();
+	if (IS_ERR(new_ruleset))
+		return new_ruleset;
 
-		freeme = rb_entry(orig, struct landlock_ruleset_elem, node);
-		object = rcu_dereference_protected(freeme->ref.object,
-				refcount_read(&ruleset->usage) == 0);
-		rule = rcu_dereference_protected(freeme->ref.rule,
-				refcount_read(&ruleset->usage) == 0);
-		landlock_put_rule(object, rule);
-		kfree_rcu(freeme, rcu_free);
+	new_ruleset->hierarchy = kzalloc(sizeof(*new_ruleset->hierarchy),
+			GFP_KERNEL);
+	if (!new_ruleset->hierarchy) {
+		err = -ENOMEM;
+		goto out_put_ruleset;
 	}
-	put_hierarchy(ruleset->hierarchy);
-	kfree_rcu(ruleset, rcu_free);
+	refcount_set(&new_ruleset->hierarchy->usage, 1);
+	if (!parent) {
+		/* Makes an initial layer. */
+		new_ruleset->top_layer_level = 1;
+		return new_ruleset;
+	}
+
+	mutex_lock(&new_ruleset->lock);
+	mutex_lock_nested(&parent->lock, 1);
+	/* Makes a new layer. */
+	if (parent->top_layer_level == U32_MAX) {
+		err = -E2BIG;
+		goto out_unlock;
+	}
+	new_ruleset->top_layer_level = parent->top_layer_level + 1;
+	new_ruleset->fs_access_mask = parent->fs_access_mask;
+	WARN_ON_ONCE(!parent->hierarchy);
+	get_hierarchy(parent->hierarchy);
+	new_ruleset->hierarchy->parent = parent->hierarchy;
+
+	/* Copies the @parent tree. */
+	rbtree_postorder_for_each_entry_safe(walker_rule, next_rule,
+			&parent->root, node) {
+		err = landlock_insert_rule(new_ruleset, walker_rule, false);
+		if (err)
+			goto out_unlock;
+	}
+	mutex_unlock(&parent->lock);
+	mutex_unlock(&new_ruleset->lock);
+	return new_ruleset;
+
+out_unlock:
+	mutex_unlock(&parent->lock);
+	mutex_unlock(&new_ruleset->lock);
+
+out_put_ruleset:
+	landlock_put_ruleset(new_ruleset);
+	return ERR_PTR(err);
 }
 
-void landlock_put_ruleset(struct landlock_ruleset *ruleset)
+static void free_ruleset(struct landlock_ruleset *const ruleset)
+{
+	struct landlock_rule *freeme, *next;
+
+	might_sleep();
+	rbtree_postorder_for_each_entry_safe(freeme, next, &ruleset->root,
+			node)
+		put_rule(freeme);
+	put_hierarchy(ruleset->hierarchy);
+	kfree(ruleset);
+}
+
+void landlock_put_ruleset(struct landlock_ruleset *const ruleset)
 {
 	might_sleep();
 	if (ruleset && refcount_dec_and_test(&ruleset->usage))
-		put_ruleset(ruleset);
+		free_ruleset(ruleset);
 }
 
-static void put_ruleset_work(struct work_struct *work)
+static void free_ruleset_work(struct work_struct *const work)
 {
 	struct landlock_ruleset *ruleset;
 
-	ruleset = container_of(work, struct landlock_ruleset, work_put);
-	/*
-	 * Clean up rcu_free because of previous use through union work_put.
-	 * ruleset->rcu_free.func is already NULLed by __rcu_reclaim().
-	 */
-	ruleset->rcu_free.next = NULL;
-	put_ruleset(ruleset);
+	ruleset = container_of(work, struct landlock_ruleset, work_free);
+	free_ruleset(ruleset);
 }
 
-void landlock_put_ruleset_enqueue(struct landlock_ruleset *ruleset)
+void landlock_put_ruleset_deferred(struct landlock_ruleset *const ruleset)
 {
 	if (ruleset && refcount_dec_and_test(&ruleset->usage)) {
-		INIT_WORK(&ruleset->work_put, put_ruleset_work);
-		schedule_work(&ruleset->work_put);
+		INIT_WORK(&ruleset->work_free, free_ruleset_work);
+		schedule_work(&ruleset->work_free);
 	}
-}
-
-static bool clean_ref(struct landlock_ref *ref)
-{
-	struct landlock_rule *rule;
-
-	rule = rcu_dereference(ref->rule);
-	if (!rule)
-		return false;
-	if (!landlock_rule_is_disabled(rule))
-		return false;
-	rcu_assign_pointer(ref->rule, NULL);
-	/*
-	 * landlock_put_rule() will not sleep because we already checked
-	 * !landlock_rule_is_disabled(rule).
-	 */
-	landlock_put_rule(rcu_dereference(ref->object), rule);
-	return true;
-}
-
-static void clean_ruleset(struct landlock_ruleset *ruleset)
-{
-	struct rb_node *node;
-
-	if (!ruleset)
-		return;
-	/* We must lock the ruleset to not have a wrong nb_rules counter. */
-	mutex_lock(&ruleset->lock);
-	rcu_read_lock();
-	for (node = rb_first(&ruleset->root); node; node = rb_next(node)) {
-		struct landlock_ruleset_elem *elem = rb_entry(node,
-				struct landlock_ruleset_elem, node);
-
-		if (clean_ref(&elem->ref)) {
-			rb_erase(&elem->node, &ruleset->root);
-			kfree_rcu(elem, rcu_free);
-			atomic_dec(&ruleset->nb_rules);
-		}
-	}
-	rcu_read_unlock();
-	mutex_unlock(&ruleset->lock);
 }
 
 /*
- * Creates a new ruleset, merged of @parent and @ruleset, or return @parent if
- * @ruleset is empty.  If @parent is empty, return a duplicate of @ruleset.
- *
- * @parent: Must not be modified (i.e. locked or read-only).
+ * Creates a new transition domain, intersection of @parent and @ruleset, or
+ * return @parent if @ruleset is empty.  If @parent is empty, returns a
+ * duplicate of @ruleset.
  */
 struct landlock_ruleset *landlock_merge_ruleset(
-		struct landlock_ruleset *parent,
-		struct landlock_ruleset *ruleset)
+		struct landlock_ruleset *const parent,
+		struct landlock_ruleset *const ruleset)
 {
 	struct landlock_ruleset *new_dom;
 	int err;
 
 	might_sleep();
-	/* Opportunistically put disabled rules. */
-	clean_ruleset(ruleset);
-
-	if (parent && WARN_ON_ONCE(!parent->hierarchy))
-		return ERR_PTR(-EINVAL);
 	if (!ruleset || atomic_read(&ruleset->nb_rules) == 0 ||
 			parent == ruleset) {
 		landlock_get_ruleset(parent);
 		return parent;
 	}
 
-	new_dom = create_ruleset();
+	new_dom = inherit_ruleset(parent);
 	if (IS_ERR(new_dom))
 		return new_dom;
-	new_dom->hierarchy = kzalloc(sizeof(*new_dom->hierarchy), GFP_KERNEL);
-	if (!new_dom->hierarchy) {
-		landlock_put_ruleset(new_dom);
-		return ERR_PTR(-ENOMEM);
-	}
-	refcount_set(&new_dom->hierarchy->usage, 1);
 
-	if (parent) {
-		new_dom->hierarchy->parent = parent->hierarchy;
-		refcount_inc(&parent->hierarchy->usage);
-		err = merge_ruleset(new_dom, parent);
-		if (err) {
-			landlock_put_ruleset(new_dom);
-			return ERR_PTR(err);
-		}
-	}
 	err = merge_ruleset(new_dom, ruleset);
 	if (err) {
 		landlock_put_ruleset(new_dom);
@@ -428,33 +326,24 @@ struct landlock_ruleset *landlock_merge_ruleset(
 }
 
 /*
- * The return pointer must only be used in a RCU-read block.
+ * The returned access has the same lifetime as @ruleset.
  */
-const struct landlock_access *landlock_find_access(
-		const struct landlock_ruleset *ruleset,
-		const struct landlock_object *object)
+const struct landlock_rule *landlock_find_rule(
+		const struct landlock_ruleset *const ruleset,
+		const struct landlock_object *const object)
 {
-	struct rb_node *node;
+	const struct rb_node *node;
 
-	WARN_ON_ONCE(!rcu_read_lock_held());
 	if (!object)
 		return NULL;
 	node = ruleset->root.rb_node;
 	while (node) {
-		struct landlock_ruleset_elem *this = rb_entry(node,
-				struct landlock_ruleset_elem, node);
-		uintptr_t this_object =
-			(uintptr_t)rcu_access_pointer(this->ref.object);
+		struct landlock_rule *this = rb_entry(node,
+				struct landlock_rule, node);
 
-		if (this_object == (uintptr_t)object) {
-			struct landlock_rule *rule;
-
-			rule = rcu_dereference(this->ref.rule);
-			if (!landlock_rule_is_disabled(rule))
-				return &rule->access;
-			return NULL;
-		}
-		if (this_object < (uintptr_t)object)
+		if (this->object == object)
+			return this;
+		if (this->object < object)
 			node = node->rb_right;
 		else
 			node = node->rb_left;

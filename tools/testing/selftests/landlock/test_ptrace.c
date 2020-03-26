@@ -17,18 +17,18 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "test.h"
+#include "common.h"
 
-static void create_domain(struct __test_metadata *_metadata)
+static void create_domain(struct __test_metadata *const _metadata)
 {
 	int ruleset_fd, err;
 	struct landlock_attr_features attr_features;
 	struct landlock_attr_enforce attr_enforce;
 	struct landlock_attr_ruleset attr_ruleset = {
-		.handled_access_fs = LANDLOCK_ACCESS_FS_READ,
+		.handled_access_fs = LANDLOCK_ACCESS_FS_READ_FILE,
 	};
 	struct landlock_attr_path_beneath path_beneath = {
-		.allowed_access = LANDLOCK_ACCESS_FS_READ,
+		.allowed_access = LANDLOCK_ACCESS_FS_READ_FILE,
 	};
 
 	ASSERT_EQ(0, landlock(LANDLOCK_CMD_GET_FEATURES,
@@ -70,8 +70,9 @@ static void create_domain(struct __test_metadata *_metadata)
 }
 
 /* test PTRACE_TRACEME and PTRACE_ATTACH for parent and child */
-static void check_ptrace(struct __test_metadata *_metadata,
-		bool domain_both, bool domain_parent, bool domain_child)
+static void check_ptrace(struct __test_metadata *const _metadata,
+		const bool domain_both, const bool domain_parent,
+		const bool domain_child)
 {
 	pid_t child, parent;
 	int status;
