@@ -9489,6 +9489,7 @@ L:	linux-security-module@vger.kernel.org
 W:	https://landlock.io
 T:	git https://github.com/landlock-lsm/linux.git
 S:	Supported
+F:	include/linux/landlock.h
 F:	include/uapi/linux/landlock.h
 F:	security/landlock/
 K:	landlock
