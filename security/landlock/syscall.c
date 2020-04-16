@@ -17,6 +17,7 @@
 #include <linux/fs.h>
 #include <linux/landlock.h>
 #include <linux/limits.h>
+#include <linux/mount.h>
 #include <linux/path.h>
 #include <linux/sched.h>
 #include <linux/security.h>
@@ -127,6 +128,7 @@ static int syscall_get_features(const size_t attr_size,
 
 	/* Checks attribute consistency. */
 	if (attr_size == 0)
+		/* Allows to get a subset of struct landlock_attr_features. */
 		return -ENODATA;
 	if (attr_size > PAGE_SIZE)
 		return -E2BIG;
@@ -144,17 +146,6 @@ static int syscall_get_features(const size_t attr_size,
 }
 
 /* Ruleset handling */
-
-#ifdef CONFIG_PROC_FS
-static void fop_ruleset_show_fdinfo(struct seq_file *const m,
-		struct file *const filp)
-{
-	const struct landlock_ruleset *ruleset = filp->private_data;
-
-	seq_printf(m, "handled_access_fs:\t%x\n", ruleset->fs_access_mask);
-	seq_printf(m, "nb_rules:\t%d\n", atomic_read(&ruleset->nb_rules));
-}
-#endif
 
 static int fop_ruleset_release(struct inode *const inode,
 		struct file *const filp)
@@ -187,9 +178,6 @@ static ssize_t fop_dummy_write(struct file *const filp,
  * current task.
  */
 static const struct file_operations ruleset_fops = {
-#ifdef CONFIG_PROC_FS
-	.show_fdinfo = fop_ruleset_show_fdinfo,
-#endif
 	.release = fop_ruleset_release,
 	.read = fop_dummy_read,
 	.write = fop_dummy_write,
@@ -253,7 +241,7 @@ static struct landlock_ruleset *get_ruleset_from_fd(const u64 fd,
 	/* Checks FD type and access right. */
 	err = 0;
 	if (ruleset_f.file->f_op != &ruleset_fops)
-		err = -EBADR;
+		err = -EBADFD;
 	else if (!(ruleset_f.file->f_mode & mode))
 		err = -EPERM;
 	if (!err) {
@@ -265,17 +253,6 @@ static struct landlock_ruleset *get_ruleset_from_fd(const u64 fd,
 }
 
 /* Path handling */
-
-static inline bool is_user_mountable(const struct dentry *const dentry)
-{
-	/*
-	 * Checks pseudo-filesystems that will never be mountable (e.g. sockfs,
-	 * pipefs, bdev), cf. fs/libfs.c:init_pseudo().
-	 */
-	return d_is_positive(dentry) &&
-		!IS_PRIVATE(dentry->d_inode) &&
-		!(dentry->d_sb->s_flags & SB_NOUSER);
-}
 
 /*
  * @path: Must call put_path(@path) after the call if it succeeded.
@@ -291,20 +268,23 @@ static int get_path_from_fd(const u64 fd, struct path *const path)
 	/* Checks 32-bits overflow.  fdget_raw() checks for INT_MAX/FD. */
 	if (fd > U32_MAX)
 		return -EINVAL;
-
 	/* Handles O_PATH. */
 	f = fdget_raw(fd);
 	if (!f.file)
 		return -EBADF;
-
 	/*
-	 * Only allows O_PATH FD: enables to restrict ambient (FS) accesses
-	 * without requiring to open and risk leaking or misusing a FD.  Accept
-	 * removed, but still open directory (S_DEAD).
+	 * Only allows O_PATH file descriptor: enables to restrict ambient
+	 * filesystem access without requiring to open and risk leaking or
+	 * misusing a file descriptor.  Forbid internal filesystems (e.g.
+	 * nsfs), including pseudo filesystems that will never be mountable
+	 * (e.g. sockfs, pipefs).
 	 */
 	if (!(f.file->f_mode & FMODE_PATH) ||
-			!is_user_mountable(f.file->f_path.dentry)) {
-		err = -EBADR;
+			(f.file->f_path.mnt->mnt_flags & MNT_INTERNAL) ||
+			(f.file->f_path.dentry->d_sb->s_flags & SB_NOUSER) ||
+			d_is_negative(f.file->f_path.dentry) ||
+			IS_PRIVATE(d_backing_inode(f.file->f_path.dentry))) {
+		err = -EBADFD;
 		goto out_fdput;
 	}
 	path->mnt = f.file->f_path.mnt;
@@ -402,7 +382,7 @@ static int syscall_enforce_ruleset(const size_t attr_size,
 		return PTR_ERR(ruleset);
 
 	/* Informs about useless ruleset. */
-	if (!atomic_read(&ruleset->nb_rules)) {
+	if (ruleset->nb_rules == 0) {
 		err = -ENOMSG;
 		goto out_put_ruleset;
 	}

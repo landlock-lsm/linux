@@ -17,24 +17,8 @@
 
 #include "object.h"
 
-#define _LANDLOCK_ACCESS_FS_LAST	LANDLOCK_ACCESS_FS_CHROOT
+#define _LANDLOCK_ACCESS_FS_LAST	LANDLOCK_ACCESS_FS_MAKE_SYM
 #define _LANDLOCK_ACCESS_FS_MASK	((_LANDLOCK_ACCESS_FS_LAST << 1) - 1)
-
-/**
- * struct landlock_access - Set of access rights
- */
-struct landlock_access {
-	/**
-	 * @self: Bitfield of allowed actions on the kernel object.  They are
-	 * relative to the object type (e.g. %LANDLOCK_ACTION_FS_READ).
-	 */
-	u32 self;
-	/**
-	 * @beneath: Same as @self, but for the child objects (e.g. a file in a
-	 * directory).
-	 */
-	u32 beneath;
-};
 
 /**
  * struct landlock_rule - Access rights tied to an object
@@ -61,21 +45,17 @@ struct landlock_rule {
 	 */
 	struct landlock_object *object;
 	/**
-	 * @layer_level: Identifies the layer level of the ruleset from which
-	 * the rule come from.
+	 * @access: Bitfield of allowed actions on the kernel object.  They are
+	 * relative to the object type (e.g. %LANDLOCK_ACTION_FS_READ).  This
+	 * may be the result of the merged access rights (boolean AND) from
+	 * multiple layers referring to the same object.
 	 */
-	u32 layer_level;
+	u32 access;
 	/**
-	 * @layer_depth: Number of rules from different consecutive merged
-	 * layers from which this rule is the result.
+	 * @layers: Bitfield to identify the layers which resulted to @access
+	 * from different consecutive intersections.
 	 */
-	u32 layer_depth;
-	/**
-	 * @access: Access rights for the object.  This may be the result of
-	 * the merged access rights (boolean AND) from multiple layers
-	 * referring to the same object.
-	 */
-	struct landlock_access access;
+	u64 layers;
 };
 
 /**
@@ -116,7 +96,7 @@ struct landlock_ruleset {
 		 * @work_free: Enables to free a ruleset within a lockless
 		 * section.  This is only used by
 		 * landlock_put_ruleset_deferred() when @usage reaches zero.
-		 * The fields @usage, @lock, @top_layer_level, @nb_rules and
+		 * The fields @usage, @lock, @nb_layers, @nb_rules and
 		 * @fs_access_mask are then unused.
 		 */
 		struct work_struct work_free;
@@ -132,18 +112,17 @@ struct landlock_ruleset {
 			 */
 			struct mutex lock;
 			/**
-			 * @top_layer_level: Stores the last merged layer
-			 * level.  This enables to set the layer level of the
-			 * new rules imported from a ruleset, and to check that
-			 * all the layers allow an access request.  The first
-			 * layer level is 1.  A value of 0 identify a
+			 * @nb_rules: Number of non-overlapping (i.e. not for
+			 * the same object) rules in this ruleset.
+			 */
+			u32 nb_rules;
+			/**
+			 * @nb_layers: Number of layers which are used in this
+			 * ruleset.  This enables to check that all the layers
+			 * allow an access request.  A value of 0 identify a
 			 * non-merged ruleset (i.e. not a domain).
 			 */
-			u32 top_layer_level;
-			/**
-			 * @nb_rules: Number of rules in this ruleset.
-			 */
-			atomic_t nb_rules;
+			u32 nb_layers;
 			/**
 			 * @fs_access_mask: Contains the subset of filesystem
 			 * actions which are restricted by a ruleset.  This is

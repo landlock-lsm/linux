@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Landlock tests - ptrace
+ * Landlock tests - Ptrace
  *
  * Copyright © 2017-2020 Mickaël Salaün <mic@digikod.net>
  * Copyright © 2019-2020 ANSSI
@@ -21,7 +21,7 @@
 
 static void create_domain(struct __test_metadata *const _metadata)
 {
-	int ruleset_fd, err;
+	int ruleset_fd;
 	struct landlock_attr_features attr_features;
 	struct landlock_attr_enforce attr_enforce;
 	struct landlock_attr_ruleset attr_ruleset = {
@@ -41,30 +41,27 @@ static void create_domain(struct __test_metadata *const _metadata)
 	ruleset_fd = landlock(LANDLOCK_CMD_CREATE_RULESET,
 			LANDLOCK_OPT_CREATE_RULESET, sizeof(attr_ruleset),
 			&attr_ruleset);
-	ASSERT_GE(ruleset_fd, 0) {
-		TH_LOG("Failed to create a ruleset: %s\n", strerror(errno));
+	ASSERT_LE(0, ruleset_fd) {
+		TH_LOG("Failed to create a ruleset: %s", strerror(errno));
 	}
 	path_beneath.ruleset_fd = ruleset_fd;
 	path_beneath.parent_fd = open("/tmp", O_PATH | O_NOFOLLOW | O_DIRECTORY
 			| O_CLOEXEC);
-	ASSERT_GE(path_beneath.parent_fd, 0);
-	err = landlock(LANDLOCK_CMD_ADD_RULE,
+	ASSERT_LE(0, path_beneath.parent_fd);
+	ASSERT_EQ(0, landlock(LANDLOCK_CMD_ADD_RULE,
 			LANDLOCK_OPT_ADD_RULE_PATH_BENEATH,
-			sizeof(path_beneath), &path_beneath);
-	ASSERT_EQ(err, 0);
-	ASSERT_EQ(errno, 0);
+			sizeof(path_beneath), &path_beneath));
+	ASSERT_EQ(0, errno);
 	ASSERT_EQ(0, close(path_beneath.parent_fd));
 
-	err = prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
-	ASSERT_EQ(errno, 0);
-	ASSERT_EQ(err, 0);
+	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0));
+	ASSERT_EQ(0, errno);
 
 	attr_enforce.ruleset_fd = ruleset_fd;
-	err = landlock(LANDLOCK_CMD_ENFORCE_RULESET,
+	ASSERT_EQ(0, landlock(LANDLOCK_CMD_ENFORCE_RULESET,
 			LANDLOCK_OPT_ENFORCE_RULESET, sizeof(attr_enforce),
-			&attr_enforce);
-	ASSERT_EQ(err, 0);
-	ASSERT_EQ(errno, 0);
+			&attr_enforce));
+	ASSERT_EQ(0, errno);
 
 	ASSERT_EQ(0, close(ruleset_fd));
 }

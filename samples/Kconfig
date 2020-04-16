@@ -122,7 +122,7 @@ config SAMPLE_HIDRAW
 
 config SAMPLE_LANDLOCK
 	bool "Build Landlock sample code"
-	select HEADERS_INSTALL
+	depends on HEADERS_INSTALL
 	help
 	  Build a simple Landlock sandbox manager able to launch a process
 	  restricted by a user-defined filesystem access-control security policy.

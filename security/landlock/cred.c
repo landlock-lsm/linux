@@ -2,8 +2,8 @@
 /*
  * Landlock LSM - Credential hooks
  *
- * Copyright © 2017-2019 Mickaël Salaün <mic@digikod.net>
- * Copyright © 2018-2019 ANSSI
+ * Copyright © 2017-2020 Mickaël Salaün <mic@digikod.net>
+ * Copyright © 2018-2020 ANSSI
  */
 
 #include <linux/cred.h>

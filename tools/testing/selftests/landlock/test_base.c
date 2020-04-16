@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Landlock tests - common resources
+ * Landlock tests - Common user space base
  *
  * Copyright © 2017-2020 Mickaël Salaün <mic@digikod.net>
  * Copyright © 2019-2020 ANSSI
@@ -14,37 +14,9 @@
 
 #include "common.h"
 
-#define FDINFO_TEMPLATE "/proc/self/fdinfo/%d"
-#define FDINFO_SIZE 128
-
 #ifndef O_PATH
 #define O_PATH		010000000
 #endif
-
-TEST_F(ruleset_rw, fdinfo)
-{
-	int fdinfo_fd, fdinfo_path_size, fdinfo_buf_size;
-	char fdinfo_path[sizeof(FDINFO_TEMPLATE) + 2];
-	char fdinfo_buf[FDINFO_SIZE];
-
-	fdinfo_path_size = snprintf(fdinfo_path, sizeof(fdinfo_path),
-			FDINFO_TEMPLATE, self->ruleset_fd);
-	ASSERT_LE(fdinfo_path_size, sizeof(fdinfo_path));
-
-	fdinfo_fd = open(fdinfo_path, O_RDONLY | O_CLOEXEC);
-	ASSERT_GE(fdinfo_fd, 0);
-
-	fdinfo_buf_size = read(fdinfo_fd, fdinfo_buf, sizeof(fdinfo_buf));
-	ASSERT_LE(fdinfo_buf_size, sizeof(fdinfo_buf) - 1);
-
-	/*
-	 * fdinfo_buf: pos:        0
-	 * flags:  02000002
-	 * mnt_id: 13
-	 * handled_access_fs:     804000
-	 */
-	EXPECT_EQ(0, close(fdinfo_fd));
-}
 
 TEST(features)
 {
@@ -70,7 +42,7 @@ TEST(features)
 			attr_features.options_add_rule);
 	ASSERT_EQ(((LANDLOCK_OPT_ENFORCE_RULESET << 1) - 1),
 			attr_features.options_enforce_ruleset);
-	ASSERT_EQ(((LANDLOCK_ACCESS_FS_CHROOT << 1) - 1),
+	ASSERT_EQ(((LANDLOCK_ACCESS_FS_MAKE_SYM << 1) - 1),
 			attr_features.access_fs);
 	ASSERT_EQ(sizeof(struct landlock_attr_ruleset),
 		attr_features.size_attr_ruleset);
@@ -80,34 +52,105 @@ TEST(features)
 		attr_features.size_attr_enforce);
 }
 
-TEST(empty_attr_ruleset) {
-	int err;
+TEST(inconsistent_attr) {
+	const long page_size = sysconf(_SC_PAGESIZE);
+	char *buf = malloc(page_size + 1);
 
+	/* Checks copy_from_user(). */
+	ASSERT_EQ(-1, landlock(LANDLOCK_CMD_CREATE_RULESET,
+			LANDLOCK_OPT_CREATE_RULESET, 0, buf));
+	/* The size if less than sizeof(struct landlock_attr_enforce). */
+	ASSERT_EQ(EINVAL, errno);
+
+	ASSERT_EQ(-1, landlock(LANDLOCK_CMD_CREATE_RULESET,
+			LANDLOCK_OPT_CREATE_RULESET, 1, NULL));
+	/* The size if less than sizeof(struct landlock_attr_enforce). */
+	ASSERT_EQ(EINVAL, errno);
+
+	ASSERT_EQ(-1, landlock(LANDLOCK_CMD_CREATE_RULESET,
+			LANDLOCK_OPT_CREATE_RULESET,
+			sizeof(struct landlock_attr_enforce), NULL));
+	ASSERT_EQ(EFAULT, errno);
+
+	ASSERT_EQ(-1, landlock(LANDLOCK_CMD_CREATE_RULESET,
+			LANDLOCK_OPT_CREATE_RULESET, page_size + 1, buf));
+	ASSERT_EQ(E2BIG, errno);
+
+	ASSERT_EQ(-1, landlock(LANDLOCK_CMD_CREATE_RULESET,
+			LANDLOCK_OPT_CREATE_RULESET, page_size, buf));
+	ASSERT_EQ(ENOMSG, errno);
+
+	/* Checks non-zero value. */
+	buf[page_size - 2] = '.';
+	ASSERT_EQ(-1, landlock(LANDLOCK_CMD_CREATE_RULESET,
+			LANDLOCK_OPT_CREATE_RULESET, page_size, buf));
+	ASSERT_EQ(E2BIG, errno);
+	ASSERT_EQ(-1, landlock(LANDLOCK_CMD_CREATE_RULESET,
+			LANDLOCK_OPT_CREATE_RULESET, page_size + 1, buf));
+	ASSERT_EQ(E2BIG, errno);
+
+	/* Checks copy_to_user(). */
+	ASSERT_EQ(-1, landlock(LANDLOCK_CMD_GET_FEATURES,
+			LANDLOCK_OPT_GET_FEATURES, 0, NULL));
+	ASSERT_EQ(ENODATA, errno);
+	ASSERT_EQ(-1, landlock(LANDLOCK_CMD_GET_FEATURES,
+			LANDLOCK_OPT_GET_FEATURES, 0, buf));
+	ASSERT_EQ(ENODATA, errno);
+	ASSERT_EQ(0, landlock(LANDLOCK_CMD_GET_FEATURES,
+				LANDLOCK_OPT_GET_FEATURES, 1, buf));
+	ASSERT_EQ(-1, landlock(LANDLOCK_CMD_GET_FEATURES,
+			LANDLOCK_OPT_GET_FEATURES, page_size + 1, buf));
+	ASSERT_EQ(E2BIG, errno);
+	ASSERT_EQ('.', buf[page_size - 2]);
+	ASSERT_EQ(0, landlock(LANDLOCK_CMD_GET_FEATURES,
+			LANDLOCK_OPT_GET_FEATURES, page_size, buf));
+	ASSERT_EQ('\0', buf[page_size - 2]);
+
+	free(buf);
+}
+
+TEST(empty_attr_ruleset) {
 	/* Similar to struct landlock_attr_create.handled_access_fs = 0 */
-	err = landlock(LANDLOCK_CMD_CREATE_RULESET,
-			LANDLOCK_OPT_CREATE_RULESET, 0, NULL);
-	ASSERT_EQ(errno, EINVAL);
-	ASSERT_EQ(err, -1);
+	ASSERT_EQ(-1, landlock(LANDLOCK_CMD_CREATE_RULESET,
+			LANDLOCK_OPT_CREATE_RULESET, 0, NULL));
+	ASSERT_EQ(EINVAL, errno);
 }
 
 TEST(empty_attr_path_beneath) {
-	int err;
-
 	/* Similar to struct landlock_attr_path_beneath.*_fd = 0 */
-	err = landlock(LANDLOCK_CMD_ADD_RULE,
-			LANDLOCK_OPT_ADD_RULE_PATH_BENEATH, 0, NULL);
-	ASSERT_EQ(errno, EINVAL);
-	ASSERT_EQ(err, -1);
+	ASSERT_EQ(-1, landlock(LANDLOCK_CMD_ADD_RULE,
+			LANDLOCK_OPT_ADD_RULE_PATH_BENEATH, 0, NULL));
+	ASSERT_EQ(EINVAL, errno);
 }
 
 TEST(empty_attr_enforce) {
-	int err;
+	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0));
 
 	/* Similar to struct landlock_attr_enforce.ruleset_fd = 0 */
-	err = landlock(LANDLOCK_CMD_ENFORCE_RULESET,
-			LANDLOCK_OPT_ENFORCE_RULESET, 0, NULL);
-	ASSERT_EQ(errno, EINVAL);
-	ASSERT_EQ(err, -1);
+	ASSERT_EQ(-1, landlock(LANDLOCK_CMD_ENFORCE_RULESET,
+			LANDLOCK_OPT_ENFORCE_RULESET, 0, NULL));
+	ASSERT_EQ(EINVAL, errno);
+}
+
+TEST(ruleset_fd)
+{
+	struct landlock_attr_ruleset attr_ruleset = {
+		.handled_access_fs = LANDLOCK_ACCESS_FS_READ_FILE,
+	};
+	int ruleset_fd;
+	char buf;
+
+	ruleset_fd = landlock(LANDLOCK_CMD_CREATE_RULESET,
+			LANDLOCK_OPT_CREATE_RULESET, sizeof(attr_ruleset),
+			&attr_ruleset);
+	ASSERT_LE(0, ruleset_fd);
+
+	ASSERT_EQ(-1, write(ruleset_fd, ".", 1));
+	ASSERT_EQ(EINVAL, errno);
+	ASSERT_EQ(-1, read(ruleset_fd, &buf, 1));
+	ASSERT_EQ(EINVAL, errno);
+
+	ASSERT_EQ(0, close(ruleset_fd));
 }
 
 TEST_HARNESS_MAIN

@@ -6,6 +6,7 @@
  * Copyright © 2018-2020 ANSSI
  */
 
+#include <linux/atomic.h>
 #include <linux/compiler_types.h>
 #include <linux/dcache.h>
 #include <linux/fs.h>
@@ -192,20 +193,29 @@ retry:
 	}
 }
 
+/* All access rights which can be tied to files. */
+#define ACCESS_FILE ( \
+	LANDLOCK_ACCESS_FS_EXECUTE | \
+	LANDLOCK_ACCESS_FS_WRITE_FILE | \
+	LANDLOCK_ACCESS_FS_READ_FILE)
+
 /*
  * @path: Should have been checked by get_path_from_fd().
  */
 int landlock_append_fs_rule(struct landlock_ruleset *const ruleset,
-		const struct path *const path, u32 access_hierarchy)
+		const struct path *const path, u32 access_rights)
 {
 	int err;
 	struct landlock_rule rule = {};
 
+	/* Files only get access rights that make sense. */
+	if (!d_is_dir(path->dentry) && (access_rights | ACCESS_FILE) !=
+			ACCESS_FILE)
+		return -EINVAL;
+
 	/* Transforms relative access rights to absolute ones. */
-	access_hierarchy |= _LANDLOCK_ACCESS_FS_MASK &
-		~ruleset->fs_access_mask;
-	rule.access.self = access_hierarchy;
-	rule.access.beneath = access_hierarchy;
+	access_rights |= _LANDLOCK_ACCESS_FS_MASK & ~ruleset->fs_access_mask;
+	rule.access = access_rights;
 	rule.object = get_inode_object(d_backing_inode(path->dentry));
 	mutex_lock(&ruleset->lock);
 	err = landlock_insert_rule(ruleset, &rule, false);
@@ -223,38 +233,29 @@ int landlock_append_fs_rule(struct landlock_ruleset *const ruleset,
 static bool check_access_path_continue(
 		const struct landlock_ruleset *const domain,
 		const struct path *const path, const u32 access_request,
-		const bool check_self, bool *const allow,
-		u32 *const layer_level)
+		bool *const allow, u64 *const layer_mask)
 {
 	const struct landlock_rule *rule;
 	const struct inode *inode;
 	bool next = true;
 
-	inode = d_backing_inode(path->dentry);
-	if (WARN_ON_ONCE(!inode)) {
-		/*
-		 * Access denied when the absolute path contains a dentry
-		 * without inode.
-		 */
-		*allow = false;
-		return false;
-	}
 	prefetch(path->dentry->d_parent);
+	if (d_is_negative(path->dentry))
+		/* Continues to walk while there is no mapped inode. */
+		return true;
+	inode = d_backing_inode(path->dentry);
 	rcu_read_lock();
 	rule = landlock_find_rule(domain,
 			rcu_dereference(inode_landlock(inode)->object));
 	rcu_read_unlock();
 
-	/* Checks for a matching layer level range. */
-	if (rule && (rule->layer_level - rule->layer_depth) < *layer_level &&
-			*layer_level <= rule->layer_level) {
-		*allow = ((check_self ? rule->access.self :
-					rule->access.beneath) & access_request)
-				== access_request;
+	/* Checks for matching layers. */
+	if (rule && (rule->layers | *layer_mask)) {
+		*allow = (rule->access & access_request) == access_request;
 		if (*allow) {
-			*layer_level -= rule->layer_depth;
-			/* Stops when reaching the last layer. */
-			next = (*layer_level > 0);
+			*layer_mask &= ~rule->layers;
+			/* Stops when a rule from each layer granted access. */
+			next = !!*layer_mask;
 		} else {
 			next = false;
 		}
@@ -267,10 +268,23 @@ static int check_access_path(const struct landlock_ruleset *const domain,
 {
 	bool allow = false;
 	struct path walker_path;
-	u32 walker_layer_level = domain->top_layer_level;
+	u64 layer_mask;
 
 	if (WARN_ON_ONCE(!path))
 		return 0;
+	/*
+	 * Allows access to pseudo filesystems that will never be mountable
+	 * (e.g. sockfs, pipefs), but can still be reachable through
+	 * /proc/self/fd .
+	 */
+	if ((path->dentry->d_sb->s_flags & SB_NOUSER) ||
+			(d_is_positive(path->dentry) &&
+			 unlikely(IS_PRIVATE(d_backing_inode(path->dentry)))))
+		return 0;
+	if (WARN_ON_ONCE(domain->nb_layers < 1))
+		return -EACCES;
+
+	layer_mask = GENMASK_ULL(domain->nb_layers - 1, 0);
 	/*
 	 * An access request which is not handled by the domain should be
 	 * allowed.
@@ -280,50 +294,44 @@ static int check_access_path(const struct landlock_ruleset *const domain,
 		return 0;
 	walker_path = *path;
 	path_get(&walker_path);
-	if (check_access_path_continue(domain, &walker_path, access_request,
-				true, &allow, &walker_layer_level)) {
-		/*
-		 * We need to walk through all the hierarchy to not miss any
-		 * relevant restriction.
-		 */
-		do {
-			struct dentry *parent_dentry;
+	/*
+	 * We need to walk through all the hierarchy to not miss any relevant
+	 * restriction.
+	 */
+	while (check_access_path_continue(domain, &walker_path, access_request,
+				&allow, &layer_mask)) {
+		struct dentry *parent_dentry;
 
 jump_up:
-			/*
-			 * Does not work with orphaned/private mounts like
-			 * overlayfs layers for now (cf. ovl_path_real() and
-			 * ovl_path_open()).
-			 */
-			if (walker_path.dentry == walker_path.mnt->mnt_root) {
-				if (follow_up(&walker_path)) {
-					/* Ignores hidden mount points. */
-					goto jump_up;
-				} else {
-					/*
-					 * Stops at the real root.  Denies
-					 * access because not all layers have
-					 * granted access.
-					 */
-					allow = false;
-					break;
-				}
-			}
-			if (IS_ROOT(walker_path.dentry)) {
+		/*
+		 * Does not work with orphaned/private mounts like overlayfs
+		 * layers for now (cf. ovl_path_real() and ovl_path_open()).
+		 */
+		if (walker_path.dentry == walker_path.mnt->mnt_root) {
+			if (follow_up(&walker_path)) {
+				/* Ignores hidden mount points. */
+				goto jump_up;
+			} else {
 				/*
-				 * Stops at directory without mount points
-				 * (e.g. pipes).  Denies access because not all
-				 * layers have granted access.
+				 * Stops at the real root.  Denies access
+				 * because not all layers have granted access.
 				 */
 				allow = false;
 				break;
 			}
-			parent_dentry = dget_parent(walker_path.dentry);
-			dput(walker_path.dentry);
-			walker_path.dentry = parent_dentry;
-		} while (check_access_path_continue(domain, &walker_path,
-					access_request, false, &allow,
-					&walker_layer_level));
+		}
+		if (unlikely(IS_ROOT(walker_path.dentry))) {
+			/*
+			 * Stops at disconnected root directories.  Only allows
+			 * access to internal filesystems (e.g. nsfs which is
+			 * reachable through /proc/self/ns).
+			 */
+			allow = !!(walker_path.mnt->mnt_flags & MNT_INTERNAL);
+			break;
+		}
+		parent_dentry = dget_parent(walker_path.dentry);
+		dput(walker_path.dentry);
+		walker_path.dentry = parent_dentry;
 	}
 	path_put(&walker_path);
 	return allow ? 0 : -EACCES;
@@ -413,19 +421,6 @@ static int hook_sb_pivotroot(const struct path *const old_path,
 
 /* Path hooks */
 
-static int hook_path_link(struct dentry *const old_dentry,
-		const struct path *const new_dir,
-		struct dentry *const new_dentry)
-{
-	return current_check_access_path(new_dir, LANDLOCK_ACCESS_FS_LINK_TO);
-}
-
-static int hook_path_mkdir(const struct path *const dir,
-		struct dentry *const dentry, const umode_t mode)
-{
-	return current_check_access_path(dir, LANDLOCK_ACCESS_FS_MAKE_DIR);
-}
-
 static inline u32 get_mode_access(const umode_t mode)
 {
 	switch (mode & S_IFMT) {
@@ -449,6 +444,69 @@ static inline u32 get_mode_access(const umode_t mode)
 	}
 }
 
+/*
+ * Creating multiple links or renaming may lead to privilege escalations if not
+ * handled properly.  Indeed, we must be sure that the source doesn't gain more
+ * privileges by being accessible from the destination.  This is getting more
+ * complex when dealing with multiple layers.  The whole picture can be seen as
+ * a multilayer partial ordering problem.  A future version of Landlock will
+ * deal with that.
+ */
+static int hook_path_link(struct dentry *const old_dentry,
+		const struct path *const new_dir,
+		struct dentry *const new_dentry)
+{
+	struct landlock_ruleset *dom;
+
+	dom = landlock_get_current_domain();
+	if (!dom)
+		return 0;
+	/* The mount points are the same for old and new paths, cf. EXDEV. */
+	if (old_dentry->d_parent != new_dir->dentry)
+		/* For now, forbid reparenting. */
+		return -EACCES;
+	if (unlikely(d_is_negative(old_dentry)))
+		return -EACCES;
+	return check_access_path(dom, new_dir,
+			get_mode_access(d_backing_inode(old_dentry)->i_mode));
+}
+
+static inline u32 maybe_remove(const struct dentry *const dentry)
+{
+	if (d_is_negative(dentry))
+		return 0;
+	return d_is_dir(dentry) ? LANDLOCK_ACCESS_FS_REMOVE_DIR :
+		LANDLOCK_ACCESS_FS_REMOVE_FILE;
+}
+
+static int hook_path_rename(const struct path *const old_dir,
+		struct dentry *const old_dentry,
+		const struct path *const new_dir,
+		struct dentry *const new_dentry)
+{
+	struct landlock_ruleset *dom;
+
+	dom = landlock_get_current_domain();
+	if (!dom)
+		return 0;
+	/* The mount points are the same for old and new paths, cf. EXDEV. */
+	if (old_dir->dentry != new_dir->dentry)
+		/* For now, forbid reparenting. */
+		return -EACCES;
+	if (WARN_ON_ONCE(d_is_negative(old_dentry)))
+		return -EACCES;
+	/* RENAME_EXCHANGE is handled because directories are the same. */
+	return check_access_path(dom, old_dir, maybe_remove(old_dentry) |
+			maybe_remove(new_dentry) |
+			get_mode_access(d_backing_inode(old_dentry)->i_mode));
+}
+
+static int hook_path_mkdir(const struct path *const dir,
+		struct dentry *const dentry, const umode_t mode)
+{
+	return current_check_access_path(dir, LANDLOCK_ACCESS_FS_MAKE_DIR);
+}
+
 static int hook_path_mknod(const struct path *const dir,
 		struct dentry *const dentry, const umode_t mode,
 		const unsigned int dev)
@@ -465,30 +523,13 @@ static int hook_path_symlink(const struct path *const dir,
 static int hook_path_unlink(const struct path *const dir,
 		struct dentry *const dentry)
 {
-	return current_check_access_path(dir, LANDLOCK_ACCESS_FS_UNLINK);
+	return current_check_access_path(dir, LANDLOCK_ACCESS_FS_REMOVE_FILE);
 }
 
 static int hook_path_rmdir(const struct path *const dir,
 		struct dentry *const dentry)
 {
-	return current_check_access_path(dir, LANDLOCK_ACCESS_FS_RMDIR);
-}
-
-static int hook_path_rename(const struct path *const old_dir,
-		struct dentry *const old_dentry,
-		const struct path *const new_dir,
-		struct dentry *const new_dentry)
-{
-	struct landlock_ruleset *dom;
-	int err;
-
-	dom = landlock_get_current_domain();
-	if (!dom)
-		return 0;
-	err = check_access_path(dom, old_dir, LANDLOCK_ACCESS_FS_RENAME_FROM);
-	if (err)
-		return err;
-	return check_access_path(dom, new_dir, LANDLOCK_ACCESS_FS_RENAME_TO);
+	return current_check_access_path(dir, LANDLOCK_ACCESS_FS_REMOVE_DIR);
 }
 
 static int hook_path_chroot(const struct path *const path)
@@ -505,12 +546,11 @@ static inline u32 get_file_access(const struct file *const file)
 	if (file->f_mode & FMODE_READ) {
 		/* A directory can only be opened in read mode. */
 		if (S_ISDIR(file_inode(file)->i_mode))
-			access |= LANDLOCK_ACCESS_FS_READ_DIR;
-		else
-			access |= LANDLOCK_ACCESS_FS_READ_FILE;
+			return LANDLOCK_ACCESS_FS_READ_DIR;
+		access = LANDLOCK_ACCESS_FS_READ_FILE;
 	}
 	/*
-	 * A LANDLOCK_ACCESS_FS_APPEND could be added be we also need to check
+	 * A LANDLOCK_ACCESS_FS_APPEND could be added but we also need to check
 	 * fcntl(2).
 	 */
 	if (file->f_mode & FMODE_WRITE)
@@ -543,12 +583,12 @@ static struct security_hook_list landlock_hooks[] __lsm_ro_after_init = {
 	LSM_HOOK_INIT(sb_pivotroot, hook_sb_pivotroot),
 
 	LSM_HOOK_INIT(path_link, hook_path_link),
+	LSM_HOOK_INIT(path_rename, hook_path_rename),
 	LSM_HOOK_INIT(path_mkdir, hook_path_mkdir),
 	LSM_HOOK_INIT(path_mknod, hook_path_mknod),
 	LSM_HOOK_INIT(path_symlink, hook_path_symlink),
 	LSM_HOOK_INIT(path_unlink, hook_path_unlink),
 	LSM_HOOK_INIT(path_rmdir, hook_path_rmdir),
-	LSM_HOOK_INIT(path_rename, hook_path_rename),
 	LSM_HOOK_INIT(path_chroot, hook_path_chroot),
 
 	LSM_HOOK_INIT(file_open, hook_file_open),

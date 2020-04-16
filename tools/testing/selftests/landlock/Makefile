@@ -7,6 +7,7 @@ TEST_GEN_PROGS := $(test_src:.c=)
 TEST_GEN_PROGS_EXTENDED := true
 
 KSFT_KHDR_INSTALL := 1
+OVERRIDE_TARGETS := 1
 include ../lib.mk
 
 # Cf. tools/testing/selftests/arm64/Makefile
@@ -16,11 +17,13 @@ else
 khdr_dir = $(KBUILD_OUTPUT)/kselftest/usr/include
 endif
 
-CFLAGS += -Wall -O2 -I$(khdr_dir)
+CFLAGS += -Wall -O2
 
 $(khdr_dir)/linux/landlock.h: khdr
-
-$(TEST_GEN_PROGS): $(khdr_dir)/linux/landlock.h ../kselftest_harness.h common.h
+	@:
 
 $(OUTPUT)/true: true.c
-	$(CC) -Os -static -o $@ $<
+	$(LINK.c) $< $(LDLIBS) -o $@ -static
+
+$(OUTPUT)/test_%:test_%.c $(khdr_dir)/linux/landlock.h ../kselftest_harness.h common.h
+	$(LINK.c) $< $(LDLIBS) -o $@ -lcap -I$(khdr_dir)

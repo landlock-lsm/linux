@@ -66,4 +66,4 @@ makes the reasoning much easier and helps avoid pitfalls.
     :identifiers:
 
 .. Links
-.. _tools/testing/selftests/landlock/: https://github.com/landlock-lsm/linux/tree/landlock-v15/tools/testing/selftests/landlock/
+.. _tools/testing/selftests/landlock/: https://github.com/landlock-lsm/linux/tree/landlock-v16/tools/testing/selftests/landlock/

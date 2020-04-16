@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -53,6 +54,11 @@ static int parse_path(char *env_path, const char ***const path_list)
 	return path_nb;
 }
 
+#define ACCESS_FILE ( \
+	LANDLOCK_ACCESS_FS_EXECUTE | \
+	LANDLOCK_ACCESS_FS_WRITE_FILE | \
+	LANDLOCK_ACCESS_FS_READ_FILE)
+
 static int populate_ruleset(
 		const struct landlock_attr_features *const attr_features,
 		const char *const env_var, const int ruleset_fd,
@@ -63,7 +69,6 @@ static int populate_ruleset(
 	const char **path_list = NULL;
 	struct landlock_attr_path_beneath path_beneath = {
 		.ruleset_fd = ruleset_fd,
-		.allowed_access = allowed_access,
 		.parent_fd = -1,
 	};
 
@@ -80,9 +85,9 @@ static int populate_ruleset(
 		goto err_free_name;
 	}
 
-	/* Follows a best-effort approach. */
-	path_beneath.allowed_access &= attr_features->access_fs;
 	for (i = 0; i < path_nb; i++) {
+		struct stat statbuf;
+
 		path_beneath.parent_fd = open(path_list[i], O_PATH |
 				O_CLOEXEC);
 		if (path_beneath.parent_fd < 0) {
@@ -91,6 +96,15 @@ static int populate_ruleset(
 					strerror(errno));
 			goto err_free_name;
 		}
+		if (fstat(path_beneath.parent_fd, &statbuf)) {
+			close(path_beneath.parent_fd);
+			goto err_free_name;
+		}
+		/* Follows a best-effort approach. */
+		path_beneath.allowed_access = allowed_access &
+			attr_features->access_fs;
+		if (!S_ISDIR(statbuf.st_mode))
+			path_beneath.allowed_access &= ACCESS_FILE;
 		if (landlock(LANDLOCK_CMD_ADD_RULE,
 					LANDLOCK_OPT_ADD_RULE_PATH_BENEATH,
 					sizeof(path_beneath), &path_beneath)) {
@@ -117,11 +131,8 @@ err_free_name:
 
 #define ACCESS_FS_ROUGHLY_WRITE ( \
 	LANDLOCK_ACCESS_FS_WRITE_FILE | \
-	LANDLOCK_ACCESS_FS_LINK_TO | \
-	LANDLOCK_ACCESS_FS_RENAME_FROM | \
-	LANDLOCK_ACCESS_FS_RENAME_TO | \
-	LANDLOCK_ACCESS_FS_RMDIR | \
-	LANDLOCK_ACCESS_FS_UNLINK | \
+	LANDLOCK_ACCESS_FS_REMOVE_DIR | \
+	LANDLOCK_ACCESS_FS_REMOVE_FILE | \
 	LANDLOCK_ACCESS_FS_MAKE_CHAR | \
 	LANDLOCK_ACCESS_FS_MAKE_DIR | \
 	LANDLOCK_ACCESS_FS_MAKE_REG | \

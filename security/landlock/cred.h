@@ -44,6 +44,9 @@ static inline bool landlocked(const struct task_struct *const task)
 {
 	bool has_dom;
 
+	if (task == current)
+		return !!landlock_get_current_domain();
+
 	rcu_read_lock();
 	has_dom = !!landlock_get_task_domain(task);
 	rcu_read_unlock();

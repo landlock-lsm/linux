@@ -51,8 +51,7 @@ struct landlock_object {
 	 * from the time @usage drops to zero until any weak references from
 	 * @underobj to this object have been cleaned up.
 	 *
-	 * Lock ordering:
-	 *  - inode->i_lock nests inside this.
+	 * Lock ordering: inode->i_lock nests inside this.
 	 */
 	spinlock_t lock;
 	/**
