@@ -826,6 +826,13 @@ config COMPAT_32BIT_TIME
 config ARCH_NO_PREEMPT
 	bool
 
+config ARCH_EPHEMERAL_STATES
+	def_bool n
+	help
+	  An arch should select this symbol if it do not keep an internal kernel
+	  state for kernel objects such as inodes, but instead rely on something
+	  else (e.g. the host kernel for an UML kernel).
+
 config ARCH_SUPPORTS_RT
 	bool
 

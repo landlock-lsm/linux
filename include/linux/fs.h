@@ -1517,6 +1517,11 @@ struct super_block {
 	/* Pending fsnotify inode refs */
 	atomic_long_t s_fsnotify_inode_refs;
 
+#ifdef CONFIG_SECURITY_LANDLOCK
+	/* References to Landlock underlying objects */
+	atomic_long_t s_landlock_inode_refs;
+#endif
+
 	/* Being remounted read-only */
 	int s_readonly_remount;
 
