@@ -120,6 +120,13 @@ config SAMPLE_HIDRAW
 	bool "hidraw sample"
 	depends on HEADERS_INSTALL
 
+config SAMPLE_LANDLOCK
+	bool "Build Landlock sample code"
+	depends on HEADERS_INSTALL
+	help
+	  Build a simple Landlock sandbox manager able to launch a process
+	  restricted by a user-defined filesystem access-control security policy.
+
 config SAMPLE_PIDFD
 	bool "pidfd sample"
 	depends on HEADERS_INSTALL
