@@ -23,12 +23,12 @@
 
 #ifndef landlock
 static inline int landlock(const unsigned int command,
-		const unsigned int options,
-		const size_t attr_size, void *const attr_ptr)
+		const unsigned int options, void *const attr_ptr,
+		const size_t attr_size)
 {
 	errno = 0;
-	return syscall(__NR_landlock, command, options, attr_size, attr_ptr, 0,
-			NULL);
+	return syscall(__NR_landlock, command, options, attr_ptr, attr_size,
+			NULL, 0);
 }
 #endif
 
@@ -107,7 +107,7 @@ static int populate_ruleset(
 			path_beneath.allowed_access &= ACCESS_FILE;
 		if (landlock(LANDLOCK_CMD_ADD_RULE,
 					LANDLOCK_OPT_ADD_RULE_PATH_BENEATH,
-					sizeof(path_beneath), &path_beneath)) {
+					&path_beneath, sizeof(path_beneath))) {
 			fprintf(stderr, "Failed to update the ruleset with \"%s\": %s\n",
 					path_list[i], strerror(errno));
 			close(path_beneath.parent_fd);
@@ -171,7 +171,7 @@ int main(const int argc, char *const argv[], char *const *const envp)
 	}
 
 	if (landlock(LANDLOCK_CMD_GET_FEATURES, LANDLOCK_OPT_GET_FEATURES,
-				sizeof(attr_features), &attr_features)) {
+				&attr_features, sizeof(attr_features))) {
 		perror("Failed to probe the Landlock supported features");
 		switch (errno) {
 		case ENOSYS:
@@ -186,8 +186,8 @@ int main(const int argc, char *const argv[], char *const *const envp)
 	/* Follows a best-effort approach. */
 	ruleset.handled_access_fs &= attr_features.access_fs;
 	ruleset_fd = landlock(LANDLOCK_CMD_CREATE_RULESET,
-			LANDLOCK_OPT_CREATE_RULESET, sizeof(ruleset),
-			&ruleset);
+			LANDLOCK_OPT_CREATE_RULESET, &ruleset,
+			sizeof(ruleset));
 	if (ruleset_fd < 0) {
 		perror("Failed to create a ruleset");
 		return 1;
@@ -207,8 +207,8 @@ int main(const int argc, char *const argv[], char *const *const envp)
 	}
 	attr_enforce.ruleset_fd = ruleset_fd;
 	if (landlock(LANDLOCK_CMD_ENFORCE_RULESET,
-				LANDLOCK_OPT_ENFORCE_RULESET,
-				sizeof(attr_enforce), &attr_enforce)) {
+				LANDLOCK_OPT_ENFORCE_RULESET, &attr_enforce,
+				sizeof(attr_enforce))) {
 		perror("Failed to enforce ruleset");
 		goto err_close_ruleset;
 	}

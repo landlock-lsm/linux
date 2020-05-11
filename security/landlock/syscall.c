@@ -105,8 +105,8 @@ static int copy_struct_if_any_from_user(void *const dst, const size_t ksize,
 #define _LANDLOCK_OPT_ENFORCE_RULESET_LAST	LANDLOCK_OPT_ENFORCE_RULESET
 #define _LANDLOCK_OPT_ENFORCE_RULESET_MASK	((_LANDLOCK_OPT_ENFORCE_RULESET_LAST << 1) - 1)
 
-static int syscall_get_features(const size_t attr_size,
-		void __user *const attr_ptr)
+static int syscall_get_features(void __user *const attr_ptr,
+		const size_t attr_size)
 {
 	size_t data_size, fill_size;
 	const struct landlock_attr_features supported = {
@@ -114,11 +114,12 @@ static int syscall_get_features(const size_t attr_size,
 		.options_create_ruleset = _LANDLOCK_OPT_CREATE_RULESET_MASK,
 		.options_add_rule = _LANDLOCK_OPT_ADD_RULE_MASK,
 		.options_enforce_ruleset = _LANDLOCK_OPT_ENFORCE_RULESET_MASK,
-		.access_fs = _LANDLOCK_ACCESS_FS_MASK,
+		.size_attr_features = sizeof(struct landlock_attr_features),
 		.size_attr_ruleset = sizeof(struct landlock_attr_ruleset),
 		.size_attr_path_beneath = sizeof(struct
 				landlock_attr_path_beneath),
 		.size_attr_enforce = sizeof(struct landlock_attr_enforce),
+		.access_fs = _LANDLOCK_ACCESS_FS_MASK,
 	};
 
 	BUILD_BUG_ON(!__same_type(supported.access_fs,
@@ -183,8 +184,8 @@ static const struct file_operations ruleset_fops = {
 	.write = fop_dummy_write,
 };
 
-static int syscall_create_ruleset(const size_t attr_size,
-		const void __user *const attr_ptr)
+static int syscall_create_ruleset(const void __user *const attr_ptr,
+		const size_t attr_size)
 {
 	struct landlock_attr_ruleset attr_ruleset;
 	struct landlock_ruleset *ruleset;
@@ -219,7 +220,7 @@ static int syscall_create_ruleset(const size_t attr_size,
  * Returns an owned ruleset from a FD. It is thus needed to call
  * landlock_put_ruleset() on the return value.
  */
-static struct landlock_ruleset *get_ruleset_from_fd(const u64 fd,
+static struct landlock_ruleset *get_ruleset_from_fd(const s32 fd,
 		const fmode_t mode)
 {
 	struct fd ruleset_f;
@@ -231,9 +232,6 @@ static struct landlock_ruleset *get_ruleset_from_fd(const u64 fd,
 	BUILD_BUG_ON(!__same_type(fd,
 		((struct landlock_attr_enforce *)NULL)->ruleset_fd));
 
-	/* Checks 32-bits overflow. fdget() checks for INT_MAX/FD. */
-	if (fd > U32_MAX)
-		return ERR_PTR(-EINVAL);
 	ruleset_f = fdget(fd);
 	if (!ruleset_f.file)
 		return ERR_PTR(-EBADF);
@@ -257,7 +255,7 @@ static struct landlock_ruleset *get_ruleset_from_fd(const u64 fd,
 /*
  * @path: Must call put_path(@path) after the call if it succeeded.
  */
-static int get_path_from_fd(const u64 fd, struct path *const path)
+static int get_path_from_fd(const s32 fd, struct path *const path)
 {
 	struct fd f;
 	int err = 0;
@@ -265,9 +263,6 @@ static int get_path_from_fd(const u64 fd, struct path *const path)
 	BUILD_BUG_ON(!__same_type(fd,
 		((struct landlock_attr_path_beneath *)NULL)->parent_fd));
 
-	/* Checks 32-bits overflow.  fdget_raw() checks for INT_MAX/FD. */
-	if (fd > U32_MAX)
-		return -EINVAL;
 	/* Handles O_PATH. */
 	f = fdget_raw(fd);
 	if (!f.file)
@@ -296,8 +291,8 @@ out_fdput:
 	return err;
 }
 
-static int syscall_add_rule_path_beneath(const size_t attr_size,
-		const void __user *const attr_ptr)
+static int syscall_add_rule_path_beneath(const void __user *const attr_ptr,
+		const size_t attr_size)
 {
 	struct landlock_attr_path_beneath attr_path_beneath;
 	struct path path;
@@ -346,8 +341,8 @@ out_put_ruleset:
 
 /* Enforcement */
 
-static int syscall_enforce_ruleset(const size_t attr_size,
-		const void __user *const attr_ptr)
+static int syscall_enforce_ruleset(const void __user *const attr_ptr,
+		const size_t attr_size)
 {
 	struct landlock_ruleset *new_dom, *ruleset;
 	struct cred *new_cred;
@@ -380,12 +375,6 @@ static int syscall_enforce_ruleset(const size_t attr_size,
 	ruleset = get_ruleset_from_fd(attr_enforce.ruleset_fd, FMODE_CAN_READ);
 	if (IS_ERR(ruleset))
 		return PTR_ERR(ruleset);
-
-	/* Informs about useless ruleset. */
-	if (ruleset->nb_rules == 0) {
-		err = -ENOMSG;
-		goto out_put_ruleset;
-	}
 
 	/* Prepares new credentials. */
 	new_cred = prepare_creds();
@@ -421,16 +410,61 @@ out_put_ruleset:
 	return err;
 }
 
+/* Shorten lines to make them more readable. */
+#define LLATTR_SIZE(attr_name, member) \
+	sizeof_field(struct landlock_attr_ ## attr_name, member)
+
+/*
+ * This function only contains arithmetic operations with constants, leading to
+ * BUILD_BUG_ON().  The related code is evaluated and checked at build time,
+ * but it is then ignored thanks to compiler optimizations.
+ */
+static void build_check_abi(void) {
+	size_t size_features, size_ruleset, size_path_beneath, size_enforce;
+
+	/*
+	 * For each userspace ABI structures, first checks that there is no
+	 * hole in them, then checks that all architectures have the same
+	 * struct size.
+	 */
+	size_features = LLATTR_SIZE(features, options_get_features);
+	size_features += LLATTR_SIZE(features, options_create_ruleset);
+	size_features += LLATTR_SIZE(features, options_add_rule);
+	size_features += LLATTR_SIZE(features, options_enforce_ruleset);
+	size_features += LLATTR_SIZE(features, size_attr_features);
+	size_features += LLATTR_SIZE(features, size_attr_ruleset);
+	size_features += LLATTR_SIZE(features, size_attr_path_beneath);
+	size_features += LLATTR_SIZE(features, size_attr_enforce);
+	size_features += LLATTR_SIZE(features, access_fs);
+	BUILD_BUG_ON(sizeof(struct landlock_attr_features) != size_features);
+	BUILD_BUG_ON(sizeof(struct landlock_attr_features) != 32);
+
+	size_ruleset = LLATTR_SIZE(ruleset, handled_access_fs);
+	BUILD_BUG_ON(sizeof(struct landlock_attr_ruleset) != size_ruleset);
+	BUILD_BUG_ON(sizeof(struct landlock_attr_ruleset) != 8);
+
+	size_path_beneath = LLATTR_SIZE(path_beneath, ruleset_fd);
+	size_path_beneath += LLATTR_SIZE(path_beneath, parent_fd);
+	size_path_beneath += LLATTR_SIZE(path_beneath, allowed_access);
+	BUILD_BUG_ON(sizeof(struct landlock_attr_path_beneath) !=
+			size_path_beneath);
+	BUILD_BUG_ON(sizeof(struct landlock_attr_path_beneath) != 16);
+
+	size_enforce = LLATTR_SIZE(enforce, ruleset_fd);
+	BUILD_BUG_ON(sizeof(struct landlock_attr_enforce) != size_enforce);
+	BUILD_BUG_ON(sizeof(struct landlock_attr_enforce) != 4);
+}
+
 /**
- * landlock - System call to enable a process to safely sandbox itself
+ * sys_landlock - System call to enable a process to safely sandbox itself
  *
  * @command: Landlock command to perform miscellaneous, but safe, actions. Cf.
  *           `Commands`_.
  * @options: Bitmask of options dedicated to one command. Cf. `Options`_.
- * @attr1_size: First attribute size (i.e. size of the struct).
  * @attr1_ptr: Pointer to the first attribute. Cf. `Attributes`_.
- * @attr2_size: Unused for now.
- * @attr2_ptr: Unused for now.
+ * @attr1_size: First attribute size (i.e. size of the struct).
+ * @attr2_ptr: Unused for now, must be NULL.
+ * @attr2_size: Unused for now, must be 0.
  *
  * The @command and @options arguments enable a seccomp-bpf policy to control
  * the requested actions.  However, it should be noted that Landlock is
@@ -439,7 +473,7 @@ out_put_ruleset:
  * all its arguments should then be allowed for any process, which will then
  * enable applications to strengthen the security of the whole system.
  *
- * @attr2_size and @attr2_ptr describe a second attribute which could be used
+ * @attr2_ptr and @attr2_size describe a second attribute which could be used
  * in the future to compose with the first attribute (e.g. a
  * landlock_attr_path_beneath with a landlock_attr_ioctl).
  *
@@ -449,9 +483,10 @@ out_put_ruleset:
  */
 SYSCALL_DEFINE6(landlock, const unsigned int, command,
 		const unsigned int, options,
-		const size_t, attr1_size, void __user *const, attr1_ptr,
-		const size_t, attr2_size, void __user *const, attr2_ptr)
+		void __user *const, attr1_ptr, const size_t, attr1_size,
+		void __user *const, attr2_ptr, const size_t, attr2_size)
 {
+	build_check_abi();
 	/*
 	 * Enables user space to identify if Landlock is disabled, thanks to a
 	 * specific error code.
@@ -462,38 +497,34 @@ SYSCALL_DEFINE6(landlock, const unsigned int, command,
 	switch ((enum landlock_cmd)command) {
 	case LANDLOCK_CMD_GET_FEATURES:
 		if (options == LANDLOCK_OPT_GET_FEATURES) {
-			if (attr2_size || attr2_ptr)
+			if (attr2_ptr || attr2_size)
 				return -EINVAL;
-			return syscall_get_features(attr1_size, attr1_ptr);
+			return syscall_get_features(attr1_ptr, attr1_size);
 		}
 		return -EOPNOTSUPP;
 
 	case LANDLOCK_CMD_CREATE_RULESET:
 		if (options == LANDLOCK_OPT_CREATE_RULESET) {
-			if (attr2_size || attr2_ptr)
+			if (attr2_ptr || attr2_size)
 				return -EINVAL;
-			return syscall_create_ruleset(attr1_size, attr1_ptr);
+			return syscall_create_ruleset(attr1_ptr, attr1_size);
 		}
 		return -EOPNOTSUPP;
 
 	case LANDLOCK_CMD_ADD_RULE:
-		/*
-		 * A future extension could add a
-		 * LANDLOCK_OPT_ADD_RULE_PATH_RANGE.
-		 */
 		if (options == LANDLOCK_OPT_ADD_RULE_PATH_BENEATH) {
-			if (attr2_size || attr2_ptr)
+			if (attr2_ptr || attr2_size)
 				return -EINVAL;
-			return syscall_add_rule_path_beneath(attr1_size,
-					attr1_ptr);
+			return syscall_add_rule_path_beneath(attr1_ptr,
+					attr1_size);
 		}
 		return -EOPNOTSUPP;
 
 	case LANDLOCK_CMD_ENFORCE_RULESET:
 		if (options == LANDLOCK_OPT_ENFORCE_RULESET) {
-			if (attr2_size || attr2_ptr)
+			if (attr2_ptr || attr2_size)
 				return -EINVAL;
-			return syscall_enforce_ruleset(attr1_size, attr1_ptr);
+			return syscall_enforce_ruleset(attr1_ptr, attr1_size);
 		}
 		return -EOPNOTSUPP;
 	}

@@ -102,7 +102,7 @@ static void delete_dir_and_file(const char *const dir_path)
 	rmdir(dir_path);
 }
 
-static void cleanup_layout1(void)
+static void cleanup_layout1(struct __test_metadata *const _metadata)
 {
 	delete_dir_and_file(dir_s1d3);
 	delete_dir_and_file(dir_s1d2);
@@ -113,7 +113,9 @@ static void cleanup_layout1(void)
 	delete_dir_and_file(dir_s2d1);
 
 	delete_dir_and_file(dir_s3d3);
+	set_cap(_metadata, CAP_SYS_ADMIN);
 	umount(dir_s3d2);
+	clear_cap(_metadata, CAP_SYS_ADMIN);
 	delete_dir_and_file(dir_s3d2);
 	delete_dir_and_file(dir_s3d1);
 
@@ -125,10 +127,13 @@ FIXTURE(layout1) {
 
 FIXTURE_SETUP(layout1)
 {
-	cleanup_layout1();
+	disable_caps(_metadata);
+	cleanup_layout1(_metadata);
 
 	/* Do not pollute the rest of the system. */
+	set_cap(_metadata, CAP_SYS_ADMIN);
 	ASSERT_EQ(0, unshare(CLONE_NEWNS));
+	clear_cap(_metadata, CAP_SYS_ADMIN);
 	umask(0077);
 	create_dir_and_file(_metadata, TMP_DIR);
 
@@ -142,7 +147,9 @@ FIXTURE_SETUP(layout1)
 
 	create_dir_and_file(_metadata, dir_s3d1);
 	create_dir_and_file(_metadata, dir_s3d2);
+	set_cap(_metadata, CAP_SYS_ADMIN);
 	ASSERT_EQ(0, mount("tmp", dir_s3d2, "tmpfs", 0, "size=4m,mode=700"));
+	clear_cap(_metadata, CAP_SYS_ADMIN);
 	create_dir_and_file(_metadata, dir_s3d3);
 }
 
@@ -224,8 +231,8 @@ TEST_F(ruleset_rw, inval)
 			O_CLOEXEC);
 	ASSERT_LE(0, path_beneath.ruleset_fd);
 	ASSERT_EQ(-1, landlock(LANDLOCK_CMD_ADD_RULE,
-			LANDLOCK_OPT_ADD_RULE_PATH_BENEATH,
-			sizeof(path_beneath), &path_beneath));
+				LANDLOCK_OPT_ADD_RULE_PATH_BENEATH,
+				&path_beneath, sizeof(path_beneath)));
 	/* Returns EBADF because ruleset_fd contains O_PATH. */
 	ASSERT_EQ(EBADF, errno);
 	ASSERT_EQ(0, close(path_beneath.ruleset_fd));
@@ -233,16 +240,16 @@ TEST_F(ruleset_rw, inval)
 	path_beneath.ruleset_fd = open(dir_s1d1, O_DIRECTORY | O_CLOEXEC);
 	ASSERT_LE(0, path_beneath.ruleset_fd);
 	ASSERT_EQ(-1, landlock(LANDLOCK_CMD_ADD_RULE,
-			LANDLOCK_OPT_ADD_RULE_PATH_BENEATH,
-			sizeof(path_beneath), &path_beneath));
+				LANDLOCK_OPT_ADD_RULE_PATH_BENEATH,
+				&path_beneath, sizeof(path_beneath)));
 	/* Returns EBADFD because ruleset_fd is not a valid ruleset. */
 	ASSERT_EQ(EBADFD, errno);
 	ASSERT_EQ(0, close(path_beneath.ruleset_fd));
 
 	path_beneath.ruleset_fd = self->ruleset_fd;
 	ASSERT_EQ(0, landlock(LANDLOCK_CMD_ADD_RULE,
-			LANDLOCK_OPT_ADD_RULE_PATH_BENEATH,
-			sizeof(path_beneath), &path_beneath));
+				LANDLOCK_OPT_ADD_RULE_PATH_BENEATH,
+				&path_beneath, sizeof(path_beneath)));
 	ASSERT_EQ(0, close(path_beneath.parent_fd));
 
 	/* Tests without O_PATH. */
@@ -250,8 +257,8 @@ TEST_F(ruleset_rw, inval)
 			O_CLOEXEC);
 	ASSERT_LE(0, path_beneath.parent_fd);
 	ASSERT_EQ(-1, landlock(LANDLOCK_CMD_ADD_RULE,
-			LANDLOCK_OPT_ADD_RULE_PATH_BENEATH,
-			sizeof(path_beneath), &path_beneath));
+				LANDLOCK_OPT_ADD_RULE_PATH_BENEATH,
+				&path_beneath, sizeof(path_beneath)));
 	ASSERT_EQ(EBADFD, errno);
 	ASSERT_EQ(0, close(path_beneath.parent_fd));
 
@@ -263,24 +270,24 @@ TEST_F(ruleset_rw, inval)
 	/* Test with legitimate values. */
 	path_beneath.allowed_access |= LANDLOCK_ACCESS_FS_EXECUTE;
 	ASSERT_EQ(-1, landlock(LANDLOCK_CMD_ADD_RULE,
-			LANDLOCK_OPT_ADD_RULE_PATH_BENEATH,
-			sizeof(path_beneath), &path_beneath));
+				LANDLOCK_OPT_ADD_RULE_PATH_BENEATH,
+				&path_beneath, sizeof(path_beneath)));
 	ASSERT_EQ(EINVAL, errno);
 	path_beneath.allowed_access &= ~LANDLOCK_ACCESS_FS_EXECUTE;
 
 	/* Test with unknown (64-bits) value. */
 	path_beneath.allowed_access |= (1ULL << 60);
 	ASSERT_EQ(-1, landlock(LANDLOCK_CMD_ADD_RULE,
-			LANDLOCK_OPT_ADD_RULE_PATH_BENEATH,
-			sizeof(path_beneath), &path_beneath));
+				LANDLOCK_OPT_ADD_RULE_PATH_BENEATH,
+				&path_beneath, sizeof(path_beneath)));
 	ASSERT_EQ(EINVAL, errno);
 	path_beneath.allowed_access &= ~(1ULL << 60);
 
 	/* Test with no access. */
 	path_beneath.allowed_access = 0;
 	ASSERT_EQ(0, landlock(LANDLOCK_CMD_ADD_RULE,
-			LANDLOCK_OPT_ADD_RULE_PATH_BENEATH,
-			sizeof(path_beneath), &path_beneath));
+				LANDLOCK_OPT_ADD_RULE_PATH_BENEATH,
+				&path_beneath, sizeof(path_beneath)));
 	path_beneath.allowed_access &= ~(1ULL << 60);
 
 	ASSERT_EQ(0, close(path_beneath.parent_fd));
@@ -290,8 +297,8 @@ TEST_F(ruleset_rw, inval)
 
 	attr_enforce.ruleset_fd = self->ruleset_fd;
 	ASSERT_EQ(0, landlock(LANDLOCK_CMD_ENFORCE_RULESET,
-			LANDLOCK_OPT_ENFORCE_RULESET, sizeof(attr_enforce),
-			&attr_enforce));
+				LANDLOCK_OPT_ENFORCE_RULESET, &attr_enforce,
+				sizeof(attr_enforce)));
 }
 
 #define ACCESS_FILE ( \
@@ -325,8 +332,8 @@ TEST_F(layout1, file_access_rights)
 	};
 
 	path_beneath.ruleset_fd = landlock(LANDLOCK_CMD_CREATE_RULESET,
-			LANDLOCK_OPT_CREATE_RULESET,
-			sizeof(attr_ruleset), &attr_ruleset);
+			LANDLOCK_OPT_CREATE_RULESET, &attr_ruleset,
+			sizeof(attr_ruleset));
 	ASSERT_LE(0, path_beneath.ruleset_fd);
 
 	/* Tests access rights for files. */
@@ -336,7 +343,7 @@ TEST_F(layout1, file_access_rights)
 		path_beneath.allowed_access = access;
 		err = landlock(LANDLOCK_CMD_ADD_RULE,
 				LANDLOCK_OPT_ADD_RULE_PATH_BENEATH,
-				sizeof(path_beneath), &path_beneath);
+				&path_beneath, sizeof(path_beneath));
 		if ((access | ACCESS_FILE) == ACCESS_FILE) {
 			ASSERT_EQ(0, err);
 		} else {
@@ -362,8 +369,8 @@ static void add_path_beneath(struct __test_metadata *const _metadata,
 				strerror(errno));
 	}
 	ASSERT_EQ(0, landlock(LANDLOCK_CMD_ADD_RULE,
-			LANDLOCK_OPT_ADD_RULE_PATH_BENEATH,
-			sizeof(path_beneath), &path_beneath)) {
+				LANDLOCK_OPT_ADD_RULE_PATH_BENEATH,
+				&path_beneath, sizeof(path_beneath))) {
 		TH_LOG("Failed to update the ruleset with \"%s\": %s", path,
 				strerror(errno));
 	}
@@ -400,15 +407,15 @@ static int create_ruleset(struct __test_metadata *const _metadata,
 	}
 
 	ASSERT_EQ(0, landlock(LANDLOCK_CMD_GET_FEATURES,
-				LANDLOCK_OPT_GET_FEATURES,
-				sizeof(attr_features), &attr_features));
+				LANDLOCK_OPT_GET_FEATURES, &attr_features,
+				sizeof(attr_features)));
 	/* Only for test, use a binary AND for real application instead. */
 	ASSERT_EQ(attr_ruleset.handled_access_fs,
 			attr_ruleset.handled_access_fs &
 			attr_features.access_fs);
 	ruleset_fd = landlock(LANDLOCK_CMD_CREATE_RULESET,
-			LANDLOCK_OPT_CREATE_RULESET, sizeof(attr_ruleset),
-			&attr_ruleset);
+			LANDLOCK_OPT_CREATE_RULESET, &attr_ruleset,
+			sizeof(attr_ruleset));
 	ASSERT_LE(0, ruleset_fd) {
 		TH_LOG("Failed to create a ruleset: %s", strerror(errno));
 	}
@@ -431,8 +438,8 @@ static void enforce_ruleset(struct __test_metadata *const _metadata,
 
 	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0));
 	ASSERT_EQ(0, landlock(LANDLOCK_CMD_ENFORCE_RULESET,
-			LANDLOCK_OPT_ENFORCE_RULESET, sizeof(attr_enforce),
-			&attr_enforce)) {
+				LANDLOCK_OPT_ENFORCE_RULESET, &attr_enforce,
+				sizeof(attr_enforce))) {
 		TH_LOG("Failed to enforce ruleset: %s", strerror(errno));
 	}
 }
@@ -481,7 +488,7 @@ TEST_F(layout1, proc_nsfs)
 	ASSERT_LE(0, path_beneath.parent_fd);
 	ASSERT_EQ(-1, landlock(LANDLOCK_CMD_ADD_RULE,
 				LANDLOCK_OPT_ADD_RULE_PATH_BENEATH,
-				sizeof(path_beneath), &path_beneath));
+				&path_beneath, sizeof(path_beneath)));
 	ASSERT_EQ(EBADFD, errno);
 	ASSERT_EQ(0, close(path_beneath.parent_fd));
 }
@@ -513,8 +520,8 @@ TEST_F(layout1, unpriv) {
 	attr_enforce.ruleset_fd = create_ruleset(_metadata, ACCESS_RO, rules);
 	ASSERT_LE(0, attr_enforce.ruleset_fd);
 	ASSERT_EQ(-1, landlock(LANDLOCK_CMD_ENFORCE_RULESET,
-			LANDLOCK_OPT_ENFORCE_RULESET, sizeof(attr_enforce),
-			&attr_enforce));
+				LANDLOCK_OPT_ENFORCE_RULESET, &attr_enforce,
+				sizeof(attr_enforce)));
 	ASSERT_EQ(EPERM, errno);
 
 	/* enforce_ruleset() calls prctl(no_new_privs). */
@@ -584,6 +591,8 @@ TEST_F(layout1, unhandled_access)
 		{}
 	};
 	const int ruleset_fd = create_ruleset(_metadata, ACCESS_RW, rules);
+
+	set_cap(_metadata, CAP_SYS_CHROOT);
 
 	ASSERT_LE(0, ruleset_fd);
 	enforce_ruleset(_metadata, ruleset_fd);
@@ -845,8 +854,8 @@ TEST_F(layout1, max_layers)
 
 	for (i = 0; i < 2; i++) {
 		err = landlock(LANDLOCK_CMD_ENFORCE_RULESET,
-				LANDLOCK_OPT_ENFORCE_RULESET,
-				sizeof(attr_enforce), &attr_enforce);
+				LANDLOCK_OPT_ENFORCE_RULESET, &attr_enforce,
+				sizeof(attr_enforce));
 		ASSERT_EQ(-1, err);
 		ASSERT_EQ(E2BIG, errno);
 	}
@@ -856,23 +865,35 @@ TEST_F(layout1, max_layers)
 TEST_F(layout1, empty_or_same_ruleset)
 {
 	struct landlock_attr_enforce attr_enforce = {};
-	struct landlock_attr_ruleset attr_ruleset = {
-		.handled_access_fs = ACCESS_ALL,
-	};
+	struct landlock_attr_ruleset attr_ruleset = {};
 
+	/* Tests empty handled_access_fs. */
 	attr_enforce.ruleset_fd = landlock(LANDLOCK_CMD_CREATE_RULESET,
-			LANDLOCK_OPT_CREATE_RULESET, sizeof(attr_ruleset),
-			&attr_ruleset);
-	ASSERT_LE(0, attr_enforce.ruleset_fd);
-	ASSERT_EQ(-1, landlock(LANDLOCK_CMD_ENFORCE_RULESET,
-			LANDLOCK_OPT_ENFORCE_RULESET,
-			sizeof(attr_enforce), &attr_enforce));
+			LANDLOCK_OPT_CREATE_RULESET, &attr_ruleset,
+			sizeof(attr_ruleset));
+	ASSERT_LE(-1, attr_enforce.ruleset_fd);
 	ASSERT_EQ(ENOMSG, errno);
 
-	/* Add one rule. */
-	add_path_beneath(_metadata, attr_enforce.ruleset_fd,
-			LANDLOCK_ACCESS_FS_READ_FILE, dir_s1d2);
+	/* Enforces policy which deny read access to all files. */
+	attr_ruleset.handled_access_fs = LANDLOCK_ACCESS_FS_READ_FILE;
+	attr_enforce.ruleset_fd = landlock(LANDLOCK_CMD_CREATE_RULESET,
+			LANDLOCK_OPT_CREATE_RULESET, &attr_ruleset,
+			sizeof(attr_ruleset));
+	ASSERT_LE(0, attr_enforce.ruleset_fd);
 	enforce_ruleset(_metadata, attr_enforce.ruleset_fd);
+	test_path(_metadata, file1_s1d1, -1);
+	test_path(_metadata, dir_s1d1, 0);
+
+	/* Nests a policy which deny read access to all directories. */
+	attr_ruleset.handled_access_fs = LANDLOCK_ACCESS_FS_READ_DIR;
+	attr_enforce.ruleset_fd = landlock(LANDLOCK_CMD_CREATE_RULESET,
+			LANDLOCK_OPT_CREATE_RULESET, &attr_ruleset,
+			sizeof(attr_ruleset));
+	ASSERT_LE(0, attr_enforce.ruleset_fd);
+	enforce_ruleset(_metadata, attr_enforce.ruleset_fd);
+	test_path(_metadata, file1_s1d1, -1);
+	test_path(_metadata, dir_s1d1, -1);
+
 	/* Enforces a second time with the same ruleset. */
 	enforce_ruleset(_metadata, attr_enforce.ruleset_fd);
 	EXPECT_EQ(0, close(attr_enforce.ruleset_fd));
@@ -970,12 +991,14 @@ TEST_F(layout1, rule_inside_mount_ns)
 	};
 	int ruleset_fd;
 
+	set_cap(_metadata, CAP_SYS_ADMIN);
 	ASSERT_EQ(0, mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL));
 	ASSERT_EQ(0, syscall(SYS_pivot_root, dir_s3d2, dir_s3d3)) {
 		TH_LOG("Failed to pivot_root into \"%s\": %s", dir_s3d2,
 				strerror(errno));
 	};
 	ASSERT_EQ(0, chdir("/"));
+	clear_cap(_metadata, CAP_SYS_ADMIN);
 
 	ruleset_fd = create_ruleset(_metadata, ACCESS_RW, rules);
 	ASSERT_LE(0, ruleset_fd);
@@ -998,6 +1021,7 @@ TEST_F(layout1, mount_and_pivot)
 	const int ruleset_fd = create_ruleset(_metadata, ACCESS_RW, rules);
 
 	ASSERT_LE(0, ruleset_fd);
+	set_cap(_metadata, CAP_SYS_ADMIN);
 	ASSERT_EQ(0, mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL));
 
 	enforce_ruleset(_metadata, ruleset_fd);
@@ -1022,6 +1046,7 @@ TEST_F(layout1, move_mount)
 
 	ASSERT_LE(0, ruleset_fd);
 
+	set_cap(_metadata, CAP_SYS_ADMIN);
 	ASSERT_EQ(0, mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL));
 	ASSERT_EQ(0, syscall(SYS_move_mount, AT_FDCWD, dir_s3d2, AT_FDCWD,
 				dir_s1d2, 0)) {
@@ -1060,7 +1085,10 @@ TEST_F(layout1, release_inodes)
 
 	ASSERT_LE(0, ruleset_fd);
 	/* Unmount a file hierarchy while it is being used by a ruleset. */
+	set_cap(_metadata, CAP_SYS_ADMIN);
 	ASSERT_EQ(0, umount(dir_s3d2));
+	clear_cap(_metadata, CAP_SYS_ADMIN);
+
 	enforce_ruleset(_metadata, ruleset_fd);
 	EXPECT_EQ(0, close(ruleset_fd));
 
@@ -1113,6 +1141,8 @@ static void test_relative_path(struct __test_metadata *const _metadata,
 		ASSERT_TRUE(false);
 		return;
 	}
+
+	set_cap(_metadata, CAP_SYS_CHROOT);
 	enforce_ruleset(_metadata, ruleset_fd);
 
 	switch (rel) {
@@ -1200,6 +1230,7 @@ TEST_F(layout1, chroot)
 
 	ASSERT_LE(0, ruleset_fd);
 
+	set_cap(_metadata, CAP_SYS_CHROOT);
 	enforce_ruleset(_metadata, ruleset_fd);
 	EXPECT_EQ(0, close(ruleset_fd));
 
@@ -1491,6 +1522,7 @@ static void test_make_file(struct __test_metadata *const _metadata,
 TEST_F(layout1, make_char)
 {
 	/* Creates a /dev/null device. */
+	set_cap(_metadata, CAP_MKNOD);
 	test_make_file(_metadata, LANDLOCK_ACCESS_FS_MAKE_CHAR, S_IFCHR,
 			major(1) | minor(3));
 }
@@ -1498,6 +1530,7 @@ TEST_F(layout1, make_char)
 TEST_F(layout1, make_block)
 {
 	/* Creates a /dev/loop0 device. */
+	set_cap(_metadata, CAP_MKNOD);
 	test_make_file(_metadata, LANDLOCK_ACCESS_FS_MAKE_BLOCK, S_IFBLK,
 			major(7) | minor(0));
 }
@@ -1690,7 +1723,7 @@ TEST_F(layout1, proc_pipe)
 
 TEST(cleanup)
 {
-	cleanup_layout1();
+	cleanup_layout1(_metadata);
 }
 
 TEST_HARNESS_MAIN

@@ -295,12 +295,10 @@ struct landlock_ruleset *landlock_merge_ruleset(
 
 	might_sleep();
 	/*
-	 * Rulesets without rule must be rejected at the syscall step to inform
-	 * user space.  Merging duplicates a ruleset, so a new ruleset can't be
+	 * Merging duplicates a ruleset, so a new ruleset can't be
 	 * the same as the parent, but they can have similar content.
 	 */
-	if (WARN_ON_ONCE(!ruleset || ruleset->nb_rules == 0 ||
-				parent == ruleset)) {
+	if (WARN_ON_ONCE(!ruleset || parent == ruleset)) {
 		landlock_get_ruleset(parent);
 		return parent;
 	}

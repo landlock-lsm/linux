@@ -66,7 +66,7 @@ enum landlock_cmd {
  * - %LANDLOCK_OPT_GET_FEATURES: the attr type is `struct
  *   landlock_attr_features`.
  */
-#define LANDLOCK_OPT_GET_FEATURES			(1ULL << 0)
+#define LANDLOCK_OPT_GET_FEATURES			(1 << 0)
 
 /**
  * DOC: options_create_ruleset
@@ -77,7 +77,7 @@ enum landlock_cmd {
  * - %LANDLOCK_OPT_CREATE_RULESET: the attr type is `struct
  *   landlock_attr_ruleset`.
  */
-#define LANDLOCK_OPT_CREATE_RULESET			(1ULL << 0)
+#define LANDLOCK_OPT_CREATE_RULESET			(1 << 0)
 
 /**
  * DOC: options_add_rule
@@ -88,7 +88,7 @@ enum landlock_cmd {
  * - %LANDLOCK_OPT_ADD_RULE_PATH_BENEATH: the attr type is `struct
  *   landlock_attr_path_beneath`.
  */
-#define LANDLOCK_OPT_ADD_RULE_PATH_BENEATH		(1ULL << 0)
+#define LANDLOCK_OPT_ADD_RULE_PATH_BENEATH		(1 << 0)
 
 /**
  * DOC: options_enforce_ruleset
@@ -99,7 +99,7 @@ enum landlock_cmd {
  * - %LANDLOCK_OPT_ENFORCE_RULESET: the attr type is `struct
  *   landlock_attr_enforce`.
  */
-#define LANDLOCK_OPT_ENFORCE_RULESET			(1ULL << 0)
+#define LANDLOCK_OPT_ENFORCE_RULESET			(1 << 0)
 
 /**
  * struct landlock_attr_features - Receives the supported features
@@ -135,45 +135,51 @@ struct landlock_attr_features {
 	 * @options_get_features: Options supported by the
 	 * %LANDLOCK_CMD_GET_FEATURES command. Cf. `Options`_.
 	 */
-	__aligned_u64 options_get_features;
+	__u32 options_get_features;
 	/**
 	 * @options_create_ruleset: Options supported by the
 	 * %LANDLOCK_CMD_CREATE_RULESET command. Cf. `Options`_.
 	 */
-	__aligned_u64 options_create_ruleset;
+	__u32 options_create_ruleset;
 	/**
 	 * @options_add_rule: Options supported by the %LANDLOCK_CMD_ADD_RULE
 	 * command. Cf. `Options`_.
 	 */
-	__aligned_u64 options_add_rule;
+	__u32 options_add_rule;
 	/**
 	 * @options_enforce_ruleset: Options supported by the
 	 * %LANDLOCK_CMD_ENFORCE_RULESET command. Cf. `Options`_.
 	 */
-	__aligned_u64 options_enforce_ruleset;
+	__u32 options_enforce_ruleset;
 	/**
-	 * @access_fs: Subset of file system access supported by the running
-	 * kernel, used in &struct landlock_attr_ruleset and &struct
-	 * landlock_attr_path_beneath.  Cf. `Filesystem flags`_.
+	 * @size_attr_features: Size of the &struct landlock_attr_features as
+	 * known by the kernel (i.e.  ``sizeof(struct
+	 * landlock_attr_features)``).
 	 */
-	__aligned_u64 access_fs;
+	__u16 size_attr_features;
 	/**
 	 * @size_attr_ruleset: Size of the &struct landlock_attr_ruleset as
 	 * known by the kernel (i.e.  ``sizeof(struct
 	 * landlock_attr_ruleset)``).
 	 */
-	__aligned_u64 size_attr_ruleset;
+	__u16 size_attr_ruleset;
 	/**
 	 * @size_attr_path_beneath: Size of the &struct
 	 * landlock_attr_path_beneath as known by the kernel (i.e.
 	 * ``sizeof(struct landlock_path_beneath)``).
 	 */
-	__aligned_u64 size_attr_path_beneath;
+	__u16 size_attr_path_beneath;
 	/**
 	 * @size_attr_enforce: Size of the &struct landlock_attr_enforce as
 	 * known by the kernel (i.e.  ``sizeof(struct landlock_enforce)``).
 	 */
-	__aligned_u64 size_attr_enforce;
+	__u16 size_attr_enforce;
+	/**
+	 * @access_fs: Subset of file system access supported by the running
+	 * kernel, used in &struct landlock_attr_ruleset and &struct
+	 * landlock_attr_path_beneath.  Cf. `Filesystem flags`_.
+	 */
+	__u64 access_fs;
 };
 
 /**
@@ -192,7 +198,7 @@ struct landlock_attr_ruleset {
 	 * and &struct landlock_attr_features, and then adjust the arguments of
 	 * the next calls to sys_landlock() accordingly.
 	 */
-	__aligned_u64 handled_access_fs;
+	__u64 handled_access_fs;
 };
 
 /**
@@ -203,17 +209,17 @@ struct landlock_attr_path_beneath {
 	 * @ruleset_fd: File descriptor tied to the ruleset which should be
 	 * extended with this new access.
 	 */
-	__aligned_u64 ruleset_fd;
+	__s32 ruleset_fd;
 	/**
 	 * @parent_fd: File descriptor, open with ``O_PATH``, which identify
 	 * the parent directory of a file hierarchy, or just a file.
 	 */
-	__aligned_u64 parent_fd;
+	__s32 parent_fd;
 	/**
 	 * @allowed_access: Bitmask of allowed actions for this file hierarchy
 	 * (cf. `Filesystem flags`_).
 	 */
-	__aligned_u64 allowed_access;
+	__u64 allowed_access;
 };
 
 /**
@@ -224,7 +230,7 @@ struct landlock_attr_enforce {
 	 * @ruleset_fd: File descriptor tied to the ruleset to merge with the
 	 * current domain.
 	 */
-	__aligned_u64 ruleset_fd;
+	__s32 ruleset_fd;
 };
 
 /**
@@ -243,7 +249,7 @@ struct landlock_attr_enforce {
  * A file can only receive these access rights:
  *
  * - %LANDLOCK_ACCESS_FS_EXECUTE: Execute a file.
- * - %LANDLOCK_ACCESS_FS_WRITE_FILE: Write to a file.
+ * - %LANDLOCK_ACCESS_FS_WRITE_FILE: Open a file with write access.
  * - %LANDLOCK_ACCESS_FS_READ_FILE: Open a file with read access.
  *
  * A directory can receive access rights related to files or directories.  This
@@ -261,7 +267,7 @@ struct landlock_attr_enforce {
  * - %LANDLOCK_ACCESS_FS_REMOVE_FILE: Unlink (or rename) a file.
  * - %LANDLOCK_ACCESS_FS_MAKE_CHAR: Create (or rename or link) a character
  *   device.
- * - %LANDLOCK_ACCESS_FS_MAKE_DIR: Create (or rename or link) a directory.
+ * - %LANDLOCK_ACCESS_FS_MAKE_DIR: Create (or rename) a directory.
  * - %LANDLOCK_ACCESS_FS_MAKE_REG: Create (or rename or link) a regular file.
  * - %LANDLOCK_ACCESS_FS_MAKE_SOCK: Create (or rename or link) a UNIX domain
  *   socket.
@@ -278,19 +284,19 @@ struct landlock_attr_enforce {
  *   :manpage:`ioctl(2)`, :manpage:`fcntl(2)`.
  *   Future Landlock evolutions will enable to restrict them.
  */
-#define LANDLOCK_ACCESS_FS_EXECUTE		(1ULL << 0)
-#define LANDLOCK_ACCESS_FS_WRITE_FILE		(1ULL << 1)
-#define LANDLOCK_ACCESS_FS_READ_FILE		(1ULL << 2)
-#define LANDLOCK_ACCESS_FS_READ_DIR		(1ULL << 3)
-#define LANDLOCK_ACCESS_FS_CHROOT		(1ULL << 4)
-#define LANDLOCK_ACCESS_FS_REMOVE_DIR		(1ULL << 5)
-#define LANDLOCK_ACCESS_FS_REMOVE_FILE		(1ULL << 6)
-#define LANDLOCK_ACCESS_FS_MAKE_CHAR		(1ULL << 7)
-#define LANDLOCK_ACCESS_FS_MAKE_DIR		(1ULL << 8)
-#define LANDLOCK_ACCESS_FS_MAKE_REG		(1ULL << 9)
-#define LANDLOCK_ACCESS_FS_MAKE_SOCK		(1ULL << 10)
-#define LANDLOCK_ACCESS_FS_MAKE_FIFO		(1ULL << 11)
-#define LANDLOCK_ACCESS_FS_MAKE_BLOCK		(1ULL << 12)
-#define LANDLOCK_ACCESS_FS_MAKE_SYM		(1ULL << 13)
+#define LANDLOCK_ACCESS_FS_EXECUTE			(1ULL << 0)
+#define LANDLOCK_ACCESS_FS_WRITE_FILE			(1ULL << 1)
+#define LANDLOCK_ACCESS_FS_READ_FILE			(1ULL << 2)
+#define LANDLOCK_ACCESS_FS_READ_DIR			(1ULL << 3)
+#define LANDLOCK_ACCESS_FS_CHROOT			(1ULL << 4)
+#define LANDLOCK_ACCESS_FS_REMOVE_DIR			(1ULL << 5)
+#define LANDLOCK_ACCESS_FS_REMOVE_FILE			(1ULL << 6)
+#define LANDLOCK_ACCESS_FS_MAKE_CHAR			(1ULL << 7)
+#define LANDLOCK_ACCESS_FS_MAKE_DIR			(1ULL << 8)
+#define LANDLOCK_ACCESS_FS_MAKE_REG			(1ULL << 9)
+#define LANDLOCK_ACCESS_FS_MAKE_SOCK			(1ULL << 10)
+#define LANDLOCK_ACCESS_FS_MAKE_FIFO			(1ULL << 11)
+#define LANDLOCK_ACCESS_FS_MAKE_BLOCK			(1ULL << 12)
+#define LANDLOCK_ACCESS_FS_MAKE_SYM			(1ULL << 13)
 
 #endif /* _UAPI__LINUX_LANDLOCK_H__ */

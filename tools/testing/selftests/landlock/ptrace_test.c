@@ -33,14 +33,14 @@ static void create_domain(struct __test_metadata *const _metadata)
 
 	ASSERT_EQ(0, landlock(LANDLOCK_CMD_GET_FEATURES,
 				LANDLOCK_OPT_GET_FEATURES,
-				sizeof(attr_features), &attr_features));
+				&attr_features, sizeof(attr_features)));
 	/* Only for test, use a binary AND for real application instead. */
 	ASSERT_EQ(attr_ruleset.handled_access_fs,
 			attr_ruleset.handled_access_fs &
 			attr_features.access_fs);
 	ruleset_fd = landlock(LANDLOCK_CMD_CREATE_RULESET,
-			LANDLOCK_OPT_CREATE_RULESET, sizeof(attr_ruleset),
-			&attr_ruleset);
+			LANDLOCK_OPT_CREATE_RULESET, &attr_ruleset,
+			sizeof(attr_ruleset));
 	ASSERT_LE(0, ruleset_fd) {
 		TH_LOG("Failed to create a ruleset: %s", strerror(errno));
 	}
@@ -49,8 +49,8 @@ static void create_domain(struct __test_metadata *const _metadata)
 			| O_CLOEXEC);
 	ASSERT_LE(0, path_beneath.parent_fd);
 	ASSERT_EQ(0, landlock(LANDLOCK_CMD_ADD_RULE,
-			LANDLOCK_OPT_ADD_RULE_PATH_BENEATH,
-			sizeof(path_beneath), &path_beneath));
+				LANDLOCK_OPT_ADD_RULE_PATH_BENEATH,
+				&path_beneath, sizeof(path_beneath)));
 	ASSERT_EQ(0, errno);
 	ASSERT_EQ(0, close(path_beneath.parent_fd));
 
@@ -59,8 +59,8 @@ static void create_domain(struct __test_metadata *const _metadata)
 
 	attr_enforce.ruleset_fd = ruleset_fd;
 	ASSERT_EQ(0, landlock(LANDLOCK_CMD_ENFORCE_RULESET,
-			LANDLOCK_OPT_ENFORCE_RULESET, sizeof(attr_enforce),
-			&attr_enforce));
+				LANDLOCK_OPT_ENFORCE_RULESET, &attr_enforce,
+				sizeof(attr_enforce)));
 	ASSERT_EQ(0, errno);
 
 	ASSERT_EQ(0, close(ruleset_fd));
@@ -75,6 +75,8 @@ static void check_ptrace(struct __test_metadata *const _metadata,
 	int status;
 	int pipe_child[2], pipe_parent[2];
 	char buf_parent;
+
+	disable_caps(_metadata);
 
 	parent = getpid();
 	ASSERT_EQ(0, pipe(pipe_child));

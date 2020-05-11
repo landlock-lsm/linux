@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0
 
-test_src := $(wildcard test_*.c)
+src_test := $(wildcard *_test.c)
 
-TEST_GEN_PROGS := $(test_src:.c=)
+TEST_GEN_PROGS := $(src_test:.c=)
 
 TEST_GEN_PROGS_EXTENDED := true
 
@@ -25,5 +25,5 @@ $(khdr_dir)/linux/landlock.h: khdr
 $(OUTPUT)/true: true.c
 	$(LINK.c) $< $(LDLIBS) -o $@ -static
 
-$(OUTPUT)/test_%:test_%.c $(khdr_dir)/linux/landlock.h ../kselftest_harness.h common.h
+$(OUTPUT)/%_test: %_test.c $(khdr_dir)/linux/landlock.h ../kselftest_harness.h common.h
 	$(LINK.c) $< $(LDLIBS) -o $@ -lcap -I$(khdr_dir)
