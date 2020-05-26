@@ -13,12 +13,8 @@
 #include <linux/rbtree.h>
 #include <linux/refcount.h>
 #include <linux/workqueue.h>
-#include <uapi/linux/landlock.h>
 
 #include "object.h"
-
-#define _LANDLOCK_ACCESS_FS_LAST	LANDLOCK_ACCESS_FS_MAKE_SYM
-#define _LANDLOCK_ACCESS_FS_MASK	((_LANDLOCK_ACCESS_FS_LAST << 1) - 1)
 
 /**
  * struct landlock_rule - Access rights tied to an object
@@ -126,7 +122,7 @@ struct landlock_ruleset {
 			/**
 			 * @fs_access_mask: Contains the subset of filesystem
 			 * actions which are restricted by a ruleset.  This is
-			 * used when merging rulesets and for userspace
+			 * used when merging rulesets and for user space
 			 * backward compatibility (i.e. future-proof).  Set
 			 * once and never changed for the lifetime of the
 			 * ruleset.

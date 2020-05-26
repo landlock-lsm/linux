@@ -12,9 +12,13 @@
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/rcupdate.h>
+#include <uapi/linux/landlock.h>
 
 #include "ruleset.h"
 #include "setup.h"
+
+#define _LANDLOCK_ACCESS_FS_LAST	LANDLOCK_ACCESS_FS_MAKE_SYM
+#define _LANDLOCK_ACCESS_FS_MASK	((_LANDLOCK_ACCESS_FS_LAST << 1) - 1)
 
 struct landlock_inode_security {
 	/*
@@ -28,10 +32,24 @@ struct landlock_inode_security {
 	struct landlock_object __rcu *object;
 };
 
-static inline struct landlock_inode_security *inode_landlock(
+struct landlock_superblock_security {
+	/*
+	 * @inode_refs: References to Landlock underlying objects.
+	 * Cf. struct super_block->s_fsnotify_inode_refs .
+	 */
+	atomic_long_t inode_refs;
+};
+
+static inline struct landlock_inode_security *landlock_inode(
 		const struct inode *const inode)
 {
 	return inode->i_security + landlock_blob_sizes.lbs_inode;
+}
+
+static inline struct landlock_superblock_security *landlock_superblock(
+		const struct super_block *const superblock)
+{
+	return superblock->s_security + landlock_blob_sizes.lbs_superblock;
 }
 
 __init void landlock_add_hooks_fs(void);

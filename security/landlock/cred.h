@@ -26,7 +26,7 @@ static inline struct landlock_cred_security *landlock_cred(
 	return cred->security + landlock_blob_sizes.lbs_cred;
 }
 
-static inline struct landlock_ruleset *landlock_get_current_domain(void)
+static inline const struct landlock_ruleset *landlock_get_current_domain(void)
 {
 	return landlock_cred(current_cred())->domain;
 }
@@ -34,7 +34,7 @@ static inline struct landlock_ruleset *landlock_get_current_domain(void)
 /*
  * The call needs to come from an RCU read-side critical section.
  */
-static inline struct landlock_ruleset *landlock_get_task_domain(
+static inline const struct landlock_ruleset *landlock_get_task_domain(
 		const struct task_struct *const task)
 {
 	return landlock_cred(__task_cred(task))->domain;

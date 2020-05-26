@@ -1004,8 +1004,8 @@ asmlinkage long sys_pidfd_send_signal(int pidfd, int sig,
 				       unsigned int flags);
 asmlinkage long sys_pidfd_getfd(int pidfd, int fd, unsigned int flags);
 asmlinkage long sys_landlock(unsigned int command, unsigned int options,
-			     size_t attr1_size, void __user *attr1_ptr,
-			     size_t attr2_size, void __user *attr2_ptr);
+			     void __user *attr1_ptr, size_t attr1_size,
+			     void __user *attr2_ptr, size_t attr2_size);
 
 /*
  * Architecture-specific system calls

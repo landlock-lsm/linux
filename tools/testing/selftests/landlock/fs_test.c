@@ -1503,9 +1503,9 @@ static void test_make_file(struct __test_metadata *const _metadata,
 
 	ASSERT_LE(0, ruleset_fd);
 
-	ASSERT_EQ(0, unlink(file1_s1d1));
-	ASSERT_EQ(0, unlink(file1_s1d2));
-	ASSERT_EQ(0, unlink(file1_s1d3));
+	unlink(file1_s1d1);
+	unlink(file1_s1d2);
+	unlink(file1_s1d3);
 
 	enforce_ruleset(_metadata, ruleset_fd);
 	EXPECT_EQ(0, close(ruleset_fd));
@@ -1538,6 +1538,7 @@ TEST_F(layout1, make_block)
 TEST_F(layout1, make_reg)
 {
 	test_make_file(_metadata, LANDLOCK_ACCESS_FS_MAKE_REG, S_IFREG, 0);
+	test_make_file(_metadata, LANDLOCK_ACCESS_FS_MAKE_REG, 0, 0);
 }
 
 TEST_F(layout1, make_sock)

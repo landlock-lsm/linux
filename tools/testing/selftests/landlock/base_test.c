@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/landlock.h>
+#include <string.h>
 #include <sys/prctl.h>
 
 #include "common.h"
@@ -20,18 +21,10 @@
 
 TEST(features)
 {
-	struct landlock_attr_features attr_features = {
-		.options_get_features = ~0U,
-		.options_create_ruleset = ~0U,
-		.options_add_rule = ~0U,
-		.options_enforce_ruleset = ~0U,
-		.size_attr_features = ~0,
-		.size_attr_ruleset = ~0,
-		.size_attr_path_beneath = ~0,
-		.size_attr_enforce = ~0,
-		.access_fs = ~0ULL,
-	};
+	struct landlock_attr_features attr_features;
 
+	/* Tests that all fields are properly initialized. */
+	memset(&attr_features, 0xff, sizeof(attr_features));
 	ASSERT_EQ(0, landlock(LANDLOCK_CMD_GET_FEATURES,
 				LANDLOCK_OPT_GET_FEATURES,
 				&attr_features, sizeof(attr_features)));

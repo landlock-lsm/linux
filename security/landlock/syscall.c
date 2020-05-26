@@ -129,12 +129,11 @@ static int syscall_get_features(void __user *const attr_ptr,
 
 	/* Checks attribute consistency. */
 	if (attr_size == 0)
-		/* Allows to get a subset of struct landlock_attr_features. */
 		return -ENODATA;
 	if (attr_size > PAGE_SIZE)
 		return -E2BIG;
 
-	/* Copy features to user space. */
+	/* Copy a subset of features to user space. */
 	data_size = min(sizeof(supported), attr_size);
 	if (copy_to_user(attr_ptr, &supported, data_size))
 		return -EFAULT;
@@ -419,11 +418,12 @@ out_put_ruleset:
  * BUILD_BUG_ON().  The related code is evaluated and checked at build time,
  * but it is then ignored thanks to compiler optimizations.
  */
-static void build_check_abi(void) {
+static void build_check_abi(void)
+{
 	size_t size_features, size_ruleset, size_path_beneath, size_enforce;
 
 	/*
-	 * For each userspace ABI structures, first checks that there is no
+	 * For each user space ABI structures, first checks that there is no
 	 * hole in them, then checks that all architectures have the same
 	 * struct size.
 	 */

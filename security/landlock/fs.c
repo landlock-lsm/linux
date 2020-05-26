@@ -50,11 +50,11 @@ static void release_inode(struct landlock_object *const object)
 	spin_lock(&inode->i_lock);
 	/*
 	 * Make sure that if the filesystem is concurrently unmounted,
-	 * landlock_release_inodes() will wait for us to finish iput().
+	 * hook_sb_delete() will wait for us to finish iput().
 	 */
 	sb = inode->i_sb;
-	atomic_long_inc(&sb->s_landlock_inode_refs);
-	rcu_assign_pointer(inode_landlock(inode)->object, NULL);
+	atomic_long_inc(&landlock_superblock(sb)->inode_refs);
+	rcu_assign_pointer(landlock_inode(inode)->object, NULL);
 	spin_unlock(&inode->i_lock);
 	spin_unlock(&object->lock);
 	/*
@@ -62,90 +62,20 @@ static void release_inode(struct landlock_object *const object)
 	 */
 
 	iput(inode);
-	if (atomic_long_dec_and_test(&sb->s_landlock_inode_refs))
-		wake_up_var(&sb->s_landlock_inode_refs);
+	if (atomic_long_dec_and_test(&landlock_superblock(sb)->inode_refs))
+		wake_up_var(&landlock_superblock(sb)->inode_refs);
 }
 
 static const struct landlock_object_underops landlock_fs_underops = {
 	.release = release_inode
 };
 
-/*
- * Release the inodes used in a security policy.
- *
- * Cf. fsnotify_unmount_inodes()
- */
-void landlock_release_inodes(struct super_block *const sb)
-{
-	struct inode *inode, *iput_inode = NULL;
-
-	if (!landlock_initialized)
-		return;
-
-	spin_lock(&sb->s_inode_list_lock);
-	list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {
-		struct landlock_inode_security *inode_sec =
-			inode_landlock(inode);
-		struct landlock_object *object;
-		bool do_put = false;
-
-		rcu_read_lock();
-		object = rcu_dereference(inode_sec->object);
-		if (!object) {
-			rcu_read_unlock();
-			continue;
-		}
-
-		spin_lock(&object->lock);
-		if (object->underobj) {
-			object->underobj = NULL;
-			do_put = true;
-			spin_lock(&inode->i_lock);
-			rcu_assign_pointer(inode_sec->object, NULL);
-			spin_unlock(&inode->i_lock);
-		}
-		spin_unlock(&object->lock);
-		rcu_read_unlock();
-		if (!do_put)
-			/*
-			 * A concurrent iput() in release_inode() is ongoing
-			 * and we will just wait for it to finish.
-			 */
-			continue;
-
-		/*
-		 * At this point, we own the ihold() reference that was
-		 * originally set up by get_inode_object(). Therefore we can
-		 * drop the list lock and know that the inode won't disappear
-		 * from under us until the next loop walk.
-		 */
-		spin_unlock(&sb->s_inode_list_lock);
-		/*
-		 * We can now actually put the previous inode, which is not
-		 * needed anymore for the loop walk.
-		 */
-		if (iput_inode)
-			iput(iput_inode);
-		iput_inode = inode;
-		spin_lock(&sb->s_inode_list_lock);
-	}
-	spin_unlock(&sb->s_inode_list_lock);
-	if (iput_inode)
-		iput(iput_inode);
-
-	/*
-	 * Wait for pending iput() in release_inode().
-	 */
-	wait_var_event(&sb->s_landlock_inode_refs,
-			!atomic_long_read(&sb->s_landlock_inode_refs));
-}
-
 /* Ruleset management */
 
 static struct landlock_object *get_inode_object(struct inode *const inode)
 {
 	struct landlock_object *object, *new_object;
-	struct landlock_inode_security *inode_sec = inode_landlock(inode);
+	struct landlock_inode_security *inode_sec = landlock_inode(inode);
 
 	rcu_read_lock();
 retry:
@@ -184,7 +114,7 @@ retry:
 	} else {
 		rcu_assign_pointer(inode_sec->object, new_object);
 		/*
-		 * @inode will be released by landlock_release_inodes() on its
+		 * @inode will be released by hook_sb_delete() on its
 		 * super-block shutdown.
 		 */
 		ihold(inode);
@@ -246,7 +176,7 @@ static bool check_access_path_continue(
 	inode = d_backing_inode(path->dentry);
 	rcu_read_lock();
 	rule = landlock_find_rule(domain,
-			rcu_dereference(inode_landlock(inode)->object));
+			rcu_dereference(landlock_inode(inode)->object));
 	rcu_read_unlock();
 
 	/* Checks for matching layers. */
@@ -270,7 +200,7 @@ static int check_access_path(const struct landlock_ruleset *const domain,
 	struct path walker_path;
 	u64 layer_mask;
 
-	if (WARN_ON_ONCE(!path))
+	if (WARN_ON_ONCE(!domain || !path))
 		return 0;
 	/*
 	 * Allows access to pseudo filesystems that will never be mountable
@@ -340,15 +270,85 @@ jump_up:
 static inline int current_check_access_path(const struct path *const path,
 		const u32 access_request)
 {
-	struct landlock_ruleset *dom;
+	const struct landlock_ruleset *const dom =
+		landlock_get_current_domain();
 
-	dom = landlock_get_current_domain();
 	if (!dom)
 		return 0;
 	return check_access_path(dom, path, access_request);
 }
 
 /* Super-block hooks */
+
+/*
+ * Release the inodes used in a security policy.
+ *
+ * Cf. fsnotify_unmount_inodes()
+ */
+static void hook_sb_delete(struct super_block *const sb)
+{
+	struct inode *inode, *iput_inode = NULL;
+
+	if (!landlock_initialized)
+		return;
+
+	spin_lock(&sb->s_inode_list_lock);
+	list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {
+		struct landlock_inode_security *inode_sec =
+			landlock_inode(inode);
+		struct landlock_object *object;
+		bool do_put = false;
+
+		rcu_read_lock();
+		object = rcu_dereference(inode_sec->object);
+		if (!object) {
+			rcu_read_unlock();
+			continue;
+		}
+
+		spin_lock(&object->lock);
+		if (object->underobj) {
+			object->underobj = NULL;
+			do_put = true;
+			spin_lock(&inode->i_lock);
+			rcu_assign_pointer(inode_sec->object, NULL);
+			spin_unlock(&inode->i_lock);
+		}
+		spin_unlock(&object->lock);
+		rcu_read_unlock();
+		if (!do_put)
+			/*
+			 * A concurrent iput() in release_inode() is ongoing
+			 * and we will just wait for it to finish.
+			 */
+			continue;
+
+		/*
+		 * At this point, we own the ihold() reference that was
+		 * originally set up by get_inode_object(). Therefore we can
+		 * drop the list lock and know that the inode won't disappear
+		 * from under us until the next loop walk.
+		 */
+		spin_unlock(&sb->s_inode_list_lock);
+		/*
+		 * We can now actually put the previous inode, which is not
+		 * needed anymore for the loop walk.
+		 */
+		if (iput_inode)
+			iput(iput_inode);
+		iput_inode = inode;
+		spin_lock(&sb->s_inode_list_lock);
+	}
+	spin_unlock(&sb->s_inode_list_lock);
+	if (iput_inode)
+		iput(iput_inode);
+
+	/*
+	 * Wait for pending iput() in release_inode().
+	 */
+	wait_var_event(&landlock_superblock(sb)->inode_refs, !atomic_long_read(
+				&landlock_superblock(sb)->inode_refs));
+}
 
 /*
  * Because a Landlock security policy is defined according to the filesystem
@@ -426,6 +426,8 @@ static inline u32 get_mode_access(const umode_t mode)
 	switch (mode & S_IFMT) {
 	case S_IFLNK:
 		return LANDLOCK_ACCESS_FS_MAKE_SYM;
+	case 0:
+		/* A zero mode translates to S_IFREG. */
 	case S_IFREG:
 		return LANDLOCK_ACCESS_FS_MAKE_REG;
 	case S_IFDIR:
@@ -456,9 +458,9 @@ static int hook_path_link(struct dentry *const old_dentry,
 		const struct path *const new_dir,
 		struct dentry *const new_dentry)
 {
-	struct landlock_ruleset *dom;
+	const struct landlock_ruleset *const dom =
+		landlock_get_current_domain();
 
-	dom = landlock_get_current_domain();
 	if (!dom)
 		return 0;
 	/* The mount points are the same for old and new paths, cf. EXDEV. */
@@ -484,9 +486,9 @@ static int hook_path_rename(const struct path *const old_dir,
 		const struct path *const new_dir,
 		struct dentry *const new_dentry)
 {
-	struct landlock_ruleset *dom;
+	const struct landlock_ruleset *const dom =
+		landlock_get_current_domain();
 
-	dom = landlock_get_current_domain();
 	if (!dom)
 		return 0;
 	/* The mount points are the same for old and new paths, cf. EXDEV. */
@@ -511,7 +513,12 @@ static int hook_path_mknod(const struct path *const dir,
 		struct dentry *const dentry, const umode_t mode,
 		const unsigned int dev)
 {
-	return current_check_access_path(dir, get_mode_access(mode));
+	const struct landlock_ruleset *const dom =
+		landlock_get_current_domain();
+
+	if (!dom)
+		return 0;
+	return check_access_path(dom, dir, get_mode_access(mode));
 }
 
 static int hook_path_symlink(const struct path *const dir,
@@ -563,10 +570,11 @@ static inline u32 get_file_access(const struct file *const file)
 
 static int hook_file_open(struct file *const file)
 {
-	if (WARN_ON_ONCE(!file))
+	const struct landlock_ruleset *const dom =
+		landlock_get_current_domain();
+
+	if (!dom)
 		return 0;
-	if (!file_inode(file))
-		return -ENOENT;
 	/*
 	 * Because a file may be opened with O_PATH, get_file_access() may
 	 * return 0.  This case will be handled with a future Landlock
@@ -576,6 +584,7 @@ static int hook_file_open(struct file *const file)
 }
 
 static struct security_hook_list landlock_hooks[] __lsm_ro_after_init = {
+	LSM_HOOK_INIT(sb_delete, hook_sb_delete),
 	LSM_HOOK_INIT(sb_mount, hook_sb_mount),
 	LSM_HOOK_INIT(move_mount, hook_move_mount),
 	LSM_HOOK_INIT(sb_umount, hook_sb_umount),
