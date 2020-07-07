@@ -15,7 +15,6 @@
 #include <linux/err.h>
 #include <linux/errno.h>
 #include <linux/fs.h>
-#include <linux/landlock.h>
 #include <linux/limits.h>
 #include <linux/mount.h>
 #include <linux/path.h>
@@ -409,10 +408,6 @@ out_put_ruleset:
 	return err;
 }
 
-/* Shorten lines to make them more readable. */
-#define LLATTR_SIZE(attr_name, member) \
-	sizeof_field(struct landlock_attr_ ## attr_name, member)
-
 /*
  * This function only contains arithmetic operations with constants, leading to
  * BUILD_BUG_ON().  The related code is evaluated and checked at build time,
@@ -427,30 +422,29 @@ static void build_check_abi(void)
 	 * hole in them, then checks that all architectures have the same
 	 * struct size.
 	 */
-	size_features = LLATTR_SIZE(features, options_get_features);
-	size_features += LLATTR_SIZE(features, options_create_ruleset);
-	size_features += LLATTR_SIZE(features, options_add_rule);
-	size_features += LLATTR_SIZE(features, options_enforce_ruleset);
-	size_features += LLATTR_SIZE(features, size_attr_features);
-	size_features += LLATTR_SIZE(features, size_attr_ruleset);
-	size_features += LLATTR_SIZE(features, size_attr_path_beneath);
-	size_features += LLATTR_SIZE(features, size_attr_enforce);
-	size_features += LLATTR_SIZE(features, access_fs);
+	size_features = sizeof_field(struct landlock_attr_features, options_get_features);
+	size_features += sizeof_field(struct landlock_attr_features, options_create_ruleset);
+	size_features += sizeof_field(struct landlock_attr_features, options_add_rule);
+	size_features += sizeof_field(struct landlock_attr_features, options_enforce_ruleset);
+	size_features += sizeof_field(struct landlock_attr_features, size_attr_features);
+	size_features += sizeof_field(struct landlock_attr_features, size_attr_ruleset);
+	size_features += sizeof_field(struct landlock_attr_features, size_attr_path_beneath);
+	size_features += sizeof_field(struct landlock_attr_features, size_attr_enforce);
+	size_features += sizeof_field(struct landlock_attr_features, access_fs);
 	BUILD_BUG_ON(sizeof(struct landlock_attr_features) != size_features);
 	BUILD_BUG_ON(sizeof(struct landlock_attr_features) != 32);
 
-	size_ruleset = LLATTR_SIZE(ruleset, handled_access_fs);
+	size_ruleset = sizeof_field(struct landlock_attr_ruleset, handled_access_fs);
 	BUILD_BUG_ON(sizeof(struct landlock_attr_ruleset) != size_ruleset);
 	BUILD_BUG_ON(sizeof(struct landlock_attr_ruleset) != 8);
 
-	size_path_beneath = LLATTR_SIZE(path_beneath, ruleset_fd);
-	size_path_beneath += LLATTR_SIZE(path_beneath, parent_fd);
-	size_path_beneath += LLATTR_SIZE(path_beneath, allowed_access);
-	BUILD_BUG_ON(sizeof(struct landlock_attr_path_beneath) !=
-			size_path_beneath);
+	size_path_beneath = sizeof_field(struct landlock_attr_path_beneath, ruleset_fd);
+	size_path_beneath += sizeof_field(struct landlock_attr_path_beneath, parent_fd);
+	size_path_beneath += sizeof_field(struct landlock_attr_path_beneath, allowed_access);
+	BUILD_BUG_ON(sizeof(struct landlock_attr_path_beneath) != size_path_beneath);
 	BUILD_BUG_ON(sizeof(struct landlock_attr_path_beneath) != 16);
 
-	size_enforce = LLATTR_SIZE(enforce, ruleset_fd);
+	size_enforce = sizeof_field(struct landlock_attr_enforce, ruleset_fd);
 	BUILD_BUG_ON(sizeof(struct landlock_attr_enforce) != size_enforce);
 	BUILD_BUG_ON(sizeof(struct landlock_attr_enforce) != 4);
 }

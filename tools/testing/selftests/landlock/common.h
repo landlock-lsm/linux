@@ -13,6 +13,10 @@
 
 #include "../kselftest_harness.h"
 
+#ifndef ARRAY_SIZE
+#define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
+#endif
+
 #ifndef landlock
 static inline int landlock(const unsigned int command,
 		const unsigned int options,
@@ -41,8 +45,7 @@ static void disable_caps(struct __test_metadata *const _metadata)
 	ASSERT_NE(-1, cap_clear(cap_p)) {
 		TH_LOG("Failed to cap_clear: %s", strerror(errno));
 	}
-	ASSERT_NE(-1, cap_set_flag(cap_p, CAP_PERMITTED,
-				sizeof(caps) / sizeof(caps[0]),
+	ASSERT_NE(-1, cap_set_flag(cap_p, CAP_PERMITTED, ARRAY_SIZE(caps),
 				caps, CAP_SET)) {
 		TH_LOG("Failed to cap_set_flag: %s", strerror(errno));
 	}
@@ -87,22 +90,4 @@ static void clear_cap(struct __test_metadata *const _metadata,
 		const cap_value_t caps)
 {
 	effective_cap(_metadata, caps, CAP_CLEAR);
-}
-
-FIXTURE(ruleset_rw) {
-	struct landlock_attr_ruleset attr_ruleset;
-	int ruleset_fd;
-};
-
-FIXTURE_SETUP(ruleset_rw) {
-	self->attr_ruleset.handled_access_fs = LANDLOCK_ACCESS_FS_READ_FILE |
-		LANDLOCK_ACCESS_FS_WRITE_FILE;
-	self->ruleset_fd = landlock(LANDLOCK_CMD_CREATE_RULESET,
-			LANDLOCK_OPT_CREATE_RULESET,
-			&self->attr_ruleset, sizeof(self->attr_ruleset));
-	ASSERT_LE(0, self->ruleset_fd);
-}
-
-FIXTURE_TEARDOWN(ruleset_rw) {
-	ASSERT_EQ(0, close(self->ruleset_fd));
 }

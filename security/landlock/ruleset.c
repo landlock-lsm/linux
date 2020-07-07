@@ -24,13 +24,13 @@
 
 static struct landlock_ruleset *create_ruleset(void)
 {
-	struct landlock_ruleset *ruleset;
+	struct landlock_ruleset *new_ruleset;
 
-	ruleset = kzalloc(sizeof(*ruleset), GFP_KERNEL);
-	if (!ruleset)
+	new_ruleset = kzalloc(sizeof(*new_ruleset), GFP_KERNEL_ACCOUNT);
+	if (!new_ruleset)
 		return ERR_PTR(-ENOMEM);
-	refcount_set(&ruleset->usage, 1);
-	mutex_init(&ruleset->lock);
+	refcount_set(&new_ruleset->usage, 1);
+	mutex_init(&new_ruleset->lock);
 	/*
 	 * root = RB_ROOT
 	 * hierarchy = NULL
@@ -38,27 +38,27 @@ static struct landlock_ruleset *create_ruleset(void)
 	 * nb_layers = 0
 	 * fs_access_mask = 0
 	 */
-	return ruleset;
+	return new_ruleset;
 }
 
 struct landlock_ruleset *landlock_create_ruleset(const u32 fs_access_mask)
 {
-	struct landlock_ruleset *ruleset;
+	struct landlock_ruleset *new_ruleset;
 
 	/* Informs about useless ruleset. */
 	if (!fs_access_mask)
 		return ERR_PTR(-ENOMSG);
-	ruleset = create_ruleset();
-	if (!IS_ERR(ruleset))
-		ruleset->fs_access_mask = fs_access_mask;
-	return ruleset;
+	new_ruleset = create_ruleset();
+	if (!IS_ERR(new_ruleset))
+		new_ruleset->fs_access_mask = fs_access_mask;
+	return new_ruleset;
 }
 
 static struct landlock_rule *duplicate_rule(struct landlock_rule *const src)
 {
 	struct landlock_rule *new_rule;
 
-	new_rule = kzalloc(sizeof(*new_rule), GFP_KERNEL);
+	new_rule = kzalloc(sizeof(*new_rule), GFP_KERNEL_ACCOUNT);
 	if (!new_rule)
 		return ERR_PTR(-ENOMEM);
 	RB_CLEAR_NODE(&new_rule->node);
@@ -209,7 +209,7 @@ static struct landlock_ruleset *inherit_ruleset(
 		return new_ruleset;
 
 	new_ruleset->hierarchy = kzalloc(sizeof(*new_ruleset->hierarchy),
-			GFP_KERNEL);
+			GFP_KERNEL_ACCOUNT);
 	if (!new_ruleset->hierarchy) {
 		err = -ENOMEM;
 		goto out_put_ruleset;

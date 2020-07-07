@@ -66,114 +66,13 @@ static void create_domain(struct __test_metadata *const _metadata)
 	ASSERT_EQ(0, close(ruleset_fd));
 }
 
-/* test PTRACE_TRACEME and PTRACE_ATTACH for parent and child */
-static void check_ptrace(struct __test_metadata *const _metadata,
-		const bool domain_both, const bool domain_parent,
-		const bool domain_child)
-{
-	pid_t child, parent;
-	int status;
-	int pipe_child[2], pipe_parent[2];
-	char buf_parent;
+FIXTURE(hierarchy) { };
 
-	disable_caps(_metadata);
-
-	parent = getpid();
-	ASSERT_EQ(0, pipe(pipe_child));
-	ASSERT_EQ(0, pipe(pipe_parent));
-	if (domain_both)
-		create_domain(_metadata);
-
-	child = fork();
-	ASSERT_LE(0, child);
-	if (child == 0) {
-		char buf_child;
-
-		EXPECT_EQ(0, close(pipe_parent[1]));
-		EXPECT_EQ(0, close(pipe_child[0]));
-		if (domain_child)
-			create_domain(_metadata);
-
-		/* sync #1 */
-		ASSERT_EQ(1, read(pipe_parent[0], &buf_child, 1)) {
-			TH_LOG("Failed to read() sync #1 from parent");
-		}
-		ASSERT_EQ('.', buf_child);
-
-		/* Tests the parent protection. */
-		ASSERT_EQ(domain_child ? -1 : 0,
-				ptrace(PTRACE_ATTACH, parent, NULL, 0));
-		if (domain_child) {
-			ASSERT_EQ(EPERM, errno);
-		} else {
-			ASSERT_EQ(parent, waitpid(parent, &status, 0));
-			ASSERT_EQ(1, WIFSTOPPED(status));
-			ASSERT_EQ(0, ptrace(PTRACE_DETACH, parent, NULL, 0));
-		}
-
-		/* sync #2 */
-		ASSERT_EQ(1, write(pipe_child[1], ".", 1)) {
-			TH_LOG("Failed to write() sync #2 to parent");
-		}
-
-		/* Tests traceme. */
-		ASSERT_EQ(domain_parent ? -1 : 0, ptrace(PTRACE_TRACEME));
-		if (domain_parent) {
-			ASSERT_EQ(EPERM, errno);
-		} else {
-			ASSERT_EQ(0, raise(SIGSTOP));
-		}
-
-		/* sync #3 */
-		ASSERT_EQ(1, read(pipe_parent[0], &buf_child, 1)) {
-			TH_LOG("Failed to read() sync #3 from parent");
-		}
-		ASSERT_EQ('.', buf_child);
-		_exit(_metadata->passed ? EXIT_SUCCESS : EXIT_FAILURE);
-	}
-
-	EXPECT_EQ(0, close(pipe_child[1]));
-	EXPECT_EQ(0, close(pipe_parent[0]));
-	if (domain_parent)
-		create_domain(_metadata);
-
-	/* sync #1 */
-	ASSERT_EQ(1, write(pipe_parent[1], ".", 1)) {
-		TH_LOG("Failed to write() sync #1 to child");
-	}
-
-	/* Tests the parent protection. */
-	/* sync #2 */
-	ASSERT_EQ(1, read(pipe_child[0], &buf_parent, 1)) {
-		TH_LOG("Failed to read() sync #2 from child");
-	}
-	ASSERT_EQ('.', buf_parent);
-
-	/* Tests traceme. */
-	if (!domain_parent) {
-		ASSERT_EQ(child, waitpid(child, &status, 0));
-		ASSERT_EQ(1, WIFSTOPPED(status));
-		ASSERT_EQ(0, ptrace(PTRACE_DETACH, child, NULL, 0));
-	}
-	/* Tests attach. */
-	ASSERT_EQ(domain_parent ? -1 : 0,
-			ptrace(PTRACE_ATTACH, child, NULL, 0));
-	if (domain_parent) {
-		ASSERT_EQ(EPERM, errno);
-	} else {
-		ASSERT_EQ(child, waitpid(child, &status, 0));
-		ASSERT_EQ(1, WIFSTOPPED(status));
-		ASSERT_EQ(0, ptrace(PTRACE_DETACH, child, NULL, 0));
-	}
-
-	/* sync #3 */
-	ASSERT_EQ(1, write(pipe_parent[1], ".", 1)) {
-		TH_LOG("Failed to write() sync #3 to child");
-	}
-	ASSERT_EQ(child, waitpid(child, &status, 0));
-	if (WIFSIGNALED(status) || WEXITSTATUS(status))
-		_metadata->passed = 0;
-}
+FIXTURE_VARIANT(hierarchy) {
+	bool domain_both;
+	bool domain_parent;
+	bool domain_child;
+};
 
 /*
  * Test multiple tracing combinations between a parent process P1 and a child
@@ -191,9 +90,11 @@ static void check_ptrace(struct __test_metadata *const _metadata,
  *       \              P2 -> P1 : allow
  *        'P2
  */
-TEST(allow_without_domain) {
-	check_ptrace(_metadata, false, false, false);
-}
+FIXTURE_VARIANT_ADD(hierarchy, allow_without_domain) {
+	.domain_both = false,
+	.domain_parent = false,
+	.domain_child = false,
+};
 
 /*
  *        Child domain
@@ -204,9 +105,11 @@ TEST(allow_without_domain) {
  *        |  P2  |
  *        '------'
  */
-TEST(allow_with_one_domain) {
-	check_ptrace(_metadata, false, false, true);
-}
+FIXTURE_VARIANT_ADD(hierarchy, allow_with_one_domain) {
+	.domain_both = false,
+	.domain_parent = false,
+	.domain_child = true,
+};
 
 /*
  *        Parent domain
@@ -216,9 +119,11 @@ TEST(allow_with_one_domain) {
  *            '
  *            P2
  */
-TEST(deny_with_parent_domain) {
-	check_ptrace(_metadata, false, true, false);
-}
+FIXTURE_VARIANT_ADD(hierarchy, deny_with_parent_domain) {
+	.domain_both = false,
+	.domain_parent = true,
+	.domain_child = false,
+};
 
 /*
  *        Parent + child domain (siblings)
@@ -229,9 +134,11 @@ TEST(deny_with_parent_domain) {
  *         |  P2  |
  *         '------'
  */
-TEST(deny_with_sibling_domain) {
-	check_ptrace(_metadata, false, true, true);
-}
+FIXTURE_VARIANT_ADD(hierarchy, deny_with_sibling_domain) {
+	.domain_both = false,
+	.domain_parent = true,
+	.domain_child = true,
+};
 
 /*
  *         Same domain (inherited)
@@ -242,9 +149,11 @@ TEST(deny_with_sibling_domain) {
  * |         P2  |
  * '-------------'
  */
-TEST(allow_sibling_domain) {
-	check_ptrace(_metadata, true, false, false);
-}
+FIXTURE_VARIANT_ADD(hierarchy, allow_sibling_domain) {
+	.domain_both = true,
+	.domain_parent = false,
+	.domain_child = false,
+};
 
 /*
  *         Inherited + child domain
@@ -256,9 +165,11 @@ TEST(allow_sibling_domain) {
  * |        '------' |
  * '-----------------'
  */
-TEST(allow_with_nested_domain) {
-	check_ptrace(_metadata, true, false, true);
-}
+FIXTURE_VARIANT_ADD(hierarchy, allow_with_nested_domain) {
+	.domain_both = true,
+	.domain_parent = false,
+	.domain_child = true,
+};
 
 /*
  *         Inherited + parent domain
@@ -270,9 +181,11 @@ TEST(allow_with_nested_domain) {
  * |             P2  |
  * '-----------------'
  */
-TEST(deny_with_nested_and_parent_domain) {
-	check_ptrace(_metadata, true, true, false);
-}
+FIXTURE_VARIANT_ADD(hierarchy, deny_with_nested_and_parent_domain) {
+	.domain_both = true,
+	.domain_parent = true,
+	.domain_child = false,
+};
 
 /*
  *         Inherited + parent and child domain (siblings)
@@ -286,8 +199,123 @@ TEST(deny_with_nested_and_parent_domain) {
  * |        '------' |
  * '-----------------'
  */
-TEST(deny_with_forked_domain) {
-	check_ptrace(_metadata, true, true, true);
+FIXTURE_VARIANT_ADD(hierarchy, deny_with_forked_domain) {
+	.domain_both = true,
+	.domain_parent = true,
+	.domain_child = true,
+};
+
+FIXTURE_SETUP(hierarchy)
+{ }
+
+FIXTURE_TEARDOWN(hierarchy)
+{ }
+
+/* test PTRACE_TRACEME and PTRACE_ATTACH for parent and child */
+TEST_F(hierarchy, trace)
+{
+	pid_t child, parent;
+	int status;
+	int pipe_child[2], pipe_parent[2];
+	char buf_parent;
+
+	disable_caps(_metadata);
+
+	parent = getpid();
+	ASSERT_EQ(0, pipe(pipe_child));
+	ASSERT_EQ(0, pipe(pipe_parent));
+	if (variant->domain_both)
+		create_domain(_metadata);
+
+	child = fork();
+	ASSERT_LE(0, child);
+	if (child == 0) {
+		char buf_child;
+
+		EXPECT_EQ(0, close(pipe_parent[1]));
+		EXPECT_EQ(0, close(pipe_child[0]));
+		if (variant->domain_child)
+			create_domain(_metadata);
+
+		/* sync #1 */
+		ASSERT_EQ(1, read(pipe_parent[0], &buf_child, 1)) {
+			TH_LOG("Failed to read() sync #1 from parent");
+		}
+		ASSERT_EQ('.', buf_child);
+
+		/* Tests the parent protection. */
+		ASSERT_EQ(variant->domain_child ? -1 : 0,
+				ptrace(PTRACE_ATTACH, parent, NULL, 0));
+		if (variant->domain_child) {
+			ASSERT_EQ(EPERM, errno);
+		} else {
+			ASSERT_EQ(parent, waitpid(parent, &status, 0));
+			ASSERT_EQ(1, WIFSTOPPED(status));
+			ASSERT_EQ(0, ptrace(PTRACE_DETACH, parent, NULL, 0));
+		}
+
+		/* sync #2 */
+		ASSERT_EQ(1, write(pipe_child[1], ".", 1)) {
+			TH_LOG("Failed to write() sync #2 to parent");
+		}
+
+		/* Tests traceme. */
+		ASSERT_EQ(variant->domain_parent ? -1 : 0, ptrace(PTRACE_TRACEME));
+		if (variant->domain_parent) {
+			ASSERT_EQ(EPERM, errno);
+		} else {
+			ASSERT_EQ(0, raise(SIGSTOP));
+		}
+
+		/* sync #3 */
+		ASSERT_EQ(1, read(pipe_parent[0], &buf_child, 1)) {
+			TH_LOG("Failed to read() sync #3 from parent");
+		}
+		ASSERT_EQ('.', buf_child);
+		_exit(_metadata->passed ? EXIT_SUCCESS : EXIT_FAILURE);
+	}
+
+	EXPECT_EQ(0, close(pipe_child[1]));
+	EXPECT_EQ(0, close(pipe_parent[0]));
+	if (variant->domain_parent)
+		create_domain(_metadata);
+
+	/* sync #1 */
+	ASSERT_EQ(1, write(pipe_parent[1], ".", 1)) {
+		TH_LOG("Failed to write() sync #1 to child");
+	}
+
+	/* Tests the parent protection. */
+	/* sync #2 */
+	ASSERT_EQ(1, read(pipe_child[0], &buf_parent, 1)) {
+		TH_LOG("Failed to read() sync #2 from child");
+	}
+	ASSERT_EQ('.', buf_parent);
+
+	/* Tests traceme. */
+	if (!variant->domain_parent) {
+		ASSERT_EQ(child, waitpid(child, &status, 0));
+		ASSERT_EQ(1, WIFSTOPPED(status));
+		ASSERT_EQ(0, ptrace(PTRACE_DETACH, child, NULL, 0));
+	}
+	/* Tests attach. */
+	ASSERT_EQ(variant->domain_parent ? -1 : 0,
+			ptrace(PTRACE_ATTACH, child, NULL, 0));
+	if (variant->domain_parent) {
+		ASSERT_EQ(EPERM, errno);
+	} else {
+		ASSERT_EQ(child, waitpid(child, &status, 0));
+		ASSERT_EQ(1, WIFSTOPPED(status));
+		ASSERT_EQ(0, ptrace(PTRACE_DETACH, child, NULL, 0));
+	}
+
+	/* sync #3 */
+	ASSERT_EQ(1, write(pipe_parent[1], ".", 1)) {
+		TH_LOG("Failed to write() sync #3 to child");
+	}
+	ASSERT_EQ(child, waitpid(child, &status, 0));
+	if (WIFSIGNALED(status) || WEXITSTATUS(status))
+		_metadata->passed = 0;
 }
 
 TEST_HARNESS_MAIN

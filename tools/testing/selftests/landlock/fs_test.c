@@ -214,15 +214,23 @@ TEST_F(layout1, no_restriction)
 	test_path(_metadata, dir_s3d3, 0);
 }
 
-TEST_F(ruleset_rw, inval)
+TEST_F(layout1, inval)
 {
 	struct landlock_attr_path_beneath path_beneath = {
 		.allowed_access = LANDLOCK_ACCESS_FS_READ_FILE |
 			LANDLOCK_ACCESS_FS_WRITE_FILE,
 		.parent_fd = -1,
 	};
+	struct landlock_attr_ruleset attr_ruleset = {
+		.handled_access_fs = LANDLOCK_ACCESS_FS_READ_FILE |
+			LANDLOCK_ACCESS_FS_WRITE_FILE,
+	};
 	struct landlock_attr_enforce attr_enforce = {};
+	const int ruleset_fd = landlock(LANDLOCK_CMD_CREATE_RULESET,
+			LANDLOCK_OPT_CREATE_RULESET,
+			&attr_ruleset, sizeof(attr_ruleset));
 
+	ASSERT_LE(0, ruleset_fd);
 	path_beneath.parent_fd = open(dir_s1d2, O_PATH | O_DIRECTORY |
 			O_CLOEXEC);
 	ASSERT_LE(0, path_beneath.parent_fd);
@@ -246,7 +254,7 @@ TEST_F(ruleset_rw, inval)
 	ASSERT_EQ(EBADFD, errno);
 	ASSERT_EQ(0, close(path_beneath.ruleset_fd));
 
-	path_beneath.ruleset_fd = self->ruleset_fd;
+	path_beneath.ruleset_fd = ruleset_fd;
 	ASSERT_EQ(0, landlock(LANDLOCK_CMD_ADD_RULE,
 				LANDLOCK_OPT_ADD_RULE_PATH_BENEATH,
 				&path_beneath, sizeof(path_beneath)));
@@ -295,10 +303,12 @@ TEST_F(ruleset_rw, inval)
 	/* Enforces the ruleset. */
 	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0));
 
-	attr_enforce.ruleset_fd = self->ruleset_fd;
+	attr_enforce.ruleset_fd = ruleset_fd;
 	ASSERT_EQ(0, landlock(LANDLOCK_CMD_ENFORCE_RULESET,
 				LANDLOCK_OPT_ENFORCE_RULESET, &attr_enforce,
 				sizeof(attr_enforce)));
+
+	ASSERT_EQ(0, close(ruleset_fd));
 }
 
 #define ACCESS_FILE ( \
@@ -1615,7 +1625,7 @@ TEST_F(layout1, make_dir)
 static int open_proc_fd(struct __test_metadata *const _metadata, const int fd,
 		const int open_flags)
 {
-	const char path_template[] = "/proc/self/fd/%d";
+	static const char path_template[] = "/proc/self/fd/%d";
 	char procfd_path[sizeof(path_template) + 10];
 	const int procfd_path_size = snprintf(procfd_path, sizeof(procfd_path),
 			path_template, fd);

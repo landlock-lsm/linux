@@ -24,7 +24,7 @@ struct landlock_object *landlock_create_object(
 
 	if (WARN_ON_ONCE(!underops || !underobj))
 		return NULL;
-	new_object = kzalloc(sizeof(*new_object), GFP_KERNEL);
+	new_object = kzalloc(sizeof(*new_object), GFP_KERNEL_ACCOUNT);
 	if (!new_object)
 		return NULL;
 	refcount_set(&new_object->usage, 1);

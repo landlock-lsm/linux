@@ -265,4 +265,4 @@ Additional documentation
 See https://landlock.io
 
 .. Links
-.. _samples/landlock/sandboxer.c: https://github.com/landlock-lsm/linux/tree/landlock-v18/samples/landlock/sandboxer.c
+.. _samples/landlock/sandboxer.c: https://github.com/landlock-lsm/linux/tree/landlock-v19/samples/landlock/sandboxer.c

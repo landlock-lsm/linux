@@ -12,7 +12,6 @@
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
-#include <linux/landlock.h>
 #include <linux/list.h>
 #include <linux/lsm_hooks.h>
 #include <linux/mount.h>
@@ -115,7 +114,7 @@ retry:
 		rcu_assign_pointer(inode_sec->object, new_object);
 		/*
 		 * @inode will be released by hook_sb_delete() on its
-		 * super-block shutdown.
+		 * superblock shutdown.
 		 */
 		ihold(inode);
 		spin_unlock(&inode->i_lock);
@@ -152,7 +151,7 @@ int landlock_append_fs_rule(struct landlock_ruleset *const ruleset,
 	mutex_unlock(&ruleset->lock);
 	/*
 	 * No need to check for an error because landlock_insert_rule()
-	 * increment the refcount for the new rule, if any.
+	 * increments the refcount for the new rule, if any.
 	 */
 	landlock_put_object(rule.object);
 	return err;

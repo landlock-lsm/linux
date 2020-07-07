@@ -41,17 +41,17 @@ struct landlock_rule {
 	 */
 	struct landlock_object *object;
 	/**
+	 * @layers: Bitfield to identify the layers which resulted to @access
+	 * from different consecutive intersections.
+	 */
+	u64 layers;
+	/**
 	 * @access: Bitfield of allowed actions on the kernel object.  They are
 	 * relative to the object type (e.g. %LANDLOCK_ACTION_FS_READ).  This
 	 * may be the result of the merged access rights (boolean AND) from
 	 * multiple layers referring to the same object.
 	 */
 	u32 access;
-	/**
-	 * @layers: Bitfield to identify the layers which resulted to @access
-	 * from different consecutive intersections.
-	 */
-	u64 layers;
 };
 
 /**
@@ -92,21 +92,21 @@ struct landlock_ruleset {
 		 * @work_free: Enables to free a ruleset within a lockless
 		 * section.  This is only used by
 		 * landlock_put_ruleset_deferred() when @usage reaches zero.
-		 * The fields @usage, @lock, @nb_layers, @nb_rules and
+		 * The fields @lock, @usage, @nb_layers, @nb_rules and
 		 * @fs_access_mask are then unused.
 		 */
 		struct work_struct work_free;
 		struct {
 			/**
-			 * @usage: Number of processes (i.e. domains) or file
-			 * descriptors referencing this ruleset.
-			 */
-			refcount_t usage;
-			/**
 			 * @lock: Guards against concurrent modifications of
 			 * @root, if @usage is greater than zero.
 			 */
 			struct mutex lock;
+			/**
+			 * @usage: Number of processes (i.e. domains) or file
+			 * descriptors referencing this ruleset.
+			 */
+			refcount_t usage;
 			/**
 			 * @nb_rules: Number of non-overlapping (i.e. not for
 			 * the same object) rules in this ruleset.
