@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+config SECURITY_LANDLOCK
+	bool "Landlock support"
+	depends on SECURITY
+	select SECURITY_PATH
+	help
+	  Landlock is a safe sandboxing mechanism which enables processes to
+	  restrict themselves (and their future children) by gradually
+	  enforcing tailored access control policies.  A security policy is a
+	  set of access rights (e.g. open a file in read-only, make a
+	  directory) tied to a file hierarchy.  The configuration can be set by
+	  any processes, including unprivileged ones, thanks to the landlock()
+	  system call.
+
+	  See Documentation/security/landlock/ for further information.
+
+	  If you are unsure how to answer this question, answer N.
