@@ -11,18 +11,6 @@
 
 #include <linux/types.h>
 
-#if 0
-/**
- * DOC: options_intro
- *
- * These options may be used as second argument of sys_landlock().  Each
- * command have a dedicated set of options, represented as bitmasks.  For two
- * different commands, their options may overlap.  Each command have at least
- * one option defining the used attribute type.  This also enables to always
- * have a usable &struct landlock_attr_features (i.e. filled with bits).
- */
-#endif
-
 /**
  * enum landlock_rule_type - Landlock rule type
  *
@@ -52,31 +40,7 @@ enum landlock_target_type {
 /**
  * struct landlock_attr_features - Receives the supported features
  *
- * This struct should be allocated by user space but it will be filled by the
- * kernel to indicate the subset of Landlock features effectively handled by
- * the running kernel.  This enables backward compatibility for applications
- * which are developed on a newer kernel than the one running the application.
- * This helps avoid hard errors that may entirely disable the use of Landlock
- * features because some of them may not be supported.  Indeed, because
- * Landlock is a security feature, even if the kernel doesn't support all the
- * requested features, user space applications should still use the subset
- * which is supported by the running kernel.  Indeed, a partial security policy
- * can still improve the security of the application and better protect the
- * user (i.e. best-effort approach).  The %LANDLOCK_CMD_GET_FEATURES command
- * and &struct landlock_attr_features are future-proof because the future
- * unknown fields requested by user space (i.e. a larger &struct
- * landlock_attr_features) can still be filled with zeros.
- *
- * The Landlock commands will fail if an unsupported option or access is
- * requested.  By firstly requesting the supported options and accesses, it is
- * quite easy for the developer to binary AND these returned bitmasks with the
- * used options and accesses from the attribute structs (e.g. &struct
- * landlock_attr_ruleset), and even infer the supported Landlock commands.
- * Indeed, because each command must support at least one option, the options_*
- * fields are always filled if the related commands are supported.  The
- * supported attributes are also discoverable thanks to the size_* fields.  All
- * this data enable to create applications doing their best to sandbox
- * themselves regardless of the running kernel.
+ * Argument of sys_landlock_get_features().
  */
 struct landlock_attr_features {
 	/**
@@ -138,8 +102,7 @@ struct landlock_attr_features {
 /**
  * struct landlock_attr_ruleset- Defines a new ruleset
  *
- * Used as first attribute for the %LANDLOCK_CMD_CREATE_RULESET command and
- * with the %LANDLOCK_OPT_CREATE_RULESET option.
+ * Argument of sys_landlock_create_ruleset().
  */
 struct landlock_attr_ruleset {
 	/**
@@ -147,15 +110,17 @@ struct landlock_attr_ruleset {
 	 * that is handled by this ruleset and should then be forbidden if no
 	 * rule explicitly allow them.  This is needed for backward
 	 * compatibility reasons.  The user space code should check the
-	 * effectively supported actions thanks to %LANDLOCK_CMD_GET_FEATURES
-	 * and &struct landlock_attr_features, and then adjust the arguments of
-	 * the next calls to sys_landlock() accordingly.
+	 * effectively supported actions thanks to sys_landlock_get_features()
+	 * and then adjust the arguments of the next calls to
+	 * sys_landlock_create_ruleset() accordingly.
 	 */
 	__u64 handled_access_fs;
 };
 
 /**
  * struct landlock_attr_path_beneath - Defines a path hierarchy
+ *
+ * Argument of sys_landlock_add_rule().
  */
 struct landlock_attr_path_beneath {
 	/**

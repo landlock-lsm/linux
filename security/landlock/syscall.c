@@ -132,15 +132,32 @@ static void build_check_abi(void)
 /**
  * sys_landlock_get_features - Identify the supported Landlock features
  *
- * @features_ptr: Pointer to a &struct landlock_attr_features to be filled by
- *		  the supported features.
+ * @features_ptr: Pointer to a &struct landlock_attr_features (allocated by
+ *                user space) to be filled by the supported features.
  * @features_size: Size of the pointed &struct landlock_attr_features (needed
  *		   for backward and forward compatibility).
  * @options: Must be 0.
  *
- * This system call enables to ask the kernel for supported Landlock features.
- * This is important to build user space code compatible with older and newer
- * kernels.
+ * This system call enables to ask for the Landlock features effectively
+ * handled by the running kernel.  This enables backward compatibility for
+ * applications which are developed on a newer kernel than the one running the
+ * application.  This helps avoid hard errors that may entirely disable the use
+ * of Landlock features because some of them may not be supported.  Indeed,
+ * because Landlock is a security feature, even if the kernel doesn't support
+ * all the requested features, user space applications should still use the
+ * subset which is supported by the running kernel.  Indeed, a partial security
+ * policy can still improve the security of the application and better protect
+ * the user (i.e. best-effort approach).  Handling of &struct
+ * landlock_attr_features with sys_landlock_get_features() is future-proof
+ * because the future unknown fields requested by user space (i.e. a larger
+ * &struct landlock_attr_features) can still be filled with zeros.
+ *
+ * The other Landlock syscalls will fail if an unsupported option or access is
+ * requested.  By firstly requesting the supported options and accesses, it is
+ * quite easy for the developer to binary AND these returned bitmasks with the
+ * used options and accesses from the attribute structs (e.g. &struct
+ * landlock_attr_ruleset).  This enables to create applications doing their
+ * best to sandbox themselves regardless of the running kernel.
  *
  * Possible returned errors are:
  *
