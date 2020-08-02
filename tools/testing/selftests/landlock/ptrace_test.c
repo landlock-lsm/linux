@@ -23,7 +23,6 @@ static void create_domain(struct __test_metadata *const _metadata)
 {
 	int ruleset_fd;
 	struct landlock_attr_features attr_features;
-	struct landlock_attr_enforce attr_enforce;
 	struct landlock_attr_ruleset attr_ruleset = {
 		.handled_access_fs = LANDLOCK_ACCESS_FS_READ_FILE,
 	};
@@ -31,25 +30,18 @@ static void create_domain(struct __test_metadata *const _metadata)
 		.allowed_access = LANDLOCK_ACCESS_FS_READ_FILE,
 	};
 
-	ASSERT_EQ(0, landlock(LANDLOCK_CMD_GET_FEATURES,
-				LANDLOCK_OPT_GET_FEATURES,
-				&attr_features, sizeof(attr_features)));
+	ASSERT_EQ(0, landlock_get_features(&attr_features, sizeof(attr_features)));
 	/* Only for test, use a binary AND for real application instead. */
 	ASSERT_EQ(attr_ruleset.handled_access_fs,
-			attr_ruleset.handled_access_fs &
-			attr_features.access_fs);
-	ruleset_fd = landlock(LANDLOCK_CMD_CREATE_RULESET,
-			LANDLOCK_OPT_CREATE_RULESET, &attr_ruleset,
-			sizeof(attr_ruleset));
+			attr_ruleset.handled_access_fs & attr_features.access_fs);
+	ruleset_fd = landlock_create_ruleset(&attr_ruleset, sizeof(attr_ruleset));
 	ASSERT_LE(0, ruleset_fd) {
 		TH_LOG("Failed to create a ruleset: %s", strerror(errno));
 	}
-	path_beneath.ruleset_fd = ruleset_fd;
 	path_beneath.parent_fd = open("/tmp", O_PATH | O_NOFOLLOW | O_DIRECTORY
 			| O_CLOEXEC);
 	ASSERT_LE(0, path_beneath.parent_fd);
-	ASSERT_EQ(0, landlock(LANDLOCK_CMD_ADD_RULE,
-				LANDLOCK_OPT_ADD_RULE_PATH_BENEATH,
+	ASSERT_EQ(0, landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH,
 				&path_beneath, sizeof(path_beneath)));
 	ASSERT_EQ(0, errno);
 	ASSERT_EQ(0, close(path_beneath.parent_fd));
@@ -57,10 +49,7 @@ static void create_domain(struct __test_metadata *const _metadata)
 	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0));
 	ASSERT_EQ(0, errno);
 
-	attr_enforce.ruleset_fd = ruleset_fd;
-	ASSERT_EQ(0, landlock(LANDLOCK_CMD_ENFORCE_RULESET,
-				LANDLOCK_OPT_ENFORCE_RULESET, &attr_enforce,
-				sizeof(attr_enforce)));
+	ASSERT_EQ(0, landlock_enforce_ruleset(ruleset_fd));
 	ASSERT_EQ(0, errno);
 
 	ASSERT_EQ(0, close(ruleset_fd));
@@ -69,9 +58,9 @@ static void create_domain(struct __test_metadata *const _metadata)
 FIXTURE(hierarchy) { };
 
 FIXTURE_VARIANT(hierarchy) {
-	bool domain_both;
-	bool domain_parent;
-	bool domain_child;
+	const bool domain_both;
+	const bool domain_parent;
+	const bool domain_child;
 };
 
 /*

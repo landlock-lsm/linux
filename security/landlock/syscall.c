@@ -92,54 +92,128 @@ static int copy_struct_if_any_from_user(void *const dst, const size_t ksize,
 
 /* Features */
 
-#define _LANDLOCK_OPT_GET_FEATURES_LAST		LANDLOCK_OPT_GET_FEATURES
-#define _LANDLOCK_OPT_GET_FEATURES_MASK		((_LANDLOCK_OPT_GET_FEATURES_LAST << 1) - 1)
+/*
+ * This function only contains arithmetic operations with constants, leading to
+ * BUILD_BUG_ON().  The related code is evaluated and checked at build time,
+ * but it is then ignored thanks to compiler optimizations.
+ */
+static void build_check_abi(void)
+{
+	size_t size_features, size_ruleset, size_path_beneath;
 
-#define _LANDLOCK_OPT_CREATE_RULESET_LAST	LANDLOCK_OPT_CREATE_RULESET
-#define _LANDLOCK_OPT_CREATE_RULESET_MASK	((_LANDLOCK_OPT_CREATE_RULESET_LAST << 1) - 1)
+	/*
+	 * For each user space ABI structures, first checks that there is no
+	 * hole in them, then checks that all architectures have the same
+	 * struct size.
+	 */
+	size_features = sizeof_field(struct landlock_attr_features, options_get_features);
+	size_features += sizeof_field(struct landlock_attr_features, options_create_ruleset);
+	size_features += sizeof_field(struct landlock_attr_features, options_add_rule);
+	size_features += sizeof_field(struct landlock_attr_features, options_enforce_ruleset);
+	size_features += sizeof_field(struct landlock_attr_features, access_fs);
+	size_features += sizeof_field(struct landlock_attr_features, size_attr_features);
+	size_features += sizeof_field(struct landlock_attr_features, size_attr_ruleset);
+	size_features += sizeof_field(struct landlock_attr_features, size_attr_path_beneath);
+	size_features += sizeof_field(struct landlock_attr_features, last_rule_type);
+	size_features += sizeof_field(struct landlock_attr_features, last_target_type);
+	BUILD_BUG_ON(sizeof(struct landlock_attr_features) != size_features);
+	BUILD_BUG_ON(sizeof(struct landlock_attr_features) != 32);
 
-#define _LANDLOCK_OPT_ADD_RULE_LAST		LANDLOCK_OPT_ADD_RULE_PATH_BENEATH
-#define _LANDLOCK_OPT_ADD_RULE_MASK		((_LANDLOCK_OPT_ADD_RULE_LAST << 1) - 1)
+	size_ruleset = sizeof_field(struct landlock_attr_ruleset, handled_access_fs);
+	BUILD_BUG_ON(sizeof(struct landlock_attr_ruleset) != size_ruleset);
+	BUILD_BUG_ON(sizeof(struct landlock_attr_ruleset) != 8);
 
-#define _LANDLOCK_OPT_ENFORCE_RULESET_LAST	LANDLOCK_OPT_ENFORCE_RULESET
-#define _LANDLOCK_OPT_ENFORCE_RULESET_MASK	((_LANDLOCK_OPT_ENFORCE_RULESET_LAST << 1) - 1)
+	size_path_beneath = sizeof_field(struct landlock_attr_path_beneath, allowed_access);
+	size_path_beneath += sizeof_field(struct landlock_attr_path_beneath, parent_fd);
+	BUILD_BUG_ON(sizeof(struct landlock_attr_path_beneath) != size_path_beneath);
+	BUILD_BUG_ON(sizeof(struct landlock_attr_path_beneath) != 12);
+}
 
-static int syscall_get_features(void __user *const attr_ptr,
-		const size_t attr_size)
+/**
+ * sys_landlock_get_features - Identify the supported Landlock features
+ *
+ * @features_ptr: Pointer to a &struct landlock_attr_features (allocated by
+ *                user space) to be filled by the supported features.
+ * @features_size: Size of the pointed &struct landlock_attr_features (needed
+ *		   for backward and forward compatibility).
+ * @options: Must be 0.
+ *
+ * This system call enables to ask for the Landlock features effectively
+ * handled by the running kernel.  This enables backward compatibility for
+ * applications which are developed on a newer kernel than the one running the
+ * application.  This helps avoid hard errors that may entirely disable the use
+ * of Landlock features because some of them may not be supported.  Indeed,
+ * because Landlock is a security feature, even if the kernel doesn't support
+ * all the requested features, user space applications should still use the
+ * subset which is supported by the running kernel.  Indeed, a partial security
+ * policy can still improve the security of the application and better protect
+ * the user (i.e. best-effort approach).  Handling of &struct
+ * landlock_attr_features with sys_landlock_get_features() is future-proof
+ * because the future unknown fields requested by user space (i.e. a larger
+ * &struct landlock_attr_features) can still be filled with zeros.
+ *
+ * The other Landlock syscalls will fail if an unsupported option or access is
+ * requested.  By firstly requesting the supported options and accesses, it is
+ * quite easy for the developer to binary AND these returned bitmasks with the
+ * used options and accesses from the attribute structs (e.g. &struct
+ * landlock_attr_ruleset).  This enables to create applications doing their
+ * best to sandbox themselves regardless of the running kernel.
+ *
+ * Possible returned errors are:
+ *
+ * - EOPNOTSUPP: Landlock is supported by the kernel but disabled at boot time;
+ * - EINVAL: @options is not 0;
+ * - ENODATA, E2BIG or EFAULT: @features_ptr or @feature_size inconsistencies.
+ */
+SYSCALL_DEFINE3(landlock_get_features,
+		struct landlock_attr_features __user *const, features_ptr,
+		const size_t, features_size, const __u32, options)
 {
 	size_t data_size, fill_size;
 	const struct landlock_attr_features supported = {
-		.options_get_features = _LANDLOCK_OPT_GET_FEATURES_MASK,
-		.options_create_ruleset = _LANDLOCK_OPT_CREATE_RULESET_MASK,
-		.options_add_rule = _LANDLOCK_OPT_ADD_RULE_MASK,
-		.options_enforce_ruleset = _LANDLOCK_OPT_ENFORCE_RULESET_MASK,
+		.options_get_features = 0,
+		.options_create_ruleset = 0,
+		.options_add_rule = 0,
+		.options_enforce_ruleset = 0,
+		.access_fs = _LANDLOCK_ACCESS_FS_MASK,
 		.size_attr_features = sizeof(struct landlock_attr_features),
 		.size_attr_ruleset = sizeof(struct landlock_attr_ruleset),
-		.size_attr_path_beneath = sizeof(struct
-				landlock_attr_path_beneath),
-		.size_attr_enforce = sizeof(struct landlock_attr_enforce),
-		.access_fs = _LANDLOCK_ACCESS_FS_MASK,
+		.size_attr_path_beneath = sizeof(struct landlock_attr_path_beneath),
+		.last_rule_type = LANDLOCK_RULE_PATH_BENEATH,
+		.last_target_type = LANDLOCK_TARGET_CURRENT_THREAD,
 	};
 
 	BUILD_BUG_ON(!__same_type(supported.access_fs,
 		((struct landlock_attr_ruleset *)NULL)->handled_access_fs));
 	BUILD_BUG_ON(!__same_type(supported.access_fs,
 		((struct landlock_attr_path_beneath *)NULL)->allowed_access));
+	build_check_abi();
 
-	/* Checks attribute consistency. */
-	if (attr_size == 0)
+	/*
+	 * Enables user space to identify if Landlock is disabled, thanks to a
+	 * specific error code.
+	 */
+	if (!landlock_initialized)
+		return -EOPNOTSUPP;
+
+	/* No option for now. */
+	if (options)
+		return -EINVAL;
+
+	/* Checks argument consistency. */
+	if (features_size == 0)
 		return -ENODATA;
-	if (attr_size > PAGE_SIZE)
+	if (features_size > PAGE_SIZE)
 		return -E2BIG;
 
 	/* Copy a subset of features to user space. */
-	data_size = min(sizeof(supported), attr_size);
-	if (copy_to_user(attr_ptr, &supported, data_size))
+	data_size = min(sizeof(supported), features_size);
+	if (copy_to_user(features_ptr, &supported, data_size))
 		return -EFAULT;
 
 	/* Fills with zeros. */
-	fill_size = attr_size - data_size;
-	if (fill_size > 0 && clear_user(attr_ptr + data_size, fill_size))
+	fill_size = features_size - data_size;
+	if (fill_size > 0 && clear_user((void __user *)features_ptr + data_size, fill_size))
 		return -EFAULT;
 	return 0;
 }
@@ -182,17 +256,44 @@ static const struct file_operations ruleset_fops = {
 	.write = fop_dummy_write,
 };
 
-static int syscall_create_ruleset(const void __user *const attr_ptr,
-		const size_t attr_size)
+/**
+ * sys_landlock_create_ruleset - Create a new ruleset
+ *
+ * @ruleset_ptr: Pointer to a &struct landlock_attr_ruleset identifying the
+ *		 scope of the new ruleset.
+ * @ruleset_size: Size of the pointed &struct landlock_attr_ruleset (needed for
+ *		  backward and forward compatibility).
+ * @options: Must be 0.
+ *
+ * This system call enables to create a new Landlock ruleset, and returns the
+ * related file descriptor on success.
+ *
+ * Possible returned errors are:
+ *
+ * - EOPNOTSUPP: Landlock is supported by the kernel but disabled at boot time;
+ * - EINVAL: @options is not 0, or unknown access, or too small @ruleset_size;
+ * - ENODATA, E2BIG or EFAULT: @ruleset_ptr or @ruleset_size inconsistencies;
+ * - ENOMSG: empty &landlock_attr_ruleset.handled_access_fs.
+ */
+SYSCALL_DEFINE3(landlock_create_ruleset,
+		const struct landlock_attr_ruleset __user *const, ruleset_ptr,
+		const size_t, ruleset_size, const __u32, options)
 {
 	struct landlock_attr_ruleset attr_ruleset;
 	struct landlock_ruleset *ruleset;
 	int err, ruleset_fd;
 
+	if (!landlock_initialized)
+		return -EOPNOTSUPP;
+
+	/* No option for now. */
+	if (options)
+		return -EINVAL;
+
 	/* Copies raw user space buffer. */
 	err = copy_struct_if_any_from_user(&attr_ruleset, sizeof(attr_ruleset),
 			offsetofend(typeof(attr_ruleset), handled_access_fs),
-			attr_ptr, attr_size);
+			ruleset_ptr, ruleset_size);
 	if (err)
 		return err;
 
@@ -218,17 +319,12 @@ static int syscall_create_ruleset(const void __user *const attr_ptr,
  * Returns an owned ruleset from a FD. It is thus needed to call
  * landlock_put_ruleset() on the return value.
  */
-static struct landlock_ruleset *get_ruleset_from_fd(const s32 fd,
+static struct landlock_ruleset *get_ruleset_from_fd(const int fd,
 		const fmode_t mode)
 {
 	struct fd ruleset_f;
 	struct landlock_ruleset *ruleset;
 	int err;
-
-	BUILD_BUG_ON(!__same_type(fd,
-		((struct landlock_attr_path_beneath *)NULL)->ruleset_fd));
-	BUILD_BUG_ON(!__same_type(fd,
-		((struct landlock_attr_enforce *)NULL)->ruleset_fd));
 
 	ruleset_f = fdget(fd);
 	if (!ruleset_f.file)
@@ -289,25 +385,62 @@ out_fdput:
 	return err;
 }
 
-static int syscall_add_rule_path_beneath(const void __user *const attr_ptr,
-		const size_t attr_size)
+/**
+ * sys_landlock_add_rule - Add a new rule to a ruleset
+ *
+ * @ruleset_fd: File descriptor tied to the ruleset which should be extended
+ *		with the new rule.
+ * @rule_type: Identify the structure type pointed to by @rule_ptr.
+ * @rule_ptr: Pointer to a rule (the currently only supported rule is &struct
+ *	      landlock_attr_path_beneath).
+ * @rule_size: Size of the struct pointed to by @rule_ptr.
+ * @options: Must be 0.
+ *
+ * This system call enables to define a new rule and add it to an existing
+ * ruleset.
+ *
+ * Possible returned errors are:
+ *
+ * - EOPNOTSUPP: Landlock is supported by the kernel but disabled at boot time;
+ * - EINVAL: @options is not 0, or inconsistent access in the rule (i.e.
+ *   &landlock_attr_path_beneath.allowed_access is not a subset of the rule's
+ *   accesses), or too small @rule_size (according to the underlying rule
+ *   type);
+ * - EBADF: @ruleset_fd is not a file descriptor for the current thread;
+ * - EBADFD: @ruleset_fd is not a ruleset file descriptor;
+ * - EPERM: @ruleset_fd has no write access to the underlying ruleset;
+ * - ENODATA, E2BIG or EFAULT: @rule_ptr or @rule_size inconsistencies;
+ */
+SYSCALL_DEFINE5(landlock_add_rule,
+		const int, ruleset_fd, const enum landlock_rule_type, rule_type,
+		const void __user *const, rule_ptr, const size_t, rule_size,
+		const __u32, options)
 {
 	struct landlock_attr_path_beneath attr_path_beneath;
 	struct path path;
 	struct landlock_ruleset *ruleset;
 	int err;
 
+	if (!landlock_initialized)
+		return -EOPNOTSUPP;
+
+	/* No option for now. */
+	if (options)
+		return -EINVAL;
+
+	if (rule_type != LANDLOCK_RULE_PATH_BENEATH)
+		return -EINVAL;
+
 	/* Copies raw user space buffer. */
 	err = copy_struct_if_any_from_user(&attr_path_beneath,
 			sizeof(attr_path_beneath),
 			offsetofend(typeof(attr_path_beneath), allowed_access),
-			attr_ptr, attr_size);
+			rule_ptr, rule_size);
 	if (err)
 		return err;
 
 	/* Gets and checks the ruleset. */
-	ruleset = get_ruleset_from_fd(attr_path_beneath.ruleset_fd,
-			FMODE_CAN_WRITE);
+	ruleset = get_ruleset_from_fd(ruleset_fd, FMODE_CAN_WRITE);
 	if (IS_ERR(ruleset))
 		return PTR_ERR(ruleset);
 
@@ -339,21 +472,57 @@ out_put_ruleset:
 
 /* Enforcement */
 
-static int syscall_enforce_ruleset(const void __user *const attr_ptr,
-		const size_t attr_size)
+/**
+ * sys_landlock_enforce_ruleset - Enforce a ruleset
+ *
+ * @ruleset_fd: File descriptor tied to the ruleset to merge with the target.
+ * @target_type: Identify which type of target to enforce the ruleset on,
+ *		 currently only the current thread is supported (i.e.
+ *		 seccomp-like).
+ * @target_fd: Must be -1.
+ * @options: Must be 0.
+ *
+ * This system call enables to enforce a Landlock ruleset on the current
+ * thread.  Enforcing a ruleset requires that the task has CAP_SYS_ADMIN in its
+ * namespace or be running with no_new_privs.  This avoids scenarios where
+ * unprivileged tasks can affect the behavior of privileged children.
+ *
+ * Possible returned errors are:
+ *
+ * - EOPNOTSUPP: Landlock is supported by the kernel but disabled at boot time;
+ * - EINVAL: @options is not 0, or @target_type is not
+ *   %LANDLOCK_TARGET_CURRENT_THREAD, or @target_fd is not -1;
+ * - EBADF: @ruleset_fd is not a file descriptor for the current thread;
+ * - EBADFD: @ruleset_fd is not a ruleset file descriptor;
+ * - EPERM: @ruleset_fd has no read access to the underlying ruleset, or the
+ *   current thread is not running with no_new_privs (or doesn't have
+ *   CAP_SYS_ADMIN in its namespace).
+ */
+SYSCALL_DEFINE4(landlock_enforce_ruleset,
+		const int, ruleset_fd, const enum landlock_target_type, target_type,
+		const int, target_fd, const __u32, options)
 {
 	struct landlock_ruleset *new_dom, *ruleset;
 	struct cred *new_cred;
 	struct landlock_cred_security *new_llcred;
-	struct landlock_attr_enforce attr_enforce;
 	int err;
 
+	if (!landlock_initialized)
+		return -EOPNOTSUPP;
+
+	/* No option for now. */
+	if (options)
+		return -EINVAL;
+
+	/* Only target the current thread for now. */
+	if (target_type != LANDLOCK_TARGET_CURRENT_THREAD)
+		return -EINVAL;
+	if (target_fd != -1)
+		return -EINVAL;
+
 	/*
-	 * Enforcing a Landlock ruleset requires that the task has
-	 * CAP_SYS_ADMIN in its namespace or be running with no_new_privs.
-	 * This avoids scenarios where unprivileged tasks can affect the
-	 * behavior of privileged children.  These are similar checks as for
-	 * seccomp(2), except that an -EPERM may be returned.
+	 * Similar checks as for seccomp(2), except that an -EPERM may be
+	 * returned.
 	 */
 	if (!task_no_new_privs(current)) {
 		err = security_capable(current_cred(), current_user_ns(),
@@ -362,15 +531,8 @@ static int syscall_enforce_ruleset(const void __user *const attr_ptr,
 			return err;
 	}
 
-	/* Copies raw user space buffer. */
-	err = copy_struct_if_any_from_user(&attr_enforce, sizeof(attr_enforce),
-			offsetofend(typeof(attr_enforce), ruleset_fd),
-			attr_ptr, attr_size);
-	if (err)
-		return err;
-
 	/* Gets and checks the ruleset. */
-	ruleset = get_ruleset_from_fd(attr_enforce.ruleset_fd, FMODE_CAN_READ);
+	ruleset = get_ruleset_from_fd(ruleset_fd, FMODE_CAN_READ);
 	if (IS_ERR(ruleset))
 		return PTR_ERR(ruleset);
 
@@ -406,121 +568,4 @@ out_put_creds:
 out_put_ruleset:
 	landlock_put_ruleset(ruleset);
 	return err;
-}
-
-/*
- * This function only contains arithmetic operations with constants, leading to
- * BUILD_BUG_ON().  The related code is evaluated and checked at build time,
- * but it is then ignored thanks to compiler optimizations.
- */
-static void build_check_abi(void)
-{
-	size_t size_features, size_ruleset, size_path_beneath, size_enforce;
-
-	/*
-	 * For each user space ABI structures, first checks that there is no
-	 * hole in them, then checks that all architectures have the same
-	 * struct size.
-	 */
-	size_features = sizeof_field(struct landlock_attr_features, options_get_features);
-	size_features += sizeof_field(struct landlock_attr_features, options_create_ruleset);
-	size_features += sizeof_field(struct landlock_attr_features, options_add_rule);
-	size_features += sizeof_field(struct landlock_attr_features, options_enforce_ruleset);
-	size_features += sizeof_field(struct landlock_attr_features, size_attr_features);
-	size_features += sizeof_field(struct landlock_attr_features, size_attr_ruleset);
-	size_features += sizeof_field(struct landlock_attr_features, size_attr_path_beneath);
-	size_features += sizeof_field(struct landlock_attr_features, size_attr_enforce);
-	size_features += sizeof_field(struct landlock_attr_features, access_fs);
-	BUILD_BUG_ON(sizeof(struct landlock_attr_features) != size_features);
-	BUILD_BUG_ON(sizeof(struct landlock_attr_features) != 32);
-
-	size_ruleset = sizeof_field(struct landlock_attr_ruleset, handled_access_fs);
-	BUILD_BUG_ON(sizeof(struct landlock_attr_ruleset) != size_ruleset);
-	BUILD_BUG_ON(sizeof(struct landlock_attr_ruleset) != 8);
-
-	size_path_beneath = sizeof_field(struct landlock_attr_path_beneath, ruleset_fd);
-	size_path_beneath += sizeof_field(struct landlock_attr_path_beneath, parent_fd);
-	size_path_beneath += sizeof_field(struct landlock_attr_path_beneath, allowed_access);
-	BUILD_BUG_ON(sizeof(struct landlock_attr_path_beneath) != size_path_beneath);
-	BUILD_BUG_ON(sizeof(struct landlock_attr_path_beneath) != 16);
-
-	size_enforce = sizeof_field(struct landlock_attr_enforce, ruleset_fd);
-	BUILD_BUG_ON(sizeof(struct landlock_attr_enforce) != size_enforce);
-	BUILD_BUG_ON(sizeof(struct landlock_attr_enforce) != 4);
-}
-
-/**
- * sys_landlock - System call to enable a process to safely sandbox itself
- *
- * @command: Landlock command to perform miscellaneous, but safe, actions. Cf.
- *           `Commands`_.
- * @options: Bitmask of options dedicated to one command. Cf. `Options`_.
- * @attr1_ptr: Pointer to the first attribute. Cf. `Attributes`_.
- * @attr1_size: First attribute size (i.e. size of the struct).
- * @attr2_ptr: Unused for now, must be NULL.
- * @attr2_size: Unused for now, must be 0.
- *
- * The @command and @options arguments enable a seccomp-bpf policy to control
- * the requested actions.  However, it should be noted that Landlock is
- * designed from the ground to enable unprivileged process to drop privileges
- * and accesses in a way that can not harm other processes.  This syscall and
- * all its arguments should then be allowed for any process, which will then
- * enable applications to strengthen the security of the whole system.
- *
- * @attr2_ptr and @attr2_size describe a second attribute which could be used
- * in the future to compose with the first attribute (e.g. a
- * landlock_attr_path_beneath with a landlock_attr_ioctl).
- *
- * The order of return errors begins with ENOPKG (disabled Landlock),
- * EOPNOTSUPP (unknown command or option) and then EINVAL (invalid attribute).
- * The other error codes may be specific to each command.
- */
-SYSCALL_DEFINE6(landlock, const unsigned int, command,
-		const unsigned int, options,
-		void __user *const, attr1_ptr, const size_t, attr1_size,
-		void __user *const, attr2_ptr, const size_t, attr2_size)
-{
-	build_check_abi();
-	/*
-	 * Enables user space to identify if Landlock is disabled, thanks to a
-	 * specific error code.
-	 */
-	if (!landlock_initialized)
-		return -ENOPKG;
-
-	switch ((enum landlock_cmd)command) {
-	case LANDLOCK_CMD_GET_FEATURES:
-		if (options == LANDLOCK_OPT_GET_FEATURES) {
-			if (attr2_ptr || attr2_size)
-				return -EINVAL;
-			return syscall_get_features(attr1_ptr, attr1_size);
-		}
-		return -EOPNOTSUPP;
-
-	case LANDLOCK_CMD_CREATE_RULESET:
-		if (options == LANDLOCK_OPT_CREATE_RULESET) {
-			if (attr2_ptr || attr2_size)
-				return -EINVAL;
-			return syscall_create_ruleset(attr1_ptr, attr1_size);
-		}
-		return -EOPNOTSUPP;
-
-	case LANDLOCK_CMD_ADD_RULE:
-		if (options == LANDLOCK_OPT_ADD_RULE_PATH_BENEATH) {
-			if (attr2_ptr || attr2_size)
-				return -EINVAL;
-			return syscall_add_rule_path_beneath(attr1_ptr,
-					attr1_size);
-		}
-		return -EOPNOTSUPP;
-
-	case LANDLOCK_CMD_ENFORCE_RULESET:
-		if (options == LANDLOCK_OPT_ENFORCE_RULESET) {
-			if (attr2_ptr || attr2_size)
-				return -EINVAL;
-			return syscall_enforce_ruleset(attr1_ptr, attr1_size);
-		}
-		return -EOPNOTSUPP;
-	}
-	return -EOPNOTSUPP;
 }

@@ -29,7 +29,7 @@ Guiding principles for safe access controls
   programmatically communicate with user space.
 * Kernel access check shall not slow down access request from unsandboxed
   processes.
-* Computation related to Landlock operations (e.g. enforce a ruleset) shall
+* Computation related to Landlock operations (e.g. enforcing a ruleset) shall
   only impact the processes requesting them.
 
 Tests
@@ -66,4 +66,4 @@ makes the reasoning much easier and helps avoid pitfalls.
     :identifiers:
 
 .. Links
-.. _tools/testing/selftests/landlock/: https://github.com/landlock-lsm/linux/tree/landlock-v19/tools/testing/selftests/landlock/
+.. _tools/testing/selftests/landlock/: https://github.com/landlock-lsm/linux/tree/landlock-v20/tools/testing/selftests/landlock/

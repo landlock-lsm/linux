@@ -17,14 +17,43 @@
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 #endif
 
-#ifndef landlock
-static inline int landlock(const unsigned int command,
-		const unsigned int options,
-		void *const attr_ptr, const size_t attr_size)
+#ifndef landlock_get_features
+static inline int landlock_get_features(
+		struct landlock_attr_features *const features_ptr,
+		const size_t features_size)
 {
 	errno = 0;
-	return syscall(__NR_landlock, command, options, attr_ptr, attr_size,
-			NULL, 0);
+	return syscall(__NR_landlock_get_features, features_ptr, features_size, 0);
+}
+#endif
+
+#ifndef landlock_create_ruleset
+static inline int landlock_create_ruleset(
+		const struct landlock_attr_ruleset *const ruleset_ptr,
+		const size_t ruleset_size)
+{
+	errno = 0;
+	return syscall(__NR_landlock_create_ruleset, ruleset_ptr, ruleset_size, 0);
+}
+#endif
+
+#ifndef landlock_add_rule
+static inline int landlock_add_rule(const int ruleset_fd,
+		const enum landlock_rule_type rule_type,
+		const void *const rule_ptr, const size_t rule_size)
+{
+	errno = 0;
+	return syscall(__NR_landlock_add_rule, ruleset_fd, rule_type, rule_ptr,
+			rule_size, 0);
+}
+#endif
+
+#ifndef landlock_enforce_ruleset
+static inline int landlock_enforce_ruleset(const int ruleset_fd)
+{
+	errno = 0;
+	return syscall(__NR_landlock_enforce_ruleset, ruleset_fd,
+			LANDLOCK_TARGET_CURRENT_THREAD, -1, 0);
 }
 #endif
 

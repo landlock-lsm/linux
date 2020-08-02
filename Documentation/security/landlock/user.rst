@@ -15,15 +15,14 @@ Defining and enforcing a security policy
 
 Before defining a security policy, an application should first probe for the
 features supported by the running kernel, which is important to be compatible
-with older kernels.  This can be done thanks to the `landlock` syscall (cf.
-:ref:`syscall`).
+with older kernels.  This can be done thanks to the sys_landlock_get_features().
+syscall.
 
 .. code-block:: c
 
     struct landlock_attr_features attr_features;
 
-    if (landlock(LANDLOCK_CMD_GET_FEATURES, LANDLOCK_OPT_GET_FEATURES,
-            sizeof(attr_features), &attr_features)) {
+    if (landlock_get_features(&attr_features, sizeof(attr_features), 0)) {
         perror("Failed to probe the Landlock supported features");
         return 1;
     }
@@ -55,8 +54,7 @@ ANDed with the supported ones.
     };
 
     ruleset.handled_access_fs &= attr_features.access_fs;
-    ruleset_fd = landlock(LANDLOCK_CMD_CREATE_RULESET,
-                    LANDLOCK_OPT_CREATE_RULESET, sizeof(ruleset), &ruleset);
+    ruleset_fd = landlock_create_ruleset(&ruleset, sizeof(ruleset), 0);
     if (ruleset_fd < 0) {
         perror("Failed to create a ruleset");
         return 1;
@@ -73,7 +71,6 @@ descriptor.
 
     int err;
     struct landlock_attr_path_beneath path_beneath = {
-        .ruleset_fd = ruleset_fd,
         .allowed_access =
             LANDLOCK_ACCESS_FS_EXECUTE |
             LANDLOCK_ACCESS_FS_READ_FILE |
@@ -87,8 +84,8 @@ descriptor.
         close(ruleset_fd);
         return 1;
     }
-    err = landlock(LANDLOCK_CMD_ADD_RULE, LANDLOCK_OPT_ADD_RULE_PATH_BENEATH,
-            sizeof(path_beneath), &path_beneath);
+    err = landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH,
+                            &path_beneath, sizeof(path_beneath), 0);
     close(path_beneath.parent_fd);
     if (err) {
         perror("Failed to update ruleset");
@@ -113,20 +110,15 @@ The current thread is now ready to sandbox itself with the ruleset.
 
 .. code-block:: c
 
-    struct landlock_attr_enforce attr_enforce = {
-        .ruleset_fd = ruleset_fd,
-    };
-
-    if (landlock(LANDLOCK_CMD_ENFORCE_RULESET, LANDLOCK_OPT_ENFORCE_RULESET,
-            sizeof(attr_enforce), &attr_enforce)) {
+    if (landlock_enforce_ruleset(ruleset_fd, 0)) {
         perror("Failed to enforce ruleset");
         close(ruleset_fd);
         return 1;
     }
     close(ruleset_fd);
 
-If the last `landlock` system call succeeds, the current thread is now
-restricted and this policy will be enforced on all its subsequently created
+If the `landlock_enforce_ruleset` system call succeeds, the current thread is
+now restricted and this policy will be enforced on all its subsequently created
 children as well.  Once a thread is landlocked, there is no way to remove its
 security policy; only adding more restrictions is allowed.  These threads are
 now in a new Landlock domain, merge of their parent one (if any) with the new
@@ -160,40 +152,51 @@ To be allowed to use :manpage:`ptrace(2)` and related syscalls on a target
 process, a sandboxed process should have a subset of the target process rules,
 which means the tracee must be in a sub-domain of the tracer.
 
-.. _syscall:
-
-The `landlock` syscall and its arguments
-========================================
-
-.. kernel-doc:: security/landlock/syscall.c
-    :identifiers: sys_landlock
-
-Commands
---------
-
-.. kernel-doc:: include/uapi/linux/landlock.h
-    :identifiers: landlock_cmd
-
-Options
--------
-
-.. kernel-doc:: include/uapi/linux/landlock.h
-    :identifiers: options_intro
-                  options_get_features options_create_ruleset
-                  options_add_rule options_enforce_ruleset
-
-Attributes
-----------
-
-.. kernel-doc:: include/uapi/linux/landlock.h
-    :identifiers: landlock_attr_features landlock_attr_ruleset
-                  landlock_attr_path_beneath landlock_attr_enforce
+Kernel interface
+================
 
 Access rights
 -------------
 
 .. kernel-doc:: include/uapi/linux/landlock.h
     :identifiers: fs_access
+
+
+Fetching the supported features
+-------------------------------
+
+.. kernel-doc:: security/landlock/syscall.c
+    :identifiers: sys_landlock_get_features
+
+.. kernel-doc:: include/uapi/linux/landlock.h
+    :identifiers: landlock_attr_features
+
+Creating a new ruleset
+----------------------
+
+.. kernel-doc:: security/landlock/syscall.c
+    :identifiers: sys_landlock_create_ruleset
+
+.. kernel-doc:: include/uapi/linux/landlock.h
+    :identifiers: landlock_attr_ruleset
+
+Extending a ruleset
+-------------------
+
+.. kernel-doc:: security/landlock/syscall.c
+    :identifiers: sys_landlock_add_rule
+
+.. kernel-doc:: include/uapi/linux/landlock.h
+    :identifiers: landlock_rule_type landlock_attr_path_beneath
+
+Enforcing a ruleset
+-------------------
+
+.. kernel-doc:: security/landlock/syscall.c
+    :identifiers: sys_landlock_enforce_ruleset
+
+.. kernel-doc:: include/uapi/linux/landlock.h
+    :identifiers: landlock_target_type
 
 Current limitations
 ===================
@@ -265,4 +268,4 @@ Additional documentation
 See https://landlock.io
 
 .. Links
-.. _samples/landlock/sandboxer.c: https://github.com/landlock-lsm/linux/tree/landlock-v19/samples/landlock/sandboxer.c
+.. _samples/landlock/sandboxer.c: https://github.com/landlock-lsm/linux/tree/landlock-v20/samples/landlock/sandboxer.c

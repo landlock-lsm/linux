@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
-hostprogs-y := sandboxer
+hostprogs := sandboxer
 
-always := $(hostprogs-y)
+always-y := $(hostprogs)
 
 KBUILD_HOSTCFLAGS += -I$(objtree)/usr/include
 
