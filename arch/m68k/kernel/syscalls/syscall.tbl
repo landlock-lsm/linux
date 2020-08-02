@@ -438,3 +438,7 @@
 437	common	openat2				sys_openat2
 438	common	pidfd_getfd			sys_pidfd_getfd
 439	common	faccessat2			sys_faccessat2
+444	common	landlock_get_features		sys_landlock_get_features
+445	common	landlock_create_ruleset		sys_landlock_create_ruleset
+446	common	landlock_add_rule			sys_landlock_add_rule
+447	common	landlock_enforce_ruleset	sys_landlock_enforce_ruleset

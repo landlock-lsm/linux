@@ -426,3 +426,7 @@
 437	o32	openat2				sys_openat2
 438	o32	pidfd_getfd			sys_pidfd_getfd
 439	o32	faccessat2			sys_faccessat2
+444	o32	landlock_get_features		sys_landlock_get_features
+445	o32	landlock_create_ruleset		sys_landlock_create_ruleset
+446	o32	landlock_add_rule			sys_landlock_add_rule
+447	o32	landlock_enforce_ruleset	sys_landlock_enforce_ruleset
