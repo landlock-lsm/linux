@@ -1005,6 +1005,14 @@ asmlinkage long sys_pidfd_send_signal(int pidfd, int sig,
 				       siginfo_t __user *info,
 				       unsigned int flags);
 asmlinkage long sys_pidfd_getfd(int pidfd, int fd, unsigned int flags);
+asmlinkage long sys_landlock_get_features(struct landlock_attr_features __user *features_ptr,
+		size_t features_size, __u32 options);
+asmlinkage long sys_landlock_create_ruleset(const struct landlock_attr_ruleset __user *ruleset_ptr,
+		size_t ruleset_size, __u32 options);
+asmlinkage long sys_landlock_add_rule(int ruleset_fd, enum landlock_rule_type rule_type,
+		const void __user *rule_ptr, size_t rule_size, __u32 options);
+asmlinkage long sys_landlock_enforce_ruleset(int ruleset_fd, enum landlock_target_type target_type,
+		int target_fd, __u32 options);
 
 /*
  * Architecture-specific system calls

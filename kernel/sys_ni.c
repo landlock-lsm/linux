@@ -264,6 +264,12 @@ COND_SYSCALL(request_key);
 COND_SYSCALL(keyctl);
 COND_SYSCALL_COMPAT(keyctl);
 
+/* security/landlock/syscall.c */
+COND_SYSCALL(landlock_get_features);
+COND_SYSCALL(landlock_create_ruleset);
+COND_SYSCALL(landlock_add_rule);
+COND_SYSCALL(landlock_enforce_ruleset);
+
 /* arch/example/kernel/sys_example.c */
 
 /* mm/fadvise.c */
