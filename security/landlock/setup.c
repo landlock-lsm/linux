@@ -11,6 +11,7 @@
 
 #include "common.h"
 #include "cred.h"
+#include "ptrace.h"
 #include "setup.h"
 
 struct lsm_blob_sizes landlock_blob_sizes __lsm_ro_after_init = {
@@ -20,6 +21,7 @@ struct lsm_blob_sizes landlock_blob_sizes __lsm_ro_after_init = {
 static int __init landlock_init(void)
 {
 	landlock_add_hooks_cred();
+	landlock_add_hooks_ptrace();
 	pr_info("Up and running.\n");
 	return 0;
 }
