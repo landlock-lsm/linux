@@ -444,3 +444,6 @@
 437	i386	openat2			sys_openat2
 438	i386	pidfd_getfd		sys_pidfd_getfd
 439	i386	faccessat2		sys_faccessat2
+442	i386	landlock_create_ruleset				sys_landlock_create_ruleset
+443	i386	landlock_add_rule					sys_landlock_add_rule
+444	i386	landlock_enforce_ruleset_current	sys_landlock_enforce_ruleset_current
