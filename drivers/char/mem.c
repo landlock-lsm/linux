@@ -791,7 +791,7 @@ static loff_t memory_lseek(struct file *file, loff_t offset, int orig)
 	switch (orig) {
 	case SEEK_CUR:
 		offset += file->f_pos;
-		/* fall through */
+		fallthrough;
 	case SEEK_SET:
 		/* to avoid userland mistaking f_pos=-9 as -EBADF=-9 */
 		if ((unsigned long long)offset >= -MAX_ERRNO) {
@@ -814,7 +814,8 @@ static struct inode *devmem_inode;
 #ifdef CONFIG_IO_STRICT_DEVMEM
 void revoke_devmem(struct resource *res)
 {
-	struct inode *inode = READ_ONCE(devmem_inode);
+	/* pairs with smp_store_release() in devmem_init_inode() */
+	struct inode *inode = smp_load_acquire(&devmem_inode);
 
 	/*
 	 * Check that the initialization has completed. Losing the race
@@ -1028,8 +1029,11 @@ static int devmem_init_inode(void)
 		return rc;
 	}
 
-	/* publish /dev/mem initialized */
-	WRITE_ONCE(devmem_inode, inode);
+	/*
+	 * Publish /dev/mem initialized.
+	 * Pairs with smp_load_acquire() in revoke_devmem().
+	 */
+	smp_store_release(&devmem_inode, inode);
 
 	return 0;
 }

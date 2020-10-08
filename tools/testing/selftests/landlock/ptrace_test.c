@@ -22,34 +22,30 @@
 static void create_domain(struct __test_metadata *const _metadata)
 {
 	int ruleset_fd;
-	struct landlock_attr_features attr_features;
-	struct landlock_attr_ruleset attr_ruleset = {
+	struct landlock_ruleset_attr ruleset_attr = {
 		.handled_access_fs = LANDLOCK_ACCESS_FS_READ_FILE,
 	};
-	struct landlock_attr_path_beneath path_beneath = {
+	struct landlock_path_beneath_attr path_beneath_attr = {
 		.allowed_access = LANDLOCK_ACCESS_FS_READ_FILE,
 	};
 
-	ASSERT_EQ(0, landlock_get_features(&attr_features, sizeof(attr_features)));
-	/* Only for test, use a binary AND for real application instead. */
-	ASSERT_EQ(attr_ruleset.handled_access_fs,
-			attr_ruleset.handled_access_fs & attr_features.access_fs);
-	ruleset_fd = landlock_create_ruleset(&attr_ruleset, sizeof(attr_ruleset));
+	ruleset_fd = landlock_create_ruleset(&ruleset_attr,
+			sizeof(ruleset_attr), 0);
 	ASSERT_LE(0, ruleset_fd) {
 		TH_LOG("Failed to create a ruleset: %s", strerror(errno));
 	}
-	path_beneath.parent_fd = open("/tmp", O_PATH | O_NOFOLLOW | O_DIRECTORY
-			| O_CLOEXEC);
-	ASSERT_LE(0, path_beneath.parent_fd);
+	path_beneath_attr.parent_fd = open("/tmp", O_PATH | O_NOFOLLOW |
+			O_DIRECTORY | O_CLOEXEC);
+	ASSERT_LE(0, path_beneath_attr.parent_fd);
 	ASSERT_EQ(0, landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH,
-				&path_beneath, sizeof(path_beneath)));
+				&path_beneath_attr, 0));
 	ASSERT_EQ(0, errno);
-	ASSERT_EQ(0, close(path_beneath.parent_fd));
+	ASSERT_EQ(0, close(path_beneath_attr.parent_fd));
 
 	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0));
 	ASSERT_EQ(0, errno);
 
-	ASSERT_EQ(0, landlock_enforce_ruleset(ruleset_fd));
+	ASSERT_EQ(0, landlock_enforce_ruleset_current(ruleset_fd, 0));
 	ASSERT_EQ(0, errno);
 
 	ASSERT_EQ(0, close(ruleset_fd));
@@ -249,7 +245,8 @@ TEST_F(hierarchy, trace)
 		}
 
 		/* Tests traceme. */
-		ASSERT_EQ(variant->domain_parent ? -1 : 0, ptrace(PTRACE_TRACEME));
+		ASSERT_EQ(variant->domain_parent ? -1 : 0,
+				ptrace(PTRACE_TRACEME));
 		if (variant->domain_parent) {
 			ASSERT_EQ(EPERM, errno);
 		} else {

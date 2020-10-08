@@ -19,110 +19,32 @@
 enum landlock_rule_type {
 	/**
 	 * @LANDLOCK_RULE_PATH_BENEATH: Type of a &struct
-	 * landlock_attr_path_beneath .
+	 * landlock_path_beneath_attr .
 	 */
 	LANDLOCK_RULE_PATH_BENEATH = 1,
 };
 
 /**
- * enum landlock_target_type - Landlock target type
- *
- * Argument of sys_landlock_enforce_ruleset().
- */
-enum landlock_target_type {
-	/**
-	 * @LANDLOCK_TARGET_CURRENT_THREAD: Enforce a ruleset on the thread
-	 * asking for (i.e. seccomp-like).
-	 */
-	LANDLOCK_TARGET_CURRENT_THREAD = 1,
-};
-
-/**
- * struct landlock_attr_features - Receives the supported features
- *
- * Argument of sys_landlock_get_features().
- */
-struct landlock_attr_features {
-	/**
-	 * @options_get_features: Options supported by
-	 * sys_landlock_get_features().
-	 */
-	__u32 options_get_features;
-	/**
-	 * @options_create_ruleset: Options supported by
-	 * sys_landlock_create_ruleset().
-	 */
-	__u32 options_create_ruleset;
-	/**
-	 * @options_add_rule: Options supported by sys_landlock_add_rule().
-	 */
-	__u32 options_add_rule;
-	/**
-	 * @options_enforce_ruleset: Options supported by
-	 * sys_landlock_enforce_ruleset().
-	 */
-	__u32 options_enforce_ruleset;
-	/**
-	 * @access_fs: Subset of file system access supported by the running
-	 * kernel, used in &landlock_attr_ruleset.handled_access_fs and
-	 * &landlock_attr_path_beneath.allowed_access .  Cf. `Filesystem
-	 * flags`_.
-	 */
-	__u64 access_fs;
-	/**
-	 * @size_attr_features: Size of the &struct landlock_attr_features
-	 * (current struct) as known by the kernel (i.e. ``sizeof(struct
-	 * landlock_attr_features)``).
-	 */
-	__u16 size_attr_features;
-	/**
-	 * @size_attr_ruleset: Size of the &struct landlock_attr_ruleset as
-	 * known by the kernel (i.e. ``sizeof(struct
-	 * landlock_attr_ruleset)``).
-	 */
-	__u16 size_attr_ruleset;
-	/**
-	 * @size_attr_path_beneath: Size of the &struct
-	 * landlock_attr_path_beneath as known by the kernel (i.e.
-	 * ``sizeof(struct landlock_attr_path_beneath)``).
-	 */
-	__u16 size_attr_path_beneath;
-	/**
-	 * @last_rule_type: Indicate the last entry of &enum
-	 * landlock_rule_type.
-	 */
-	__u8 last_rule_type;
-	/**
-	 * @last_target_type: Indicate the last entry of &enum
-	 * landlock_target_type.
-	 */
-	__u8 last_target_type;
-};
-
-/**
- * struct landlock_attr_ruleset- Defines a new ruleset
+ * struct landlock_ruleset_attr - Defines a new ruleset
  *
  * Argument of sys_landlock_create_ruleset().
  */
-struct landlock_attr_ruleset {
+struct landlock_ruleset_attr {
 	/**
 	 * @handled_access_fs: Bitmask of actions (cf. `Filesystem flags`_)
 	 * that is handled by this ruleset and should then be forbidden if no
 	 * rule explicitly allow them.  This is needed for backward
-	 * compatibility reasons.  The user space code should check the
-	 * effectively supported actions thanks to sys_landlock_get_features()
-	 * and then adjust the arguments of the next calls to
-	 * sys_landlock_create_ruleset() accordingly.
+	 * compatibility reasons.
 	 */
 	__u64 handled_access_fs;
 };
 
 /**
- * struct landlock_attr_path_beneath - Defines a path hierarchy
+ * struct landlock_path_beneath_attr - Defines a path hierarchy
  *
  * Argument of sys_landlock_add_rule().
  */
-struct landlock_attr_path_beneath {
+struct landlock_path_beneath_attr {
 	/**
 	 * @allowed_access: Bitmask of allowed actions for this file hierarchy
 	 * (cf. `Filesystem flags`_).
@@ -144,7 +66,7 @@ struct landlock_attr_path_beneath {
  * DOC: fs_access
  *
  * A set of actions on kernel objects may be defined by an attribute (e.g.
- * &struct landlock_attr_path_beneath) and a bitmask of access.
+ * &struct landlock_path_beneath_attr) and a bitmask of access.
  *
  * Filesystem flags
  * ~~~~~~~~~~~~~~~~

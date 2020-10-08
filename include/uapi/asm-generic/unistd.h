@@ -606,9 +606,9 @@ __SYSCALL(__NR_sendto, sys_sendto)
 #define __NR_recvfrom 207
 __SC_COMP(__NR_recvfrom, sys_recvfrom, compat_sys_recvfrom)
 #define __NR_setsockopt 208
-__SC_COMP(__NR_setsockopt, sys_setsockopt, compat_sys_setsockopt)
+__SC_COMP(__NR_setsockopt, sys_setsockopt, sys_setsockopt)
 #define __NR_getsockopt 209
-__SC_COMP(__NR_getsockopt, sys_getsockopt, compat_sys_getsockopt)
+__SC_COMP(__NR_getsockopt, sys_getsockopt, sys_getsockopt)
 #define __NR_shutdown 210
 __SYSCALL(__NR_shutdown, sys_shutdown)
 #define __NR_sendmsg 211
@@ -850,6 +850,8 @@ __SYSCALL(__NR_pidfd_open, sys_pidfd_open)
 #define __NR_clone3 435
 __SYSCALL(__NR_clone3, sys_clone3)
 #endif
+#define __NR_close_range 436
+__SYSCALL(__NR_close_range, sys_close_range)
 
 #define __NR_openat2 437
 __SYSCALL(__NR_openat2, sys_openat2)
@@ -857,17 +859,15 @@ __SYSCALL(__NR_openat2, sys_openat2)
 __SYSCALL(__NR_pidfd_getfd, sys_pidfd_getfd)
 #define __NR_faccessat2 439
 __SYSCALL(__NR_faccessat2, sys_faccessat2)
-#define __NR_landlock_get_features 444
-__SYSCALL(__NR_landlock_get_features, sys_landlock_get_features)
-#define __NR_landlock_create_ruleset 445
+#define __NR_landlock_create_ruleset 442
 __SYSCALL(__NR_landlock_create_ruleset, sys_landlock_create_ruleset)
-#define __NR_landlock_add_rule 446
+#define __NR_landlock_add_rule 443
 __SYSCALL(__NR_landlock_add_rule, sys_landlock_add_rule)
-#define __NR_landlock_enforce_ruleset 447
-__SYSCALL(__NR_landlock_enforce_ruleset, sys_landloc_enforce_rulesetk)
+#define __NR_landlock_enforce_ruleset_current 444
+__SYSCALL(__NR_landlock_enforce_ruleset_current, sys_landlock_enforce_ruleset_current)
 
 #undef __NR_syscalls
-#define __NR_syscalls 448
+#define __NR_syscalls 445
 
 /*
  * 32 bit systems traditionally used different

@@ -13,21 +13,7 @@ restrict the thread enforcing it, and its future children.
 Defining and enforcing a security policy
 ----------------------------------------
 
-Before defining a security policy, an application should first probe for the
-features supported by the running kernel, which is important to be compatible
-with older kernels.  This can be done thanks to the sys_landlock_get_features().
-syscall.
-
-.. code-block:: c
-
-    struct landlock_attr_features attr_features;
-
-    if (landlock_get_features(&attr_features, sizeof(attr_features), 0)) {
-        perror("Failed to probe the Landlock supported features");
-        return 1;
-    }
-
-Then, we need to create the ruleset that will contain our rules.  For this
+We first need to create the ruleset that will contain our rules.  For this
 example, the ruleset will contain rules which only allow read actions, but
 write actions will be denied.  The ruleset then needs to handle both of these
 kind of actions.  To have a backward compatibility, these actions should be
@@ -36,7 +22,7 @@ ANDed with the supported ones.
 .. code-block:: c
 
     int ruleset_fd;
-    struct landlock_attr_ruleset ruleset = {
+    struct landlock_ruleset_attr ruleset_attr = {
         .handled_access_fs =
             LANDLOCK_ACCESS_FS_EXECUTE |
             LANDLOCK_ACCESS_FS_WRITE_FILE |
@@ -53,8 +39,7 @@ ANDed with the supported ones.
             LANDLOCK_ACCESS_FS_MAKE_SYM,
     };
 
-    ruleset.handled_access_fs &= attr_features.access_fs;
-    ruleset_fd = landlock_create_ruleset(&ruleset, sizeof(ruleset), 0);
+    ruleset_fd = landlock_create_ruleset(&ruleset_attr, sizeof(ruleset_attr), 0);
     if (ruleset_fd < 0) {
         perror("Failed to create a ruleset");
         return 1;
@@ -64,20 +49,19 @@ We can now add a new rule to this ruleset thanks to the returned file
 descriptor referring to this ruleset.  The rule will only enable to read the
 file hierarchy ``/usr``.  Without another rule, write actions would then be
 denied by the ruleset.  To add ``/usr`` to the ruleset, we open it with the
-``O_PATH`` flag and fill the &struct landlock_attr_path_beneath with this file
+``O_PATH`` flag and fill the &struct landlock_path_beneath_attr with this file
 descriptor.
 
 .. code-block:: c
 
     int err;
-    struct landlock_attr_path_beneath path_beneath = {
+    struct landlock_path_beneath_attr path_beneath = {
         .allowed_access =
             LANDLOCK_ACCESS_FS_EXECUTE |
             LANDLOCK_ACCESS_FS_READ_FILE |
             LANDLOCK_ACCESS_FS_READ_DIR,
     };
 
-    path_beneath.allowed_access &= attr_features.access_fs;
     path_beneath.parent_fd = open("/usr", O_PATH | O_CLOEXEC);
     if (path_beneath.parent_fd < 0) {
         perror("Failed to open file");
@@ -85,7 +69,7 @@ descriptor.
         return 1;
     }
     err = landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH,
-                            &path_beneath, sizeof(path_beneath), 0);
+                            &path_beneath, 0);
     close(path_beneath.parent_fd);
     if (err) {
         perror("Failed to update ruleset");
@@ -94,9 +78,9 @@ descriptor.
     }
 
 We now have a ruleset with one rule allowing read access to ``/usr`` while
-denying all accesses featured in ``attr_features.access_fs`` to everything else
-on the filesystem.  The next step is to restrict the current thread from
-gaining more privileges (e.g. thanks to a SUID binary).
+denying all other handled accesses for the filesystem.  The next step is to
+restrict the current thread from gaining more privileges (e.g. thanks to a SUID
+binary).
 
 .. code-block:: c
 
@@ -110,19 +94,19 @@ The current thread is now ready to sandbox itself with the ruleset.
 
 .. code-block:: c
 
-    if (landlock_enforce_ruleset(ruleset_fd, 0)) {
+    if (landlock_enforce_ruleset_current(ruleset_fd, 0)) {
         perror("Failed to enforce ruleset");
         close(ruleset_fd);
         return 1;
     }
     close(ruleset_fd);
 
-If the `landlock_enforce_ruleset` system call succeeds, the current thread is
-now restricted and this policy will be enforced on all its subsequently created
-children as well.  Once a thread is landlocked, there is no way to remove its
-security policy; only adding more restrictions is allowed.  These threads are
-now in a new Landlock domain, merge of their parent one (if any) with the new
-ruleset.
+If the `landlock_enforce_ruleset_current` system call succeeds, the current
+thread is now restricted and this policy will be enforced on all its
+subsequently created children as well.  Once a thread is landlocked, there is
+no way to remove its security policy; only adding more restrictions is allowed.
+These threads are now in a new Landlock domain, merge of their parent one (if
+any) with the new ruleset.
 
 Full working code can be found in `samples/landlock/sandboxer.c`_.
 
@@ -161,16 +145,6 @@ Access rights
 .. kernel-doc:: include/uapi/linux/landlock.h
     :identifiers: fs_access
 
-
-Fetching the supported features
--------------------------------
-
-.. kernel-doc:: security/landlock/syscall.c
-    :identifiers: sys_landlock_get_features
-
-.. kernel-doc:: include/uapi/linux/landlock.h
-    :identifiers: landlock_attr_features
-
 Creating a new ruleset
 ----------------------
 
@@ -178,7 +152,7 @@ Creating a new ruleset
     :identifiers: sys_landlock_create_ruleset
 
 .. kernel-doc:: include/uapi/linux/landlock.h
-    :identifiers: landlock_attr_ruleset
+    :identifiers: landlock_ruleset_attr
 
 Extending a ruleset
 -------------------
@@ -187,16 +161,13 @@ Extending a ruleset
     :identifiers: sys_landlock_add_rule
 
 .. kernel-doc:: include/uapi/linux/landlock.h
-    :identifiers: landlock_rule_type landlock_attr_path_beneath
+    :identifiers: landlock_rule_type landlock_path_beneath_attr
 
 Enforcing a ruleset
 -------------------
 
 .. kernel-doc:: security/landlock/syscall.c
-    :identifiers: sys_landlock_enforce_ruleset
-
-.. kernel-doc:: include/uapi/linux/landlock.h
-    :identifiers: landlock_target_type
+    :identifiers: sys_landlock_enforce_ruleset_current
 
 Current limitations
 ===================
@@ -214,7 +185,7 @@ propagate the hierarchy constraints.  To protect against privilege escalations
 through renaming or linking, and for the sack of simplicity, Landlock currently
 limits linking and renaming to the same directory.  Future Landlock evolutions
 will enable more flexibility for renaming and linking, with dedicated ruleset
-options.
+flags.
 
 OverlayFS
 ---------
@@ -240,7 +211,7 @@ accessed through /proc/self/fd/, cannot currently be restricted.  Likewise,
 some special kernel filesystems such as nsfs which can be accessed through
 /proc/self/ns/, cannot currently be restricted.  For now, these kind of special
 paths are then always allowed.  Future Landlock evolutions will enable to
-restrict such paths, with dedicated ruleset options.
+restrict such paths, with dedicated ruleset flags.
 
 Questions and answers
 =====================
@@ -268,4 +239,4 @@ Additional documentation
 See https://landlock.io
 
 .. Links
-.. _samples/landlock/sandboxer.c: https://github.com/landlock-lsm/linux/tree/landlock-v20/samples/landlock/sandboxer.c
+.. _samples/landlock/sandboxer.c: https://github.com/landlock-lsm/linux/tree/landlock-v21/samples/landlock/sandboxer.c

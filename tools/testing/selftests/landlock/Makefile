@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0
 
+CFLAGS += -Wall -O2
+
 src_test := $(wildcard *_test.c)
 
 TEST_GEN_PROGS := $(src_test:.c=)
@@ -10,14 +12,7 @@ KSFT_KHDR_INSTALL := 1
 OVERRIDE_TARGETS := 1
 include ../lib.mk
 
-# Cf. tools/testing/selftests/arm64/Makefile
-ifeq ($(KBUILD_OUTPUT),)
 khdr_dir = $(top_srcdir)/usr/include
-else
-khdr_dir = $(KBUILD_OUTPUT)/kselftest/usr/include
-endif
-
-CFLAGS += -Wall -O2
 
 $(khdr_dir)/linux/landlock.h: khdr
 	@:

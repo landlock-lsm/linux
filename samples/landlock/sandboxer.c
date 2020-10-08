@@ -21,43 +21,34 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
-#ifndef landlock_get_features
-static inline int landlock_get_features(
-		struct landlock_attr_features *const features_ptr,
-		const size_t features_size)
-{
-	errno = 0;
-	return syscall(__NR_landlock_get_features, features_ptr, features_size, 0);
-}
-#endif
-
 #ifndef landlock_create_ruleset
 static inline int landlock_create_ruleset(
-		const struct landlock_attr_ruleset *const ruleset_ptr,
-		const size_t ruleset_size)
+		const struct landlock_ruleset_attr *const attr,
+		const size_t size, const __u32 flags)
 {
 	errno = 0;
-	return syscall(__NR_landlock_create_ruleset, ruleset_ptr, ruleset_size, 0);
+	return syscall(__NR_landlock_create_ruleset, attr, size, flags);
 }
 #endif
 
 #ifndef landlock_add_rule
 static inline int landlock_add_rule(const int ruleset_fd,
 		const enum landlock_rule_type rule_type,
-		const void *const rule_ptr, const size_t rule_size)
+		const void *const rule_attr, const __u32 flags)
 {
 	errno = 0;
-	return syscall(__NR_landlock_add_rule, ruleset_fd, rule_type, rule_ptr,
-			rule_size, 0);
+	return syscall(__NR_landlock_add_rule, ruleset_fd, rule_type,
+			rule_attr, flags);
 }
 #endif
 
-#ifndef landlock_enforce_ruleset
-static inline int landlock_enforce_ruleset(const int ruleset_fd)
+#ifndef landlock_enforce_ruleset_current
+static inline int landlock_enforce_ruleset_current(const int ruleset_fd,
+		const __u32 flags)
 {
 	errno = 0;
-	return syscall(__NR_landlock_enforce_ruleset, ruleset_fd,
-			LANDLOCK_TARGET_CURRENT_THREAD, -1, 0);
+	return syscall(__NR_landlock_enforce_ruleset_current, ruleset_fd,
+			flags);
 }
 #endif
 
@@ -89,14 +80,13 @@ static int parse_path(char *env_path, const char ***const path_list)
 	LANDLOCK_ACCESS_FS_READ_FILE)
 
 static int populate_ruleset(
-		const struct landlock_attr_features *const attr_features,
 		const char *const env_var, const int ruleset_fd,
 		const __u64 allowed_access)
 {
 	int path_nb, i;
 	char *env_path_name;
 	const char **path_list = NULL;
-	struct landlock_attr_path_beneath path_beneath = {
+	struct landlock_path_beneath_attr path_beneath = {
 		.parent_fd = -1,
 	};
 
@@ -128,13 +118,11 @@ static int populate_ruleset(
 			close(path_beneath.parent_fd);
 			goto err_free_name;
 		}
-		/* Follows a best-effort approach. */
-		path_beneath.allowed_access = allowed_access &
-			attr_features->access_fs;
+		path_beneath.allowed_access = allowed_access;
 		if (!S_ISDIR(statbuf.st_mode))
 			path_beneath.allowed_access &= ACCESS_FILE;
 		if (landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH,
-					&path_beneath, sizeof(path_beneath))) {
+					&path_beneath, 0)) {
 			fprintf(stderr, "Failed to update the ruleset with \"%s\": %s\n",
 					path_list[i], strerror(errno));
 			close(path_beneath.parent_fd);
@@ -173,8 +161,7 @@ int main(const int argc, char *const argv[], char *const *const envp)
 	const char *cmd_path;
 	char *const *cmd_argv;
 	int ruleset_fd;
-	struct landlock_attr_features attr_features;
-	struct landlock_attr_ruleset ruleset = {
+	struct landlock_ruleset_attr ruleset_attr = {
 		.handled_access_fs = ACCESS_FS_ROUGHLY_READ |
 			ACCESS_FS_ROUGHLY_WRITE,
 	};
@@ -196,39 +183,24 @@ int main(const int argc, char *const argv[], char *const *const envp)
 		return 1;
 	}
 
-	if (landlock_get_features(&attr_features, sizeof(attr_features))) {
-		perror("Failed to probe the Landlock supported features");
-		switch (errno) {
-		case ENOSYS:
-			fprintf(stderr, "Hint: this kernel does not support Landlock.\n");
-			break;
-		case ENOPKG:
-			fprintf(stderr, "Hint: Landlock is currently disabled. It can be enabled in the kernel configuration or at boot with the \"lsm=landlock\" parameter.\n");
-			break;
-		}
-		return 1;
-	}
-	/* Follows a best-effort approach. */
-	ruleset.handled_access_fs &= attr_features.access_fs;
-	ruleset_fd = landlock_create_ruleset(&ruleset, sizeof(ruleset));
+	ruleset_fd = landlock_create_ruleset(&ruleset_attr, sizeof(ruleset_attr), 0);
 	if (ruleset_fd < 0) {
 		perror("Failed to create a ruleset");
 		return 1;
 	}
-	if (populate_ruleset(&attr_features, ENV_FS_RO_NAME, ruleset_fd,
+	if (populate_ruleset(ENV_FS_RO_NAME, ruleset_fd,
 				ACCESS_FS_ROUGHLY_READ)) {
 		goto err_close_ruleset;
 	}
-	if (populate_ruleset(&attr_features, ENV_FS_RW_NAME, ruleset_fd,
-				ACCESS_FS_ROUGHLY_READ |
-				ACCESS_FS_ROUGHLY_WRITE)) {
+	if (populate_ruleset(ENV_FS_RW_NAME, ruleset_fd,
+				ACCESS_FS_ROUGHLY_READ | ACCESS_FS_ROUGHLY_WRITE)) {
 		goto err_close_ruleset;
 	}
 	if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) {
 		perror("Failed to restrict privileges");
 		goto err_close_ruleset;
 	}
-	if (landlock_enforce_ruleset(ruleset_fd)) {
+	if (landlock_enforce_ruleset_current(ruleset_fd, 0)) {
 		perror("Failed to enforce ruleset");
 		goto err_close_ruleset;
 	}

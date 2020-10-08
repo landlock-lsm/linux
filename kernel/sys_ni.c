@@ -265,10 +265,9 @@ COND_SYSCALL(keyctl);
 COND_SYSCALL_COMPAT(keyctl);
 
 /* security/landlock/syscall.c */
-COND_SYSCALL(landlock_get_features);
 COND_SYSCALL(landlock_create_ruleset);
 COND_SYSCALL(landlock_add_rule);
-COND_SYSCALL(landlock_enforce_ruleset);
+COND_SYSCALL(landlock_enforce_ruleset_current);
 
 /* arch/example/kernel/sys_example.c */
 
@@ -370,7 +369,6 @@ COND_SYSCALL(socketcall);
 COND_SYSCALL_COMPAT(socketcall);
 
 /* compat syscalls for arm64, x86, ... */
-COND_SYSCALL_COMPAT(sysctl);
 COND_SYSCALL_COMPAT(fanotify_mark);
 
 /* x86 */
