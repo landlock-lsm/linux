@@ -16,4 +16,4 @@ Security Documentation
    siphash
    tpm/index
    digsig
-   landlock/index
+   landlock

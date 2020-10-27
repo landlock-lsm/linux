@@ -129,7 +129,7 @@ config SAMPLE_LANDLOCK
 	depends on HEADERS_INSTALL
 	help
 	  Build a simple Landlock sandbox manager able to launch a process
-	  restricted by a user-defined filesystem access-control security policy.
+	  restricted by a user-defined filesystem access control.
 
 config SAMPLE_PIDFD
 	bool "pidfd sample"

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 /*
  * Simple Landlock sandbox manager able to launch a process restricted by a
- * user-defined filesystem access-control security policy.
+ * user-defined filesystem access control.
  *
  * Copyright © 2017-2020 Mickaël Salaün <mic@digikod.net>
  * Copyright © 2020 ANSSI
@@ -141,8 +141,7 @@ err_free_name:
 #define ACCESS_FS_ROUGHLY_READ ( \
 	LANDLOCK_ACCESS_FS_EXECUTE | \
 	LANDLOCK_ACCESS_FS_READ_FILE | \
-	LANDLOCK_ACCESS_FS_READ_DIR | \
-	LANDLOCK_ACCESS_FS_CHROOT)
+	LANDLOCK_ACCESS_FS_READ_DIR)
 
 #define ACCESS_FS_ROUGHLY_WRITE ( \
 	LANDLOCK_ACCESS_FS_WRITE_FILE | \

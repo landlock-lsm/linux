@@ -78,15 +78,19 @@ static void put_rule(struct landlock_rule *const rule)
 	kfree(rule);
 }
 
-/*
- * Assumptions:
- * - An inserted rule can not be removed.
- * - The underlying kernel object must be held by the caller.
+/**
+ * landlock_insert_rule - Insert a rule in a ruleset
  *
+ * @ruleset: The ruleset to be updated.
  * @rule: Read-only payload to be inserted (not own by this function).
  * @is_merge: If true, intersects access rights and updates the rule's layers
- * (e.g. merge two rulesets), else do a union of access rights and keep the
- * rule's layers (e.g. extend a ruleset)
+ *            (e.g. merge two rulesets), else do a union of access rights and
+ *            keep the rule's layers (e.g. extend a ruleset)
+ *
+ * Assumptions:
+ *
+ * - An inserted rule cannot be removed.
+ * - The underlying kernel object must be held by the caller.
  */
 int landlock_insert_rule(struct landlock_ruleset *const ruleset,
 		struct landlock_rule *const rule, const bool is_merge)
@@ -281,10 +285,14 @@ void landlock_put_ruleset_deferred(struct landlock_ruleset *const ruleset)
 	}
 }
 
-/*
- * Creates a new transition domain, intersection of @parent and @ruleset, or
- * return @parent if @ruleset is empty.  If @parent is empty, returns a
- * duplicate of @ruleset.
+/**
+ * landlock_merge_ruleset - Merge a ruleset with a domain
+ *
+ * @parent: Parent domain.
+ * @ruleset: New ruleset to be merged.
+ *
+ * Returns the intersection of @parent and @ruleset, or returns @parent if
+ * @ruleset is empty, or returns a duplicate of @ruleset if @parent is empty.
  */
 struct landlock_ruleset *landlock_merge_ruleset(
 		struct landlock_ruleset *const parent,
@@ -295,7 +303,7 @@ struct landlock_ruleset *landlock_merge_ruleset(
 
 	might_sleep();
 	/*
-	 * Merging duplicates a ruleset, so a new ruleset can't be
+	 * Merging duplicates a ruleset, so a new ruleset cannot be
 	 * the same as the parent, but they can have similar content.
 	 */
 	if (WARN_ON_ONCE(!ruleset || parent == ruleset)) {

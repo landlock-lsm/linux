@@ -97,7 +97,7 @@ static void effective_cap(struct __test_metadata *const _metadata,
 	}
 }
 
-/* We can't put such helpers in a library because of kselftest_harness.h . */
+/* We cannot put such helpers in a library because of kselftest_harness.h . */
 __attribute__((__unused__))
 static void set_cap(struct __test_metadata *const _metadata,
 		const cap_value_t caps)

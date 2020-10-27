@@ -49,7 +49,7 @@ void landlock_put_object(struct landlock_object *const object)
 		return;
 
 	/*
-	 * If the @object's refcount can't drop to zero, we can just decrement
+	 * If the @object's refcount cannot drop to zero, we can just decrement
 	 * the refcount without holding a lock. Otherwise, the decrement must
 	 * happen under @object->lock for synchronization with things like
 	 * get_inode_object().

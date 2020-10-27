@@ -12,6 +12,22 @@
 #include <linux/types.h>
 
 /**
+ * struct landlock_ruleset_attr - Ruleset definition
+ *
+ * Argument of sys_landlock_create_ruleset().  This structure can grow in
+ * future versions.
+ */
+struct landlock_ruleset_attr {
+	/**
+	 * @handled_access_fs: Bitmask of actions (cf. `Filesystem flags`_)
+	 * that is handled by this ruleset and should then be forbidden if no
+	 * rule explicitly allow them.  This is needed for backward
+	 * compatibility reasons.
+	 */
+	__u64 handled_access_fs;
+};
+
+/**
  * enum landlock_rule_type - Landlock rule type
  *
  * Argument of sys_landlock_add_rule().
@@ -25,22 +41,7 @@ enum landlock_rule_type {
 };
 
 /**
- * struct landlock_ruleset_attr - Defines a new ruleset
- *
- * Argument of sys_landlock_create_ruleset().
- */
-struct landlock_ruleset_attr {
-	/**
-	 * @handled_access_fs: Bitmask of actions (cf. `Filesystem flags`_)
-	 * that is handled by this ruleset and should then be forbidden if no
-	 * rule explicitly allow them.  This is needed for backward
-	 * compatibility reasons.
-	 */
-	__u64 handled_access_fs;
-};
-
-/**
- * struct landlock_path_beneath_attr - Defines a path hierarchy
+ * struct landlock_path_beneath_attr - Path hierarchy definition
  *
  * Argument of sys_landlock_add_rule().
  */
@@ -56,8 +57,7 @@ struct landlock_path_beneath_attr {
 	 */
 	__s32 parent_fd;
 	/*
-	 * This struct is packed to enable to append future members without
-	 * requiring to have dummy reserved members.
+	 * This struct is packed to avoid trailing reserved members.
 	 * Cf. security/landlock/syscall.c:build_check_abi()
 	 */
 } __attribute__((packed));
@@ -66,7 +66,7 @@ struct landlock_path_beneath_attr {
  * DOC: fs_access
  *
  * A set of actions on kernel objects may be defined by an attribute (e.g.
- * &struct landlock_path_beneath_attr) and a bitmask of access.
+ * &struct landlock_path_beneath_attr) including a bitmask of access.
  *
  * Filesystem flags
  * ~~~~~~~~~~~~~~~~
@@ -81,13 +81,11 @@ struct landlock_path_beneath_attr {
  * - %LANDLOCK_ACCESS_FS_WRITE_FILE: Open a file with write access.
  * - %LANDLOCK_ACCESS_FS_READ_FILE: Open a file with read access.
  *
- * A directory can receive access rights related to files or directories.  This
- * set of access rights is applied to the directory itself, and the directories
- * beneath it:
+ * A directory can receive access rights related to files or directories.  The
+ * following access right is applied to the directory itself, and the
+ * directories beneath it:
  *
  * - %LANDLOCK_ACCESS_FS_READ_DIR: Open a directory or list its content.
- * - %LANDLOCK_ACCESS_FS_CHROOT: Change the root directory of the current
- *   process.
  *
  * However, the following access rights only apply to the content of a
  * directory, not the directory itself:
@@ -117,15 +115,14 @@ struct landlock_path_beneath_attr {
 #define LANDLOCK_ACCESS_FS_WRITE_FILE			(1ULL << 1)
 #define LANDLOCK_ACCESS_FS_READ_FILE			(1ULL << 2)
 #define LANDLOCK_ACCESS_FS_READ_DIR			(1ULL << 3)
-#define LANDLOCK_ACCESS_FS_CHROOT			(1ULL << 4)
-#define LANDLOCK_ACCESS_FS_REMOVE_DIR			(1ULL << 5)
-#define LANDLOCK_ACCESS_FS_REMOVE_FILE			(1ULL << 6)
-#define LANDLOCK_ACCESS_FS_MAKE_CHAR			(1ULL << 7)
-#define LANDLOCK_ACCESS_FS_MAKE_DIR			(1ULL << 8)
-#define LANDLOCK_ACCESS_FS_MAKE_REG			(1ULL << 9)
-#define LANDLOCK_ACCESS_FS_MAKE_SOCK			(1ULL << 10)
-#define LANDLOCK_ACCESS_FS_MAKE_FIFO			(1ULL << 11)
-#define LANDLOCK_ACCESS_FS_MAKE_BLOCK			(1ULL << 12)
-#define LANDLOCK_ACCESS_FS_MAKE_SYM			(1ULL << 13)
+#define LANDLOCK_ACCESS_FS_REMOVE_DIR			(1ULL << 4)
+#define LANDLOCK_ACCESS_FS_REMOVE_FILE			(1ULL << 5)
+#define LANDLOCK_ACCESS_FS_MAKE_CHAR			(1ULL << 6)
+#define LANDLOCK_ACCESS_FS_MAKE_DIR			(1ULL << 7)
+#define LANDLOCK_ACCESS_FS_MAKE_REG			(1ULL << 8)
+#define LANDLOCK_ACCESS_FS_MAKE_SOCK			(1ULL << 9)
+#define LANDLOCK_ACCESS_FS_MAKE_FIFO			(1ULL << 10)
+#define LANDLOCK_ACCESS_FS_MAKE_BLOCK			(1ULL << 11)
+#define LANDLOCK_ACCESS_FS_MAKE_SYM			(1ULL << 12)
 
 #endif /* _UAPI__LINUX_LANDLOCK_H__ */

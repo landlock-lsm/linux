@@ -2,8 +2,8 @@
 /*
  * Landlock LSM - Credential hooks
  *
- * Copyright © 2019 Mickaël Salaün <mic@digikod.net>
- * Copyright © 2019 ANSSI
+ * Copyright © 2019-2020 Mickaël Salaün <mic@digikod.net>
+ * Copyright © 2019-2020 ANSSI
  */
 
 #ifndef _SECURITY_LANDLOCK_CRED_H

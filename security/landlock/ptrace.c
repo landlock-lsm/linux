@@ -3,7 +3,7 @@
  * Landlock LSM - Ptrace hooks
  *
  * Copyright © 2017-2020 Mickaël Salaün <mic@digikod.net>
- * Copyright © 2020 ANSSI
+ * Copyright © 2019-2020 ANSSI
  */
 
 #include <asm/current.h>

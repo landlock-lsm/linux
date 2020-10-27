@@ -308,7 +308,6 @@ TEST_F(layout1, inval)
 #define ACCESS_ALL ( \
 	ACCESS_FILE | \
 	LANDLOCK_ACCESS_FS_READ_DIR | \
-	LANDLOCK_ACCESS_FS_CHROOT | \
 	LANDLOCK_ACCESS_FS_REMOVE_DIR | \
 	LANDLOCK_ACCESS_FS_REMOVE_FILE | \
 	LANDLOCK_ACCESS_FS_MAKE_CHAR | \
@@ -563,21 +562,30 @@ TEST_F(layout1, unhandled_access)
 		},
 		{}
 	};
-	const int ruleset_fd = create_ruleset(_metadata, ACCESS_RW, rules);
-
-	set_cap(_metadata, CAP_SYS_CHROOT);
+	/* Here, we only handle read accesses, not write accesses. */
+	const int ruleset_fd = create_ruleset(_metadata, ACCESS_RO, rules);
+	int file_fd;
 
 	ASSERT_LE(0, ruleset_fd);
 	enforce_ruleset(_metadata, ruleset_fd);
 	EXPECT_EQ(0, close(ruleset_fd));
 
 	/*
-	 * Because the policy does not handle LANDLOCK_ACCESS_FS_CHROOT,
-	 * chroot(2) should be allowed.
+	 * Because the policy does not handle LANDLOCK_ACCESS_FS_WRITE_FILE,
+	 * opening for write-only should be allowed, but not read-write.
 	 */
-	ASSERT_EQ(0, chroot(dir_s1d1));
-	ASSERT_EQ(0, chroot(dir_s1d2));
-	ASSERT_EQ(0, chroot(dir_s1d3));
+	file_fd = open(file1_s1d1, O_WRONLY | O_CLOEXEC);
+	ASSERT_LE(0, file_fd);
+	EXPECT_EQ(0, close(file_fd));
+	ASSERT_EQ(-1, open(file1_s1d1, O_RDWR | O_CLOEXEC));
+	ASSERT_EQ(EACCES, errno);
+
+	file_fd = open(file1_s1d2, O_WRONLY | O_CLOEXEC);
+	ASSERT_LE(0, file_fd);
+	EXPECT_EQ(0, close(file_fd));
+	file_fd = open(file1_s1d2, O_RDWR | O_CLOEXEC);
+	ASSERT_LE(0, file_fd);
+	EXPECT_EQ(0, close(file_fd));
 }
 
 TEST_F(layout1, ruleset_overlap)
@@ -1179,34 +1187,6 @@ TEST_F(layout1, relative_chroot_only)
 TEST_F(layout1, relative_chroot_chdir)
 {
 	test_relative_path(_metadata, REL_CHROOT_CHDIR);
-}
-
-TEST_F(layout1, chroot)
-{
-	const struct rule rules[] = {
-		{
-			.path = dir_s1d2,
-			.access = LANDLOCK_ACCESS_FS_CHROOT,
-		},
-		{}
-	};
-	const int ruleset_fd = create_ruleset(_metadata, rules[0].access,
-			rules);
-
-	ASSERT_LE(0, ruleset_fd);
-
-	set_cap(_metadata, CAP_SYS_CHROOT);
-	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
-
-	ASSERT_EQ(-1, chroot(dir_s1d1));
-	ASSERT_EQ(EACCES, errno);
-	ASSERT_EQ(0, chroot(dir_s1d2)) {
-		TH_LOG("Failed to chroot into \"%s\": %s", file1_s1d2,
-				strerror(errno));
-	};
-	/* This chroot still works because we didn't chdir(dir_s1d2). */
-	ASSERT_EQ(0, chroot(dir_s1d3));
 }
 
 static void copy_binary(struct __test_metadata *const _metadata,

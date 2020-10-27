@@ -408,7 +408,8 @@ static int hook_sb_remount(struct super_block *const sb, void *const mnt_opts)
  * then be forbidden for a landlocked process.
  *
  * However, chroot(2) may be allowed because it only changes the relative root
- * directory of the current process.
+ * directory of the current process.  Moreover, it can be used to restrict the
+ * view of the filesystem.
  */
 static int hook_sb_pivotroot(const struct path *const old_path,
 		const struct path *const new_path)
@@ -538,11 +539,6 @@ static int hook_path_rmdir(const struct path *const dir,
 	return current_check_access_path(dir, LANDLOCK_ACCESS_FS_REMOVE_DIR);
 }
 
-static int hook_path_chroot(const struct path *const path)
-{
-	return current_check_access_path(path, LANDLOCK_ACCESS_FS_CHROOT);
-}
-
 /* File hooks */
 
 static inline u32 get_file_access(const struct file *const file)
@@ -597,7 +593,6 @@ static struct security_hook_list landlock_hooks[] __lsm_ro_after_init = {
 	LSM_HOOK_INIT(path_symlink, hook_path_symlink),
 	LSM_HOOK_INIT(path_unlink, hook_path_unlink),
 	LSM_HOOK_INIT(path_rmdir, hook_path_rmdir),
-	LSM_HOOK_INIT(path_chroot, hook_path_chroot),
 
 	LSM_HOOK_INIT(file_open, hook_file_open),
 };
