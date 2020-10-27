@@ -480,3 +480,6 @@
 548	common	pidfd_getfd			sys_pidfd_getfd
 549	common	faccessat2			sys_faccessat2
 550	common	process_madvise			sys_process_madvise
+552	common	landlock_create_ruleset				sys_landlock_create_ruleset
+553	common	landlock_add_rule					sys_landlock_add_rule
+554	common	landlock_enforce_ruleset_current	sys_landlock_enforce_ruleset_current
