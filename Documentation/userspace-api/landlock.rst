@@ -7,7 +7,7 @@ Landlock: unprivileged access control
 =====================================
 
 :Author: Mickaël Salaün
-:Date: October 2020
+:Date: November 2020
 
 The goal of Landlock is to enable to restrict ambient rights (e.g. global
 filesystem access) for a set of processes.  Because Landlock is a stackable
@@ -20,10 +20,10 @@ any process, including unprivileged ones, to securely restrict themselves.
 Landlock rules
 ==============
 
-A Landlock rule enables to describe an action on an object.  An object is
-currently a file hierarchy, and the related filesystem actions are defined in
-`Access rights`_.  A set of rules is aggregated in a ruleset, which can then
-restrict the thread enforcing it, and its future children.
+A Landlock rule describes an action on an object.  An object is currently a
+file hierarchy, and the related filesystem actions are defined in `Access
+rights`_.  A set of rules is aggregated in a ruleset, which can then restrict
+the thread enforcing it, and its future children.
 
 Defining and enforcing a security policy
 ----------------------------------------
@@ -31,8 +31,7 @@ Defining and enforcing a security policy
 We first need to create the ruleset that will contain our rules.  For this
 example, the ruleset will contain rules which only allow read actions, but
 write actions will be denied.  The ruleset then needs to handle both of these
-kind of actions.  To have a backward compatibility, these actions should be
-ANDed with the supported ones.
+kind of actions.
 
 .. code-block:: c
 
@@ -61,7 +60,7 @@ ANDed with the supported ones.
     }
 
 We can now add a new rule to this ruleset thanks to the returned file
-descriptor referring to this ruleset.  The rule will only enable to read the
+descriptor referring to this ruleset.  The rule will only allow reading the
 file hierarchy ``/usr``.  Without another rule, write actions would then be
 denied by the ruleset.  To add ``/usr`` to the ruleset, we open it with the
 ``O_PATH`` flag and fill the &struct landlock_path_beneath_attr with this file
@@ -136,9 +135,9 @@ Landlock rules to itself, but they will not be automatically applied to other
 sibling threads (unlike POSIX thread credential changes, cf.
 :manpage:`nptl(7)`).
 
-When a thread sandbox itself, we have the grantee that the related security
-policy will stay enforced on all this thread's descendants.  This enables to
-create standalone and modular security policies per application, which will
+When a thread sandboxes itself, we have the guarantee that the related security
+policy will stay enforced on all this thread's descendants.  This allows
+creating standalone and modular security policies per application, which will
 automatically be composed between themselves according to their runtime parent
 policies.
 

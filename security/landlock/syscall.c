@@ -42,9 +42,9 @@
  * @src: User space pointer or NULL.
  * @usize: (Alleged) size of the data pointed to by @src.
  */
-static int copy_min_struct_from_user(void *const dst, const size_t ksize,
-		const size_t ksize_min, const void __user *const src,
-		const size_t usize)
+static __always_inline int copy_min_struct_from_user(void *const dst,
+		const size_t ksize, const size_t ksize_min,
+		const void __user *const src, const size_t usize)
 {
 	/* Checks buffer inconsistencies. */
 	BUILD_BUG_ON(!dst);
@@ -248,8 +248,7 @@ static int get_path_from_fd(const s32 fd, struct path *const path)
 		err = -EBADFD;
 		goto out_fdput;
 	}
-	path->mnt = f.file->f_path.mnt;
-	path->dentry = f.file->f_path.dentry;
+	*path = f.file->f_path;
 	path_get(path);
 
 out_fdput:
@@ -348,7 +347,7 @@ out_put_ruleset:
  *
  * This system call enables to enforce a Landlock ruleset on the current
  * thread.  Enforcing a ruleset requires that the task has CAP_SYS_ADMIN in its
- * namespace or be running with no_new_privs.  This avoids scenarios where
+ * namespace or is running with no_new_privs.  This avoids scenarios where
  * unprivileged tasks can affect the behavior of privileged children.
  *
  * Possible returned errors are:
@@ -358,8 +357,8 @@ out_put_ruleset:
  * - EBADF: @ruleset_fd is not a file descriptor for the current thread;
  * - EBADFD: @ruleset_fd is not a ruleset file descriptor;
  * - EPERM: @ruleset_fd has no read access to the underlying ruleset, or the
- *   current thread is not running with no_new_privs (or doesn't have
- *   CAP_SYS_ADMIN in its namespace).
+ *   current thread is not running with no_new_privs, or it doesn't have
+ *   CAP_SYS_ADMIN in its namespace.
  */
 SYSCALL_DEFINE2(landlock_enforce_ruleset_current,
 		const int, ruleset_fd, const __u32, flags)
@@ -380,12 +379,9 @@ SYSCALL_DEFINE2(landlock_enforce_ruleset_current,
 	 * Similar checks as for seccomp(2), except that an -EPERM may be
 	 * returned.
 	 */
-	if (!task_no_new_privs(current)) {
-		err = security_capable(current_cred(), current_user_ns(),
-				CAP_SYS_ADMIN, CAP_OPT_NOAUDIT);
-		if (err)
-			return err;
-	}
+	if (!task_no_new_privs(current) &&
+			!ns_capable_noaudit(current_user_ns(), CAP_SYS_ADMIN))
+		return -EPERM;
 
 	/* Gets and checks the ruleset. */
 	ruleset = get_ruleset_from_fd(ruleset_fd, FMODE_CAN_READ);
@@ -419,7 +415,6 @@ SYSCALL_DEFINE2(landlock_enforce_ruleset_current,
 
 out_put_creds:
 	abort_creds(new_cred);
-	return err;
 
 out_put_ruleset:
 	landlock_put_ruleset(ruleset);

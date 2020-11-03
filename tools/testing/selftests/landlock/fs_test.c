@@ -161,18 +161,18 @@ FIXTURE_TEARDOWN(layout1)
 }
 
 static void test_path_rel(struct __test_metadata *const _metadata,
-		const int dirfd, const char *const path, const int ret)
+		const int dirfd, const char *const path, const int ret_errno)
 {
 	int fd;
 
 	/* Works with file and directories. */
 	fd = openat(dirfd, path, O_RDONLY | O_CLOEXEC);
-	if (ret) {
+	if (ret_errno) {
 		ASSERT_EQ(-1, fd) {
 			TH_LOG("Successfully opened \"%s\": %s", path,
 					strerror(errno));
 		}
-		ASSERT_EQ(EACCES, errno) {
+		ASSERT_EQ(ret_errno, errno) {
 			TH_LOG("Wrong error code to open \"%s\": %s", path,
 					strerror(errno));
 		}
@@ -186,9 +186,9 @@ static void test_path_rel(struct __test_metadata *const _metadata,
 }
 
 static void test_path(struct __test_metadata *const _metadata,
-		const char *const path, const int ret)
+		const char *const path, const int ret_errno)
 {
-	return test_path_rel(_metadata, AT_FDCWD, path, ret);
+	return test_path_rel(_metadata, AT_FDCWD, path, ret_errno);
 }
 
 TEST_F(layout1, no_restriction)
@@ -438,14 +438,14 @@ TEST_F(layout1, proc_nsfs)
 
 	enforce_ruleset(_metadata, ruleset_fd);
 
-	test_path(_metadata, "/", -1);
-	test_path(_metadata, "/dev", -1);
+	test_path(_metadata, "/", EACCES);
+	test_path(_metadata, "/dev", EACCES);
 	test_path(_metadata, "/dev/null", 0);
-	test_path(_metadata, "/dev/full", -1);
+	test_path(_metadata, "/dev/full", EACCES);
 
-	test_path(_metadata, "/proc", -1);
-	test_path(_metadata, "/proc/self", -1);
-	test_path(_metadata, "/proc/self/ns", -1);
+	test_path(_metadata, "/proc", EACCES);
+	test_path(_metadata, "/proc/self", EACCES);
+	test_path(_metadata, "/proc/self/ns", EACCES);
 	/*
 	 * Because nsfs is an internal filesystem, /proc/self/ns/mnt is a
 	 * disconnected path.  Such path cannot be identified and must then be
@@ -524,16 +524,16 @@ TEST_F(layout1, whitelist)
 	EXPECT_EQ(0, close(ruleset_fd));
 
 	/* Tests on a directory. */
-	test_path(_metadata, "/", -1);
-	test_path(_metadata, dir_s1d1, -1);
-	test_path(_metadata, file1_s1d1, -1);
+	test_path(_metadata, "/", EACCES);
+	test_path(_metadata, dir_s1d1, EACCES);
+	test_path(_metadata, file1_s1d1, EACCES);
 	test_path(_metadata, dir_s1d2, 0);
 	test_path(_metadata, file1_s1d2, 0);
 	test_path(_metadata, dir_s1d3, 0);
 	test_path(_metadata, file1_s1d3, 0);
 
 	/* Tests on a file. */
-	test_path(_metadata, dir_s2d2, -1);
+	test_path(_metadata, dir_s2d2, EACCES);
 	test_path(_metadata, file1_s2d2, 0);
 
 	/* Checks effective read and write actions. */
@@ -855,7 +855,7 @@ TEST_F(layout1, empty_or_same_ruleset)
 			sizeof(ruleset_attr), 0);
 	ASSERT_LE(0, ruleset_fd);
 	enforce_ruleset(_metadata, ruleset_fd);
-	test_path(_metadata, file1_s1d1, -1);
+	test_path(_metadata, file1_s1d1, EACCES);
 	test_path(_metadata, dir_s1d1, 0);
 
 	/* Nests a policy which deny read access to all directories. */
@@ -864,8 +864,8 @@ TEST_F(layout1, empty_or_same_ruleset)
 			sizeof(ruleset_attr), 0);
 	ASSERT_LE(0, ruleset_fd);
 	enforce_ruleset(_metadata, ruleset_fd);
-	test_path(_metadata, file1_s1d1, -1);
-	test_path(_metadata, dir_s1d1, -1);
+	test_path(_metadata, file1_s1d1, EACCES);
+	test_path(_metadata, dir_s1d1, EACCES);
 
 	/* Enforces a second time with the same ruleset. */
 	enforce_ruleset(_metadata, ruleset_fd);
@@ -894,9 +894,9 @@ TEST_F(layout1, rule_on_mountpoint)
 
 	test_path(_metadata, dir_s1d1, 0);
 
-	test_path(_metadata, dir_s2d1, -1);
+	test_path(_metadata, dir_s2d1, EACCES);
 
-	test_path(_metadata, dir_s3d1, -1);
+	test_path(_metadata, dir_s3d1, EACCES);
 	test_path(_metadata, dir_s3d2, 0);
 	test_path(_metadata, dir_s3d3, 0);
 }
@@ -923,7 +923,7 @@ TEST_F(layout1, rule_over_mountpoint)
 
 	test_path(_metadata, dir_s1d1, 0);
 
-	test_path(_metadata, dir_s2d1, -1);
+	test_path(_metadata, dir_s2d1, EACCES);
 
 	test_path(_metadata, dir_s3d1, 0);
 	test_path(_metadata, dir_s3d2, 0);
@@ -931,15 +931,45 @@ TEST_F(layout1, rule_over_mountpoint)
 }
 
 /*
- * This test verifies that we can apply a landlock rule on the root (/), it
- * might require special handling.
+ * This test verifies that we can apply a landlock rule on the root directory
+ * (which might require special handling).
  */
-TEST_F(layout1, rule_over_root)
+TEST_F(layout1, rule_over_root_allow_then_deny)
+{
+	struct rule rules[] = {
+		{
+			.path = "/",
+			.access = ACCESS_RO,
+		},
+		{}
+	};
+	int ruleset_fd = create_ruleset(_metadata, ACCESS_RW, rules);
+
+	ASSERT_LE(0, ruleset_fd);
+	enforce_ruleset(_metadata, ruleset_fd);
+	EXPECT_EQ(0, close(ruleset_fd));
+
+	/* Checks allowed access. */
+	test_path(_metadata, "/", 0);
+	test_path(_metadata, dir_s1d1, 0);
+
+	rules[0].access = LANDLOCK_ACCESS_FS_READ_FILE;
+	ruleset_fd = create_ruleset(_metadata, ACCESS_RW, rules);
+	ASSERT_LE(0, ruleset_fd);
+	enforce_ruleset(_metadata, ruleset_fd);
+	EXPECT_EQ(0, close(ruleset_fd));
+
+	/* Checks denied access (on a directory). */
+	test_path(_metadata, "/", EACCES);
+	test_path(_metadata, dir_s1d1, EACCES);
+}
+
+TEST_F(layout1, rule_over_root_deny)
 {
 	const struct rule rules[] = {
 		{
 			.path = "/",
-			.access = ACCESS_RO,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE,
 		},
 		{}
 	};
@@ -949,8 +979,9 @@ TEST_F(layout1, rule_over_root)
 	enforce_ruleset(_metadata, ruleset_fd);
 	EXPECT_EQ(0, close(ruleset_fd));
 
-	test_path(_metadata, "/", 0);
-	test_path(_metadata, dir_s1d1, 0);
+	/* Checks denied access (on a directory). */
+	test_path(_metadata, "/", EACCES);
+	test_path(_metadata, dir_s1d1, EACCES);
 }
 
 TEST_F(layout1, rule_inside_mount_ns)
@@ -979,7 +1010,7 @@ TEST_F(layout1, rule_inside_mount_ns)
 	EXPECT_EQ(0, close(ruleset_fd));
 
 	test_path(_metadata, "s3d3", 0);
-	test_path(_metadata, "/", -1);
+	test_path(_metadata, "/", EACCES);
 }
 
 TEST_F(layout1, mount_and_pivot)
@@ -1144,7 +1175,7 @@ static void test_relative_path(struct __test_metadata *const _metadata,
 	}
 
 	test_path_rel(_metadata, dirfd, "..",
-			(rel == REL_CHROOT_CHDIR) ? 0 : -1);
+			(rel == REL_CHROOT_CHDIR) ? 0 : EACCES);
 	test_path_rel(_metadata, dirfd, ".", 0);
 
 	if (rel == REL_CHROOT_ONLY)
@@ -1155,11 +1186,11 @@ static void test_relative_path(struct __test_metadata *const _metadata,
 		test_path_rel(_metadata, dirfd, "./s1d3", 0);
 
 	if (rel != REL_CHROOT_CHDIR) {
-		test_path_rel(_metadata, dirfd, "../../s1d1", -1);
+		test_path_rel(_metadata, dirfd, "../../s1d1", EACCES);
 		test_path_rel(_metadata, dirfd, "../../s1d1/s1d2", 0);
 		test_path_rel(_metadata, dirfd, "../../s1d1/s1d2/s1d3", 0);
 
-		test_path_rel(_metadata, dirfd, "../../s2d1", -1);
+		test_path_rel(_metadata, dirfd, "../../s2d1", EACCES);
 		test_path_rel(_metadata, dirfd, "../../s2d1/s2d2", 0);
 		test_path_rel(_metadata, dirfd, "../../s2d1/s2d2/s2d3", 0);
 	}

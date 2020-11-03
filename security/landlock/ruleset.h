@@ -30,14 +30,14 @@
  */
 struct landlock_rule {
 	/**
-	 * @node: Node in the red-black tree.
+	 * @node: Node in the ruleset's red-black tree.
 	 */
 	struct rb_node node;
 	/**
 	 * @object: Pointer to identify a kernel object (e.g. an inode).  This
 	 * is used as a key for this ruleset element.  This pointer is set once
-	 * and never modified.  It always point to an allocated object because
-	 * each rule increment the refcount of there object.
+	 * and never modified.  It always points to an allocated object because
+	 * each rule increments the refcount of its object.
 	 */
 	struct landlock_object *object;
 	/**
@@ -59,8 +59,8 @@ struct landlock_rule {
  */
 struct landlock_hierarchy {
 	/**
-	 * @parent: Pointer to the parent node, or NULL if it is a root Lanlock
-	 * domain.
+	 * @parent: Pointer to the parent node, or NULL if it is a root
+	 * Landlock domain.
 	 */
 	struct landlock_hierarchy *parent;
 	/**
@@ -73,13 +73,14 @@ struct landlock_hierarchy {
 /**
  * struct landlock_ruleset - Landlock ruleset
  *
- * This data structure must contains unique entries, be updatable, and quick to
+ * This data structure must contain unique entries, be updatable, and quick to
  * match an object.
  */
 struct landlock_ruleset {
 	/**
 	 * @root: Root of a red-black tree containing &struct landlock_rule
-	 * nodes.
+	 * nodes.  Once a ruleset is tied to a process (i.e. as a domain), this
+	 * tree is immutable until @usage reaches zero.
 	 */
 	struct rb_root root;
 	/**
@@ -115,7 +116,7 @@ struct landlock_ruleset {
 			/**
 			 * @nb_layers: Number of layers which are used in this
 			 * ruleset.  This enables to check that all the layers
-			 * allow an access request.  A value of 0 identify a
+			 * allow an access request.  A value of 0 identifies a
 			 * non-merged ruleset (i.e. not a domain).
 			 */
 			u32 nb_layers;

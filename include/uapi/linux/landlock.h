@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
- * Landlock - UAPI headers
+ * Landlock - User space API
  *
  * Copyright © 2017-2020 Mickaël Salaün <mic@digikod.net>
  * Copyright © 2018-2020 ANSSI
@@ -52,7 +52,7 @@ struct landlock_path_beneath_attr {
 	 */
 	__u64 allowed_access;
 	/**
-	 * @parent_fd: File descriptor, open with ``O_PATH``, which identify
+	 * @parent_fd: File descriptor, open with ``O_PATH``, which identifies
 	 * the parent directory of a file hierarchy, or just a file.
 	 */
 	__s32 parent_fd;
@@ -71,7 +71,7 @@ struct landlock_path_beneath_attr {
  * Filesystem flags
  * ~~~~~~~~~~~~~~~~
  *
- * These flags enable to restrict a sandbox process to a set of actions on
+ * These flags enable to restrict a sandboxed process to a set of actions on
  * files and directories.  Files or directories opened before the sandboxing
  * are not subject to these restrictions.
  *

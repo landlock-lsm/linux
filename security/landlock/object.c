@@ -41,7 +41,7 @@ struct landlock_object *landlock_create_object(
 void landlock_put_object(struct landlock_object *const object)
 {
 	/*
-	 * The call to @object->underops->release(object) might sleep e.g.,
+	 * The call to @object->underops->release(object) might sleep, e.g.
 	 * because of iput().
 	 */
 	might_sleep();

@@ -17,7 +17,6 @@
 #include <linux/mount.h>
 #include <linux/namei.h>
 #include <linux/path.h>
-#include <linux/prefetch.h>
 #include <linux/rcupdate.h>
 #include <linux/spinlock.h>
 #include <linux/stat.h>
@@ -162,13 +161,11 @@ int landlock_append_fs_rule(struct landlock_ruleset *const ruleset,
 static bool check_access_path_continue(
 		const struct landlock_ruleset *const domain,
 		const struct path *const path, const u32 access_request,
-		bool *const allow, u64 *const layer_mask)
+		u64 *const layer_mask)
 {
 	const struct landlock_rule *rule;
 	const struct inode *inode;
-	bool next = true;
 
-	prefetch(path->dentry->d_parent);
 	if (d_is_negative(path->dentry))
 		/* Continues to walk while there is no mapped inode. */
 		return true;
@@ -180,22 +177,20 @@ static bool check_access_path_continue(
 
 	/* Checks for matching layers. */
 	if (rule && (rule->layers | *layer_mask)) {
-		*allow = (rule->access & access_request) == access_request;
-		if (*allow) {
+		if ((rule->access & access_request) == access_request) {
 			*layer_mask &= ~rule->layers;
-			/* Stops when a rule from each layer granted access. */
-			next = !!*layer_mask;
+			return true;
 		} else {
-			next = false;
+			return false;
 		}
 	}
-	return next;
+	return true;
 }
 
 static int check_access_path(const struct landlock_ruleset *const domain,
 		const struct path *const path, u32 access_request)
 {
-	bool allow = false;
+	bool allowed = false;
 	struct path walker_path;
 	u64 layer_mask;
 
@@ -228,8 +223,14 @@ static int check_access_path(const struct landlock_ruleset *const domain,
 	 * restriction.
 	 */
 	while (check_access_path_continue(domain, &walker_path, access_request,
-				&allow, &layer_mask)) {
+				&layer_mask)) {
 		struct dentry *parent_dentry;
+
+		/* Stops when a rule from each layer granted access. */
+		if (layer_mask == 0) {
+			allowed = true;
+			break;
+		}
 
 jump_up:
 		/*
@@ -245,7 +246,7 @@ jump_up:
 				 * Stops at the real root.  Denies access
 				 * because not all layers have granted access.
 				 */
-				allow = false;
+				allowed = false;
 				break;
 			}
 		}
@@ -255,7 +256,7 @@ jump_up:
 			 * access to internal filesystems (e.g. nsfs which is
 			 * reachable through /proc/self/ns).
 			 */
-			allow = !!(walker_path.mnt->mnt_flags & MNT_INTERNAL);
+			allowed = !!(walker_path.mnt->mnt_flags & MNT_INTERNAL);
 			break;
 		}
 		parent_dentry = dget_parent(walker_path.dentry);
@@ -263,7 +264,7 @@ jump_up:
 		walker_path.dentry = parent_dentry;
 	}
 	path_put(&walker_path);
-	return allow ? 0 : -EACCES;
+	return allowed ? 0 : -EACCES;
 }
 
 static inline int current_check_access_path(const struct path *const path,
@@ -551,10 +552,6 @@ static inline u32 get_file_access(const struct file *const file)
 			return LANDLOCK_ACCESS_FS_READ_DIR;
 		access = LANDLOCK_ACCESS_FS_READ_FILE;
 	}
-	/*
-	 * A LANDLOCK_ACCESS_FS_APPEND could be added but we also need to check
-	 * fcntl(2).
-	 */
 	if (file->f_mode & FMODE_WRITE)
 		access |= LANDLOCK_ACCESS_FS_WRITE_FILE;
 	/* __FMODE_EXEC is indeed part of f_flags, not f_mode. */

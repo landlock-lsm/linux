@@ -47,9 +47,9 @@ struct landlock_object {
 	 */
 	refcount_t usage;
 	/**
-	 * @lock: Guards against concurrent modifications.  This lock must be
-	 * from the time @usage drops to zero until any weak references from
-	 * @underobj to this object have been cleaned up.
+	 * @lock: Guards against concurrent modifications.  This lock might be
+	 * held from the time @usage drops to zero until any weak references
+	 * from @underobj to this object have been cleaned up.
 	 *
 	 * Lock ordering: inode->i_lock nests inside this.
 	 */
@@ -78,7 +78,7 @@ struct landlock_object {
 
 struct landlock_object *landlock_create_object(
 		const struct landlock_object_underops *const underops,
-		void *const underojb);
+		void *const underobj);
 
 void landlock_put_object(struct landlock_object *const object);
 

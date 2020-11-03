@@ -13,6 +13,7 @@
 #include <linux/errno.h>
 #include <linux/kernel.h>
 #include <linux/limits.h>
+#include <linux/lockdep.h>
 #include <linux/rbtree.h>
 #include <linux/refcount.h>
 #include <linux/slab.h>
@@ -31,8 +32,8 @@ static struct landlock_ruleset *create_ruleset(void)
 		return ERR_PTR(-ENOMEM);
 	refcount_set(&new_ruleset->usage, 1);
 	mutex_init(&new_ruleset->lock);
+	new_ruleset->root = RB_ROOT;
 	/*
-	 * root = RB_ROOT
 	 * hierarchy = NULL
 	 * nb_rules = 0
 	 * nb_layers = 0
@@ -82,7 +83,7 @@ static void put_rule(struct landlock_rule *const rule)
  * landlock_insert_rule - Insert a rule in a ruleset
  *
  * @ruleset: The ruleset to be updated.
- * @rule: Read-only payload to be inserted (not own by this function).
+ * @rule: Read-only payload to be inserted (not owned by this function).
  * @is_merge: If true, intersects access rights and updates the rule's layers
  *            (e.g. merge two rulesets), else do a union of access rights and
  *            keep the rule's layers (e.g. extend a ruleset)
@@ -173,13 +174,17 @@ static int merge_ruleset(struct landlock_ruleset *const dst,
 	if (WARN_ON_ONCE(!dst || !dst->hierarchy))
 		return -EFAULT;
 
+	/*
+	 * The ruleset being modified (@dst) is locked first, then the ruleset
+	 * being copied (@src).
+	 */
 	mutex_lock(&dst->lock);
-	mutex_lock_nested(&src->lock, 1);
+	mutex_lock_nested(&src->lock, SINGLE_DEPTH_NESTING);
 	/*
 	 * Makes a new layer, but only increments the number of layers after
 	 * the rules are inserted.
 	 */
-	if (dst->nb_layers == sizeof(walker_rule->layers) * BITS_PER_BYTE) {
+	if (dst->nb_layers == (sizeof(walker_rule->layers) * BITS_PER_BYTE)) {
 		err = -E2BIG;
 		goto out_unlock;
 	}
