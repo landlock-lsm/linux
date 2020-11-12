@@ -591,14 +591,16 @@ TEST_F(layout1, unhandled_access)
 TEST_F(layout1, ruleset_overlap)
 {
 	const struct rule rules[] = {
-		/* These rules should be ORed among them. */
+		/* These rules should be ANDed among them. */
 		{
 			.path = dir_s1d2,
-			.access = LANDLOCK_ACCESS_FS_WRITE_FILE,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE |
+				LANDLOCK_ACCESS_FS_WRITE_FILE,
 		},
 		{
 			.path = dir_s1d2,
-			.access = LANDLOCK_ACCESS_FS_READ_DIR,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE |
+				LANDLOCK_ACCESS_FS_READ_DIR,
 		},
 		{}
 	};
@@ -609,24 +611,132 @@ TEST_F(layout1, ruleset_overlap)
 	enforce_ruleset(_metadata, ruleset_fd);
 	EXPECT_EQ(0, close(ruleset_fd));
 
+	/* Checks s1d1 hierarchy. */
+	ASSERT_EQ(-1, open(file1_s1d1, O_RDONLY | O_CLOEXEC));
+	ASSERT_EQ(EACCES, errno);
 	ASSERT_EQ(-1, open(file1_s1d1, O_WRONLY | O_CLOEXEC));
+	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(-1, open(file1_s1d1, O_RDWR | O_CLOEXEC));
 	ASSERT_EQ(EACCES, errno);
 	ASSERT_EQ(-1, open(dir_s1d1, O_RDONLY | O_DIRECTORY | O_CLOEXEC));
 	ASSERT_EQ(EACCES, errno);
 
-	open_fd = open(file1_s1d2, O_WRONLY | O_CLOEXEC);
+	/* Checks s1d2 hierarchy. */
+	open_fd = open(file1_s1d2, O_RDONLY | O_CLOEXEC);
 	ASSERT_LE(0, open_fd);
 	EXPECT_EQ(0, close(open_fd));
-	open_fd = open(dir_s1d2, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-	ASSERT_LE(0, open_fd);
-	EXPECT_EQ(0, close(open_fd));
+	ASSERT_EQ(-1, open(file1_s1d2, O_WRONLY | O_CLOEXEC));
+	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(-1, open(file1_s1d2, O_RDWR | O_CLOEXEC));
+	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(-1, open(dir_s1d2, O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+	ASSERT_EQ(EACCES, errno);
 
-	open_fd = open(file1_s1d3, O_WRONLY | O_CLOEXEC);
+	/* Checks s1d3 hierarchy. */
+	open_fd = open(file1_s1d3, O_RDONLY | O_CLOEXEC);
 	ASSERT_LE(0, open_fd);
 	EXPECT_EQ(0, close(open_fd));
-	open_fd = open(dir_s1d3, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	ASSERT_EQ(-1, open(file1_s1d3, O_WRONLY | O_CLOEXEC));
+	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(-1, open(file1_s1d3, O_RDWR | O_CLOEXEC));
+	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(-1, open(dir_s1d3, O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+	ASSERT_EQ(EACCES, errno);
+}
+
+TEST_F(layout1, interleaved_masked_accesses)
+{
+	/*
+	 * Checks overly restrictive rules:
+	 * layer 1: allows s1d1/s1d2/s1d3/file1
+	 * layer 2: allows s1d1/s1d2/s1d3
+	 *          denies s1d1/s1d2
+	 * layer 3: allows s1d1
+	 * layer 4: allows s1d1/s1d2
+	 */
+	const struct rule layer1[] = {
+		/* Allows access to file1_s1d3 with the first layer. */
+		{
+			.path = file1_s1d3,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE,
+		},
+		{}
+	};
+	const struct rule layer2[] = {
+		/* Start by granting access to file1_s1d3 with this rule... */
+		{
+			.path = dir_s1d3,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE,
+		},
+		/* ...but finally denies access to file1_s1d3. */
+		{
+			.path = dir_s1d2,
+			.access = 0,
+		},
+		{}
+	};
+	const struct rule layer3[] = {
+		/* Try to allows access to file1_s1d3. */
+		{
+			.path = dir_s1d1,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE,
+		},
+		{}
+	};
+	const struct rule layer4[] = {
+		/* Try to bypass layer2. */
+		{
+			.path = dir_s1d2,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE,
+		},
+		{}
+	};
+	int open_fd, ruleset_fd;
+
+	ruleset_fd = create_ruleset(_metadata, ACCESS_RO, layer1);
+	ASSERT_LE(0, ruleset_fd);
+	enforce_ruleset(_metadata, ruleset_fd);
+	EXPECT_EQ(0, close(ruleset_fd));
+
+	/* Checks that access is granted for file1_s1d3. */
+	open_fd = open(file1_s1d3, O_RDONLY | O_CLOEXEC);
 	ASSERT_LE(0, open_fd);
 	EXPECT_EQ(0, close(open_fd));
+	ASSERT_EQ(-1, open(file2_s1d3, O_RDONLY | O_CLOEXEC));
+	ASSERT_EQ(EACCES, errno);
+
+	ruleset_fd = create_ruleset(_metadata, ACCESS_RO, layer2);
+	ASSERT_LE(0, ruleset_fd);
+	enforce_ruleset(_metadata, ruleset_fd);
+	EXPECT_EQ(0, close(ruleset_fd));
+
+	/* Now, checks that access is denied for file1_s1d3. */
+	ASSERT_EQ(-1, open(file1_s1d3, O_RDONLY | O_CLOEXEC));
+	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(-1, open(file2_s1d3, O_RDONLY | O_CLOEXEC));
+	ASSERT_EQ(EACCES, errno);
+
+	ruleset_fd = create_ruleset(_metadata, ACCESS_RO, layer3);
+	ASSERT_LE(0, ruleset_fd);
+	enforce_ruleset(_metadata, ruleset_fd);
+	EXPECT_EQ(0, close(ruleset_fd));
+
+	/* Checks that access rights are unchanged with layer 3. */
+	ASSERT_EQ(-1, open(file1_s1d3, O_RDONLY | O_CLOEXEC));
+	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(-1, open(file2_s1d3, O_RDONLY | O_CLOEXEC));
+	ASSERT_EQ(EACCES, errno);
+
+	ruleset_fd = create_ruleset(_metadata, ACCESS_RO, layer4);
+	ASSERT_LE(0, ruleset_fd);
+	enforce_ruleset(_metadata, ruleset_fd);
+	EXPECT_EQ(0, close(ruleset_fd));
+
+	/* Checks that access rights are unchanged with layer 4. */
+	ASSERT_EQ(-1, open(file1_s1d3, O_RDONLY | O_CLOEXEC));
+	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(-1, open(file2_s1d3, O_RDONLY | O_CLOEXEC));
+	ASSERT_EQ(EACCES, errno);
 }
 
 TEST_F(layout1, inherit_subset)
@@ -671,8 +781,8 @@ TEST_F(layout1, inherit_subset)
 	 * any new access, only remove some.  Once enforced, these rules are
 	 * ANDed with the previous ones.
 	 */
-	add_path_beneath(_metadata, ruleset_fd, LANDLOCK_ACCESS_FS_WRITE_FILE,
-			dir_s1d2);
+	add_path_beneath(_metadata, ruleset_fd, rules[0].access |
+			LANDLOCK_ACCESS_FS_WRITE_FILE, dir_s1d2);
 	/*
 	 * According to ruleset_fd, dir_s1d2 should now have the
 	 * LANDLOCK_ACCESS_FS_READ_FILE and LANDLOCK_ACCESS_FS_WRITE_FILE
@@ -797,6 +907,10 @@ TEST_F(layout1, inherit_superset)
 	open_fd = open(dir_s1d3, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
 	ASSERT_LE(0, open_fd);
 	ASSERT_EQ(0, close(open_fd));
+	/* File access is allowed for file1_s1d3. */
+	open_fd = open(file1_s1d3, O_RDONLY | O_CLOEXEC);
+	ASSERT_LE(0, open_fd);
+	ASSERT_EQ(0, close(open_fd));
 
 	/* Now dir_s1d2, parent of dir_s1d3, gets a new rule tied to it. */
 	add_path_beneath(_metadata, ruleset_fd, LANDLOCK_ACCESS_FS_READ_FILE |
@@ -812,6 +926,10 @@ TEST_F(layout1, inherit_superset)
 	open_fd = open(dir_s1d3, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
 	ASSERT_LE(0, open_fd);
 	ASSERT_EQ(0, close(open_fd));
+	/* File access is now denied for file1_s1d3. */
+	open_fd = open(file1_s1d3, O_RDONLY | O_CLOEXEC);
+	ASSERT_LE(-1, open_fd);
+	ASSERT_EQ(EACCES, errno);
 }
 
 TEST_F(layout1, max_layers)

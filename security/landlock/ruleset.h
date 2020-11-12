@@ -139,7 +139,7 @@ void landlock_put_ruleset(struct landlock_ruleset *const ruleset);
 void landlock_put_ruleset_deferred(struct landlock_ruleset *const ruleset);
 
 int landlock_insert_rule(struct landlock_ruleset *const ruleset,
-		struct landlock_rule *const rule, const bool is_merge);
+		struct landlock_rule *const rule);
 
 struct landlock_ruleset *landlock_merge_ruleset(
 		struct landlock_ruleset *const parent,

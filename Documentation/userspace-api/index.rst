@@ -23,6 +23,7 @@ place where this information is gathered.
    spec_ctrl
    accelerators/ocxl
    ioctl/index
+   iommu
    media/index
 
 .. only::  subproject and html

@@ -196,24 +196,26 @@ static struct landlock_ruleset *get_ruleset_from_fd(const int fd,
 {
 	struct fd ruleset_f;
 	struct landlock_ruleset *ruleset;
-	int err;
 
 	ruleset_f = fdget(fd);
 	if (!ruleset_f.file)
 		return ERR_PTR(-EBADF);
 
 	/* Checks FD type and access right. */
-	err = 0;
-	if (ruleset_f.file->f_op != &ruleset_fops)
-		err = -EBADFD;
-	else if (!(ruleset_f.file->f_mode & mode))
-		err = -EPERM;
-	if (!err) {
-		ruleset = ruleset_f.file->private_data;
-		landlock_get_ruleset(ruleset);
+	if (ruleset_f.file->f_op != &ruleset_fops) {
+		ruleset = ERR_PTR(-EBADFD);
+		goto out_fdput;
 	}
+	if (!(ruleset_f.file->f_mode & mode)) {
+		ruleset = ERR_PTR(-EPERM);
+		goto out_fdput;
+	}
+	ruleset = ruleset_f.file->private_data;
+	landlock_get_ruleset(ruleset);
+
+out_fdput:
 	fdput(ruleset_f);
-	return err ? ERR_PTR(err) : ruleset;
+	return ruleset;
 }
 
 /* Path handling */
@@ -359,6 +361,8 @@ out_put_ruleset:
  * - EPERM: @ruleset_fd has no read access to the underlying ruleset, or the
  *   current thread is not running with no_new_privs, or it doesn't have
  *   CAP_SYS_ADMIN in its namespace.
+ * - E2BIG: The maximum number of stacked rulesets is reached for the current
+ *   task.
  */
 SYSCALL_DEFINE2(landlock_enforce_ruleset_current,
 		const int, ruleset_fd, const __u32, flags)

@@ -9,6 +9,7 @@
 #include <linux/atomic.h>
 #include <linux/compiler_types.h>
 #include <linux/dcache.h>
+#include <linux/err.h>
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -84,8 +85,8 @@ retry:
 			return object;
 		}
 		/*
-		 * We're racing with release_inode(), the object is going away.
-		 * Wait for release_inode(), then retry.
+		 * We are racing with release_inode(), the object is going
+		 * away.  Wait for release_inode(), then retry.
 		 */
 		spin_lock(&object->lock);
 		spin_unlock(&object->lock);
@@ -98,27 +99,29 @@ retry:
 	 * holding any locks).
 	 */
 	new_object = landlock_create_object(&landlock_fs_underops, inode);
+	if (IS_ERR(new_object))
+		return new_object;
 
 	spin_lock(&inode->i_lock);
 	object = rcu_dereference_protected(inode_sec->object,
 			lockdep_is_held(&inode->i_lock));
 	if (unlikely(object)) {
 		/* Someone else just created the object, bail out and retry. */
-		kfree(new_object);
 		spin_unlock(&inode->i_lock);
+		kfree(new_object);
 
 		rcu_read_lock();
 		goto retry;
-	} else {
-		rcu_assign_pointer(inode_sec->object, new_object);
-		/*
-		 * @inode will be released by hook_sb_delete() on its
-		 * superblock shutdown.
-		 */
-		ihold(inode);
-		spin_unlock(&inode->i_lock);
-		return new_object;
 	}
+
+	rcu_assign_pointer(inode_sec->object, new_object);
+	/*
+	 * @inode will be released by hook_sb_delete() on its superblock
+	 * shutdown.
+	 */
+	ihold(inode);
+	spin_unlock(&inode->i_lock);
+	return new_object;
 }
 
 /* All access rights which can be tied to files. */
@@ -145,8 +148,10 @@ int landlock_append_fs_rule(struct landlock_ruleset *const ruleset,
 	access_rights |= _LANDLOCK_ACCESS_FS_MASK & ~ruleset->fs_access_mask;
 	rule.access = access_rights;
 	rule.object = get_inode_object(d_backing_inode(path->dentry));
+	if (IS_ERR(rule.object))
+		return PTR_ERR(rule.object);
 	mutex_lock(&ruleset->lock);
-	err = landlock_insert_rule(ruleset, &rule, false);
+	err = landlock_insert_rule(ruleset, &rule);
 	mutex_unlock(&ruleset->lock);
 	/*
 	 * No need to check for an error because landlock_insert_rule()
@@ -175,16 +180,24 @@ static bool check_access_path_continue(
 			rcu_dereference(landlock_inode(inode)->object));
 	rcu_read_unlock();
 
-	/* Checks for matching layers. */
-	if (rule && (rule->layers | *layer_mask)) {
-		if ((rule->access & access_request) == access_request) {
-			*layer_mask &= ~rule->layers;
-			return true;
-		} else {
-			return false;
-		}
+	if (!rule)
+		/* Continues to walk if there is no rule for this inode. */
+		return true;
+	/*
+	 * We must check all layers for each inode because we may encounter
+	 * multiple different accesses from the same layer in a walk.  Each
+	 * layer must at least allow the access request one time (i.e. with one
+	 * inode).  This enables to have a deterministic behavior whatever
+	 * inode is tagged within interleaved layers.
+	 */
+	if ((rule->access & access_request) == access_request) {
+		/* Validates layers for which all accesses are allowed. */
+		*layer_mask &= ~rule->layers;
+		/* Continues to walk until all layers are validated. */
+		return true;
 	}
-	return true;
+	/* Stops if a rule in the path don't allow all requested access. */
+	return false;
 }
 
 static int check_access_path(const struct landlock_ruleset *const domain,
@@ -226,12 +239,6 @@ static int check_access_path(const struct landlock_ruleset *const domain,
 				&layer_mask)) {
 		struct dentry *parent_dentry;
 
-		/* Stops when a rule from each layer granted access. */
-		if (layer_mask == 0) {
-			allowed = true;
-			break;
-		}
-
 jump_up:
 		/*
 		 * Does not work with orphaned/private mounts like overlayfs
@@ -243,10 +250,10 @@ jump_up:
 				goto jump_up;
 			} else {
 				/*
-				 * Stops at the real root.  Denies access
-				 * because not all layers have granted access.
+				 * Stops at the real root.  Denies access if
+				 * not all layers granted access.
 				 */
-				allowed = false;
+				allowed = (layer_mask == 0);
 				break;
 			}
 		}

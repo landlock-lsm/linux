@@ -169,7 +169,8 @@ int main(const int argc, char *const argv[], char *const *const envp)
 		fprintf(stderr, "usage: %s=\"...\" %s=\"...\" %s <cmd> [args]...\n\n",
 				ENV_FS_RO_NAME, ENV_FS_RW_NAME, argv[0]);
 		fprintf(stderr, "Launch a command in a restricted environment.\n\n");
-		fprintf(stderr, "Environment variables containing paths, each separated by a colon:\n");
+		fprintf(stderr, "Environment variables containing paths, "
+				"each separated by a colon:\n");
 		fprintf(stderr, "* %s: list of paths allowed to be used in a read-only way.\n",
 				ENV_FS_RO_NAME);
 		fprintf(stderr, "* %s: list of paths allowed to be used in a read-write way.\n",
@@ -185,6 +186,21 @@ int main(const int argc, char *const argv[], char *const *const envp)
 	ruleset_fd = landlock_create_ruleset(&ruleset_attr, sizeof(ruleset_attr), 0);
 	if (ruleset_fd < 0) {
 		perror("Failed to create a ruleset");
+		switch (errno) {
+		case ENOSYS:
+			fprintf(stderr, "Hint: Landlock is not supported by the current kernel. "
+					"To support it, build the kernel with "
+					"CONFIG_SECURITY_LANDLOCK=y and prepend "
+					"\"landlock,\" to the content of CONFIG_LSM.\n");
+			break;
+		case EOPNOTSUPP:
+			fprintf(stderr, "Hint: Landlock is currently disabled. "
+					"It can be enabled in the kernel configuration by "
+					"prepending \"landlock,\" to the content of CONFIG_LSM, "
+					"or at boot time by setting the same content to the "
+					"\"lsm\" kernel parameter.\n");
+			break;
+		}
 		return 1;
 	}
 	if (populate_ruleset(ENV_FS_RO_NAME, ruleset_fd,
@@ -210,7 +226,8 @@ int main(const int argc, char *const argv[], char *const *const envp)
 	execvpe(cmd_path, cmd_argv, envp);
 	fprintf(stderr, "Failed to execute \"%s\": %s\n", cmd_path,
 			strerror(errno));
-	fprintf(stderr, "Hint: access to the binary, the interpreter or shared libraries may be denied.\n");
+	fprintf(stderr, "Hint: access to the binary, the interpreter or "
+			"shared libraries may be denied.\n");
 	return 1;
 
 err_close_ruleset:

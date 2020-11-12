@@ -17,21 +17,21 @@
 static int hook_cred_prepare(struct cred *const new,
 		const struct cred *const old, const gfp_t gfp)
 {
-	const struct landlock_cred_security *cred_old = landlock_cred(old);
-	struct landlock_cred_security *cred_new = landlock_cred(new);
-	struct landlock_ruleset *dom_old;
+	struct landlock_ruleset *const old_dom = landlock_cred(old)->domain;
 
-	dom_old = cred_old->domain;
-	if (dom_old) {
-		landlock_get_ruleset(dom_old);
-		cred_new->domain = dom_old;
+	if (old_dom) {
+		landlock_get_ruleset(old_dom);
+		landlock_cred(new)->domain = old_dom;
 	}
 	return 0;
 }
 
 static void hook_cred_free(struct cred *const cred)
 {
-	landlock_put_ruleset_deferred(landlock_cred(cred)->domain);
+	struct landlock_ruleset *const dom = landlock_cred(cred)->domain;
+
+	if (dom)
+		landlock_put_ruleset_deferred(dom);
 }
 
 static struct security_hook_list landlock_hooks[] __lsm_ro_after_init = {

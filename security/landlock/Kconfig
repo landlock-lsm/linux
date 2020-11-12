@@ -16,4 +16,6 @@ config SECURITY_LANDLOCK
 
 	  See Documentation/userspace-api/landlock.rst for further information.
 
-	  If you are unsure how to answer this question, answer N.
+	  If you are unsure how to answer this question, answer N.  Otherwise, you
+	  should also prepend "landlock," to the content of CONFIG_LSM to enable
+	  Landlock at boot time.

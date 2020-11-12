@@ -51,7 +51,7 @@ static inline int landlock_enforce_ruleset_current(const int ruleset_fd,
 static void disable_caps(struct __test_metadata *const _metadata)
 {
 	cap_t cap_p;
-	/* Only these two capabilities are useful for the tests. */
+	/* Only these three capabilities are useful for the tests. */
 	const cap_value_t caps[] = {
 		CAP_MKNOD,
 		CAP_SYS_ADMIN,

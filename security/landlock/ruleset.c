@@ -80,20 +80,20 @@ static void put_rule(struct landlock_rule *const rule)
 }
 
 /**
- * landlock_insert_rule - Insert a rule in a ruleset
+ * insert_rule - Insert a rule in a ruleset
+ *
+ * Intersects access rights of the rule with those of the ruleset.
  *
  * @ruleset: The ruleset to be updated.
  * @rule: Read-only payload to be inserted (not owned by this function).
- * @is_merge: If true, intersects access rights and updates the rule's layers
- *            (e.g. merge two rulesets), else do a union of access rights and
- *            keep the rule's layers (e.g. extend a ruleset)
+ * @is_merge: If true, handle the rule layers.
  *
  * Assumptions:
  *
  * - An inserted rule cannot be removed.
  * - The underlying kernel object must be held by the caller.
  */
-int landlock_insert_rule(struct landlock_ruleset *const ruleset,
+static int insert_rule(struct landlock_ruleset *const ruleset,
 		struct landlock_rule *const rule, const bool is_merge)
 {
 	struct rb_node **walker_node;
@@ -102,6 +102,10 @@ int landlock_insert_rule(struct landlock_ruleset *const ruleset,
 
 	might_sleep();
 	lockdep_assert_held(&ruleset->lock);
+	if (WARN_ON_ONCE(!rule->object))
+		return -ENOENT;
+	if (!is_merge && WARN_ON_ONCE(ruleset->nb_layers != 0))
+		return -EINVAL;
 	walker_node = &(ruleset->root.rb_node);
 	while (*walker_node) {
 		struct landlock_rule *const this = rb_entry(*walker_node,
@@ -117,16 +121,11 @@ int landlock_insert_rule(struct landlock_ruleset *const ruleset,
 		}
 
 		/* If there is a matching rule, updates it. */
-		if (is_merge) {
-			/* Intersects access rights. */
-			this->access &= rule->access;
-
+		if (is_merge)
 			/* Updates the rule layers with the next one. */
 			this->layers |= BIT_ULL(ruleset->nb_layers);
-		} else {
-			/* Extends access rights. */
-			this->access |= rule->access;
-		}
+		/* Intersects access rights. */
+		this->access &= rule->access;
 		return 0;
 	}
 
@@ -143,6 +142,12 @@ int landlock_insert_rule(struct landlock_ruleset *const ruleset,
 	rb_insert_color(&new_rule->node, &ruleset->root);
 	ruleset->nb_rules++;
 	return 0;
+}
+
+int landlock_insert_rule(struct landlock_ruleset *const ruleset,
+		struct landlock_rule *const rule)
+{
+	return insert_rule(ruleset, rule, false);
 }
 
 static inline void get_hierarchy(struct landlock_hierarchy *const hierarchy)
@@ -193,7 +198,7 @@ static int merge_ruleset(struct landlock_ruleset *const dst,
 	/* Merges the @src tree. */
 	rbtree_postorder_for_each_entry_safe(walker_rule, next_rule,
 			&src->root, node) {
-		err = landlock_insert_rule(dst, walker_rule, true);
+		err = insert_rule(dst, walker_rule, true);
 		if (err)
 			goto out_unlock;
 	}
@@ -228,20 +233,21 @@ static struct landlock_ruleset *inherit_ruleset(
 		return new_ruleset;
 
 	mutex_lock(&new_ruleset->lock);
-	mutex_lock_nested(&parent->lock, 1);
+	mutex_lock_nested(&parent->lock, SINGLE_DEPTH_NESTING);
+
+	/* Copies the @parent tree. */
+	rbtree_postorder_for_each_entry_safe(walker_rule, next_rule,
+			&parent->root, node) {
+		err = landlock_insert_rule(new_ruleset, walker_rule);
+		if (err)
+			goto out_unlock;
+	}
 	new_ruleset->nb_layers = parent->nb_layers;
 	new_ruleset->fs_access_mask = parent->fs_access_mask;
 	WARN_ON_ONCE(!parent->hierarchy);
 	get_hierarchy(parent->hierarchy);
 	new_ruleset->hierarchy->parent = parent->hierarchy;
 
-	/* Copies the @parent tree. */
-	rbtree_postorder_for_each_entry_safe(walker_rule, next_rule,
-			&parent->root, node) {
-		err = landlock_insert_rule(new_ruleset, walker_rule, false);
-		if (err)
-			goto out_unlock;
-	}
 	mutex_unlock(&parent->lock);
 	mutex_unlock(&new_ruleset->lock);
 	return new_ruleset;

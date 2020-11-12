@@ -186,6 +186,23 @@ Enforcing a ruleset
 Current limitations
 ===================
 
+Ruleset layers
+--------------
+
+There is a limit of 64 layers of stacked rulesets.  This can be an issue for a
+task willing to enforce a new ruleset in complement to its 64 inherited
+rulesets.  Once this limit is reached, sys_landlock_enforce_ruleset_current()
+returns E2BIG.  It is then strongly suggested to carefully build rulesets once
+in the life of a thread, especially for applications able to launch other
+applications which may also want to sandbox themselves (e.g. shells, container
+managers, etc.).
+
+Memory usage
+------------
+
+Kernel memory allocated to create rulesets is accounted and can be restricted
+by the :doc:`/admin-guide/cgroup-v1/memory`.
+
 File renaming and linking
 -------------------------
 
