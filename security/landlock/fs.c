@@ -7,12 +7,14 @@
  */
 
 #include <linux/atomic.h>
+#include <linux/bits.h>
 #include <linux/compiler_types.h>
 #include <linux/dcache.h>
 #include <linux/err.h>
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
+#include <linux/limits.h>
 #include <linux/list.h>
 #include <linux/lsm_hooks.h>
 #include <linux/mount.h>
@@ -137,7 +139,7 @@ int landlock_append_fs_rule(struct landlock_ruleset *const ruleset,
 		const struct path *const path, u32 access_rights)
 {
 	int err;
-	struct landlock_rule rule = {};
+	struct landlock_object *object;
 
 	/* Files only get access rights that make sense. */
 	if (!d_is_dir(path->dentry) && (access_rights | ACCESS_FILE) !=
@@ -146,18 +148,17 @@ int landlock_append_fs_rule(struct landlock_ruleset *const ruleset,
 
 	/* Transforms relative access rights to absolute ones. */
 	access_rights |= _LANDLOCK_ACCESS_FS_MASK & ~ruleset->fs_access_mask;
-	rule.access = access_rights;
-	rule.object = get_inode_object(d_backing_inode(path->dentry));
-	if (IS_ERR(rule.object))
-		return PTR_ERR(rule.object);
+	object = get_inode_object(d_backing_inode(path->dentry));
+	if (IS_ERR(object))
+		return PTR_ERR(object);
 	mutex_lock(&ruleset->lock);
-	err = landlock_insert_rule(ruleset, &rule);
+	err = landlock_insert_rule(ruleset, object, access_rights);
 	mutex_unlock(&ruleset->lock);
 	/*
 	 * No need to check for an error because landlock_insert_rule()
-	 * increments the refcount for the new rule, if any.
+	 * increments the refcount for the new object if needed.
 	 */
-	landlock_put_object(rule.object);
+	landlock_put_object(object);
 	return err;
 }
 
@@ -170,6 +171,7 @@ static bool check_access_path_continue(
 {
 	const struct landlock_rule *rule;
 	const struct inode *inode;
+	size_t i;
 
 	if (d_is_negative(path->dentry))
 		/* Continues to walk while there is no mapped inode. */
@@ -179,25 +181,40 @@ static bool check_access_path_continue(
 	rule = landlock_find_rule(domain,
 			rcu_dereference(landlock_inode(inode)->object));
 	rcu_read_unlock();
-
 	if (!rule)
-		/* Continues to walk if there is no rule for this inode. */
 		return true;
+
 	/*
-	 * We must check all layers for each inode because we may encounter
-	 * multiple different accesses from the same layer in a walk.  Each
-	 * layer must at least allow the access request one time (i.e. with one
-	 * inode).  This enables to have a deterministic behavior whatever
-	 * inode is tagged within interleaved layers.
+	 * An access is granted if, for each policy layer, at least one rule
+	 * encountered on the pathwalk grants the access, regardless of their
+	 * position in the layer stack.  We must then check not-yet-seen layers
+	 * for each inode, from the last one added to the first one.
 	 */
-	if ((rule->access & access_request) == access_request) {
-		/* Validates layers for which all accesses are allowed. */
-		*layer_mask &= ~rule->layers;
-		/* Continues to walk until all layers are validated. */
-		return true;
+	for (i = 0; i < rule->nb_layers; i++) {
+		const struct landlock_layer *const layer = &rule->layers[i];
+		const u64 layer_level = BIT_ULL(layer->level - 1);
+
+		if (!(layer_level & *layer_mask))
+			continue;
+		if ((layer->access & access_request) != access_request)
+			return false;
+		*layer_mask &= ~layer_level;
 	}
-	/* Stops if a rule in the path don't allow all requested access. */
-	return false;
+	return true;
+}
+
+static inline void build_check_layer(void)
+{
+	const struct landlock_layer layer = {
+		.level = ~0,
+		.access = ~0,
+	};
+
+	/* Make sure all layers can be stored. */
+	BUILD_BUG_ON(layer.level < LANDLOCK_MAX_NB_LAYERS);
+
+	/* Make sure all accesses can be stored. */
+	BUILD_BUG_ON(layer.access < _LANDLOCK_ACCESS_FS_MASK);
 }
 
 static int check_access_path(const struct landlock_ruleset *const domain,
@@ -206,6 +223,10 @@ static int check_access_path(const struct landlock_ruleset *const domain,
 	bool allowed = false;
 	struct path walker_path;
 	u64 layer_mask;
+
+	/* Make sure all layers can be checked. */
+	BUILD_BUG_ON((sizeof(layer_mask) * BITS_PER_BYTE) < LANDLOCK_MAX_NB_LAYERS);
+	build_check_layer();
 
 	if (WARN_ON_ONCE(!domain || !path))
 		return 0;
@@ -239,6 +260,12 @@ static int check_access_path(const struct landlock_ruleset *const domain,
 				&layer_mask)) {
 		struct dentry *parent_dentry;
 
+		/* Stops when a rule from each layer granted access. */
+		if (layer_mask == 0) {
+			allowed = true;
+			break;
+		}
+
 jump_up:
 		/*
 		 * Does not work with orphaned/private mounts like overlayfs
@@ -250,10 +277,10 @@ jump_up:
 				goto jump_up;
 			} else {
 				/*
-				 * Stops at the real root.  Denies access if
-				 * not all layers granted access.
+				 * Stops at the real root.  Denies access
+				 * because not all layers have granted access.
 				 */
-				allowed = (layer_mask == 0);
+				allowed = false;
 				break;
 			}
 		}

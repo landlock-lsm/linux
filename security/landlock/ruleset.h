@@ -16,17 +16,25 @@
 
 #include "object.h"
 
+#define LANDLOCK_MAX_NB_LAYERS	64
+
+/**
+ * struct landlock_layer - Access rights for a given layer
+ */
+struct landlock_layer {
+	/**
+	 * @level: Position of this layer in the layer stack.
+	 */
+	u16 level;
+	/**
+	 * @access: Bitfield of allowed actions on the kernel object.  They are
+	 * relative to the object type (e.g. %LANDLOCK_ACTION_FS_READ).
+	 */
+	u16 access;
+};
+
 /**
  * struct landlock_rule - Access rights tied to an object
- *
- * When enforcing a ruleset (i.e. merging a ruleset into the current domain),
- * the layer level of a new rule is the incremented top layer level (cf.
- * &struct landlock_ruleset).  If there is no rule (from this domain) tied to
- * the same object, then the depth of the new rule is 1. However, if there is
- * already a rule tied to the same object and if this rule's layer level is the
- * previous top layer level, then the depth and the layer level are both
- * incremented and the rule is updated with the new access rights (boolean
- * AND).
  */
 struct landlock_rule {
 	/**
@@ -41,17 +49,14 @@ struct landlock_rule {
 	 */
 	struct landlock_object *object;
 	/**
-	 * @layers: Bitfield to identify the layers which resulted to @access
-	 * from different consecutive intersections.
+	 * @nb_layers: Number of entries in @layers.
 	 */
-	u64 layers;
+	u32 nb_layers;
 	/**
-	 * @access: Bitfield of allowed actions on the kernel object.  They are
-	 * relative to the object type (e.g. %LANDLOCK_ACTION_FS_READ).  This
-	 * may be the result of the merged access rights (boolean AND) from
-	 * multiple layers referring to the same object.
+	 * @layers: Stack of layers, from the newest to the latest, implemented
+	 * as a flexible array member.
 	 */
-	u32 access;
+	struct landlock_layer layers[];
 };
 
 /**
@@ -139,7 +144,7 @@ void landlock_put_ruleset(struct landlock_ruleset *const ruleset);
 void landlock_put_ruleset_deferred(struct landlock_ruleset *const ruleset);
 
 int landlock_insert_rule(struct landlock_ruleset *const ruleset,
-		struct landlock_rule *const rule);
+		struct landlock_object *const object, const u32 access);
 
 struct landlock_ruleset *landlock_merge_ruleset(
 		struct landlock_ruleset *const parent,

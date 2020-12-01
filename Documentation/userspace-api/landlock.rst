@@ -7,7 +7,7 @@ Landlock: unprivileged access control
 =====================================
 
 :Author: Mickaël Salaün
-:Date: November 2020
+:Date: December 2020
 
 The goal of Landlock is to enable to restrict ambient rights (e.g. global
 filesystem access) for a set of processes.  Because Landlock is a stackable
@@ -140,6 +140,11 @@ policy will stay enforced on all this thread's descendants.  This allows
 creating standalone and modular security policies per application, which will
 automatically be composed between themselves according to their runtime parent
 policies.
+
+A sandboxed thread can add more constraints to itself with a new enforced
+ruleset.  This complementary policy inherits from the previous enforced
+rulesets.  Access to a file path is granted if, for each policy layer, at least
+one rule encountered on the path (from the file to the root) grants the access.
 
 Ptrace restrictions
 -------------------

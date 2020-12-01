@@ -47,7 +47,7 @@ struct landlock_object {
 	 */
 	refcount_t usage;
 	/**
-	 * @lock: Guards against concurrent modifications.  This lock might be
+	 * @lock: Guards against concurrent modifications.  This lock must be
 	 * held from the time @usage drops to zero until any weak references
 	 * from @underobj to this object have been cleaned up.
 	 *

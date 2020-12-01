@@ -14,6 +14,7 @@
 #include <linux/kernel.h>
 #include <linux/limits.h>
 #include <linux/lockdep.h>
+#include <linux/overflow.h>
 #include <linux/rbtree.h>
 #include <linux/refcount.h>
 #include <linux/slab.h>
@@ -55,18 +56,33 @@ struct landlock_ruleset *landlock_create_ruleset(const u32 fs_access_mask)
 	return new_ruleset;
 }
 
-static struct landlock_rule *duplicate_rule(struct landlock_rule *const src)
+static struct landlock_rule *create_rule(
+		struct landlock_object *const object,
+		const struct landlock_layer (*const layers)[],
+		const u32 nb_layers,
+		const struct landlock_layer *const new_layer)
 {
 	struct landlock_rule *new_rule;
+	u32 new_nb_layers = nb_layers;
 
-	new_rule = kzalloc(sizeof(*new_rule), GFP_KERNEL_ACCOUNT);
+	if (new_layer)
+		new_nb_layers++;
+	if (WARN_ON_ONCE(new_nb_layers > LANDLOCK_MAX_NB_LAYERS))
+		return ERR_PTR(-E2BIG);
+	new_rule = kzalloc(struct_size(new_rule, layers, new_nb_layers),
+			GFP_KERNEL_ACCOUNT);
 	if (!new_rule)
 		return ERR_PTR(-ENOMEM);
 	RB_CLEAR_NODE(&new_rule->node);
-	landlock_get_object(src->object);
-	new_rule->object = src->object;
-	new_rule->access = src->access;
-	new_rule->layers = src->layers;
+	landlock_get_object(object);
+	new_rule->object = object;
+	new_rule->nb_layers = new_nb_layers;
+	if (new_layer)
+		/* Push a copy of @new_layer on the layer stack. */
+		new_rule->layers[0] = *new_layer;
+	/* Copies the original layer stack. */
+	memcpy(&new_rule->layers[new_layer ? 1 : 0], layers,
+			flex_array_size(new_rule, layers, nb_layers));
 	return new_rule;
 }
 
@@ -80,21 +96,27 @@ static void put_rule(struct landlock_rule *const rule)
 }
 
 /**
- * insert_rule - Insert a rule in a ruleset
- *
- * Intersects access rights of the rule with those of the ruleset.
+ * insert_rule - Create and insert a rule in a ruleset
  *
  * @ruleset: The ruleset to be updated.
- * @rule: Read-only payload to be inserted (not owned by this function).
- * @is_merge: If true, handle the rule layers.
+ * @object: The object to build the new rule with.  The underlying kernel
+ *          object must be held by the caller.
+ * @layers: One or multiple layers to be copied into the new rule.
+ * @nb_layers: The number of @layers entries.
+
+ * When user space requests to add a new rule to a ruleset, @layers only
+ * contains one entry and this entry is not assigned to any level.  In this
+ * case, the new rule will extend @ruleset, similarly to a boolean OR between
+ * access rights.
  *
- * Assumptions:
- *
- * - An inserted rule cannot be removed.
- * - The underlying kernel object must be held by the caller.
+ * When merging a ruleset in a domain, or copying a domain, @layers will be
+ * added to @ruleset as new constraints, similarly to a boolean AND between
+ * access rights.
  */
 static int insert_rule(struct landlock_ruleset *const ruleset,
-		struct landlock_rule *const rule, const bool is_merge)
+		struct landlock_object *const object,
+		const struct landlock_layer (*const layers)[],
+		size_t nb_layers)
 {
 	struct rb_node **walker_node;
 	struct rb_node *parent_node = NULL;
@@ -102,42 +124,62 @@ static int insert_rule(struct landlock_ruleset *const ruleset,
 
 	might_sleep();
 	lockdep_assert_held(&ruleset->lock);
-	if (WARN_ON_ONCE(!rule->object))
+	if (WARN_ON_ONCE(!object || !layers))
 		return -ENOENT;
-	if (!is_merge && WARN_ON_ONCE(ruleset->nb_layers != 0))
-		return -EINVAL;
 	walker_node = &(ruleset->root.rb_node);
 	while (*walker_node) {
 		struct landlock_rule *const this = rb_entry(*walker_node,
 				struct landlock_rule, node);
 
-		if (this->object != rule->object) {
+		if (this->object != object) {
 			parent_node = *walker_node;
-			if (this->object < rule->object)
+			if (this->object < object)
 				walker_node = &((*walker_node)->rb_right);
 			else
 				walker_node = &((*walker_node)->rb_left);
 			continue;
 		}
 
+		/* Only a single-level layer should match an existing rule. */
+		if (WARN_ON_ONCE(nb_layers != 1))
+			return -EINVAL;
+
 		/* If there is a matching rule, updates it. */
-		if (is_merge)
-			/* Updates the rule layers with the next one. */
-			this->layers |= BIT_ULL(ruleset->nb_layers);
-		/* Intersects access rights. */
-		this->access &= rule->access;
+		if ((*layers)[0].level == 0) {
+			/*
+			 * Extends access rights when the request comes from
+			 * landlock_add_rule(2), i.e. @ruleset is not a domain.
+			 */
+			if (WARN_ON_ONCE(this->nb_layers != 1))
+				return -EINVAL;
+			if (WARN_ON_ONCE(this->layers[0].level != 0))
+				return -EINVAL;
+			this->layers[0].access |= (*layers)[0].access;
+			return 0;
+		}
+
+		if (WARN_ON_ONCE(this->layers[0].level == 0))
+			return -EINVAL;
+
+		/*
+		 * Intersects access rights when it is a merge between a
+		 * ruleset and a domain.
+		 */
+		new_rule = create_rule(object, &this->layers, this->nb_layers,
+				&(*layers)[0]);
+		if (IS_ERR(new_rule))
+			return PTR_ERR(new_rule);
+		rb_replace_node(&this->node, &new_rule->node, &ruleset->root);
+		put_rule(this);
 		return 0;
 	}
 
-	/* There is no match for @rule->object. */
+	/* There is no match for @object. */
 	if (ruleset->nb_rules == U32_MAX)
 		return -E2BIG;
-	new_rule = duplicate_rule(rule);
+	new_rule = create_rule(object, layers, nb_layers, NULL);
 	if (IS_ERR(new_rule))
 		return PTR_ERR(new_rule);
-	if (is_merge)
-		/* Sets the rule layer to the next one. */
-		new_rule->layers = BIT_ULL(ruleset->nb_layers);
 	rb_link_node(&new_rule->node, parent_node, walker_node);
 	rb_insert_color(&new_rule->node, &ruleset->root);
 	ruleset->nb_rules++;
@@ -145,9 +187,15 @@ static int insert_rule(struct landlock_ruleset *const ruleset,
 }
 
 int landlock_insert_rule(struct landlock_ruleset *const ruleset,
-		struct landlock_rule *const rule)
+		struct landlock_object *const object, const u32 access)
 {
-	return insert_rule(ruleset, rule, false);
+	struct landlock_layer layers[] = {{
+		.access = access,
+		/* When @level is zero, insert_rule() extends @ruleset. */
+		.level = 0,
+	}};
+
+	return insert_rule(ruleset, object, &layers, ARRAY_SIZE(layers));
 }
 
 static inline void get_hierarchy(struct landlock_hierarchy *const hierarchy)
@@ -177,7 +225,7 @@ static int merge_ruleset(struct landlock_ruleset *const dst,
 		return 0;
 	/* Only merge into a domain. */
 	if (WARN_ON_ONCE(!dst || !dst->hierarchy))
-		return -EFAULT;
+		return -EINVAL;
 
 	/*
 	 * The ruleset being modified (@dst) is locked first, then the ruleset
@@ -189,7 +237,7 @@ static int merge_ruleset(struct landlock_ruleset *const dst,
 	 * Makes a new layer, but only increments the number of layers after
 	 * the rules are inserted.
 	 */
-	if (dst->nb_layers == (sizeof(walker_rule->layers) * BITS_PER_BYTE)) {
+	if (dst->nb_layers == LANDLOCK_MAX_NB_LAYERS) {
 		err = -E2BIG;
 		goto out_unlock;
 	}
@@ -198,7 +246,21 @@ static int merge_ruleset(struct landlock_ruleset *const dst,
 	/* Merges the @src tree. */
 	rbtree_postorder_for_each_entry_safe(walker_rule, next_rule,
 			&src->root, node) {
-		err = insert_rule(dst, walker_rule, true);
+		struct landlock_layer layers[] = {{
+			.level = dst->nb_layers + 1,
+		}};
+
+		if (WARN_ON_ONCE(walker_rule->nb_layers != 1)) {
+			err = -EINVAL;
+			goto out_unlock;
+		}
+		if (WARN_ON_ONCE(walker_rule->layers[0].level != 0)) {
+			err = -EINVAL;
+			goto out_unlock;
+		}
+		layers[0].access = walker_rule->layers[0].access;
+		err = insert_rule(dst, walker_rule->object, &layers,
+				ARRAY_SIZE(layers));
 		if (err)
 			goto out_unlock;
 	}
@@ -238,13 +300,17 @@ static struct landlock_ruleset *inherit_ruleset(
 	/* Copies the @parent tree. */
 	rbtree_postorder_for_each_entry_safe(walker_rule, next_rule,
 			&parent->root, node) {
-		err = landlock_insert_rule(new_ruleset, walker_rule);
+		err = insert_rule(new_ruleset, walker_rule->object,
+				&walker_rule->layers, walker_rule->nb_layers);
 		if (err)
 			goto out_unlock;
 	}
 	new_ruleset->nb_layers = parent->nb_layers;
 	new_ruleset->fs_access_mask = parent->fs_access_mask;
-	WARN_ON_ONCE(!parent->hierarchy);
+	if (WARN_ON_ONCE(!parent->hierarchy)) {
+		err = -EINVAL;
+		goto out_unlock;
+	}
 	get_hierarchy(parent->hierarchy);
 	new_ruleset->hierarchy->parent = parent->hierarchy;
 

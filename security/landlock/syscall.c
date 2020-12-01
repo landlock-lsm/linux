@@ -68,7 +68,7 @@ static __always_inline int copy_min_struct_from_user(void *const dst,
  * BUILD_BUG_ON().  The related code is evaluated and checked at build time,
  * but it is then ignored thanks to compiler optimizations.
  */
-static void build_check_abi(void)
+static inline void build_check_abi(void)
 {
 	size_t ruleset_size, path_beneath_size;
 
