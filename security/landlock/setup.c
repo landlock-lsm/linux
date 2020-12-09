@@ -25,9 +25,9 @@ struct lsm_blob_sizes landlock_blob_sizes __lsm_ro_after_init = {
 
 static int __init landlock_init(void)
 {
-	landlock_add_hooks_cred();
-	landlock_add_hooks_ptrace();
-	landlock_add_hooks_fs();
+	landlock_add_cred_hooks();
+	landlock_add_ptrace_hooks();
+	landlock_add_fs_hooks();
 	landlock_initialized = true;
 	pr_info("Up and running.\n");
 	return 0;

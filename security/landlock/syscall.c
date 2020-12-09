@@ -28,6 +28,7 @@
 
 #include "cred.h"
 #include "fs.h"
+#include "limits.h"
 #include "ruleset.h"
 #include "setup.h"
 
@@ -68,7 +69,7 @@ static __always_inline int copy_min_struct_from_user(void *const dst,
  * BUILD_BUG_ON().  The related code is evaluated and checked at build time,
  * but it is then ignored thanks to compiler optimizations.
  */
-static inline void build_check_abi(void)
+static void build_check_abi(void)
 {
 	size_t ruleset_size, path_beneath_size;
 
@@ -170,8 +171,8 @@ SYSCALL_DEFINE3(landlock_create_ruleset,
 		return err;
 
 	/* Checks content (and 32-bits cast). */
-	if ((ruleset_attr.handled_access_fs | _LANDLOCK_ACCESS_FS_MASK) !=
-			_LANDLOCK_ACCESS_FS_MASK)
+	if ((ruleset_attr.handled_access_fs | LANDLOCK_MASK_ACCESS_FS) !=
+			LANDLOCK_MASK_ACCESS_FS)
 		return -EINVAL;
 
 	/* Checks arguments and transforms to kernel struct. */

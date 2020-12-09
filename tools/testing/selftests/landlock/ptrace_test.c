@@ -31,24 +31,19 @@ static void create_domain(struct __test_metadata *const _metadata)
 
 	ruleset_fd = landlock_create_ruleset(&ruleset_attr,
 			sizeof(ruleset_attr), 0);
-	ASSERT_LE(0, ruleset_fd) {
+	EXPECT_LE(0, ruleset_fd) {
 		TH_LOG("Failed to create a ruleset: %s", strerror(errno));
 	}
 	path_beneath_attr.parent_fd = open("/tmp", O_PATH | O_NOFOLLOW |
 			O_DIRECTORY | O_CLOEXEC);
-	ASSERT_LE(0, path_beneath_attr.parent_fd);
-	ASSERT_EQ(0, landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH,
+	EXPECT_LE(0, path_beneath_attr.parent_fd);
+	EXPECT_EQ(0, landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH,
 				&path_beneath_attr, 0));
-	ASSERT_EQ(0, errno);
-	ASSERT_EQ(0, close(path_beneath_attr.parent_fd));
+	EXPECT_EQ(0, close(path_beneath_attr.parent_fd));
 
-	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0));
-	ASSERT_EQ(0, errno);
-
-	ASSERT_EQ(0, landlock_enforce_ruleset_current(ruleset_fd, 0));
-	ASSERT_EQ(0, errno);
-
-	ASSERT_EQ(0, close(ruleset_fd));
+	EXPECT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0));
+	EXPECT_EQ(0, landlock_enforce_ruleset_current(ruleset_fd, 0));
+	EXPECT_EQ(0, close(ruleset_fd));
 }
 
 FIXTURE(hierarchy) { };
@@ -196,111 +191,123 @@ FIXTURE_SETUP(hierarchy)
 FIXTURE_TEARDOWN(hierarchy)
 { }
 
-/* test PTRACE_TRACEME and PTRACE_ATTACH for parent and child */
+/* Test PTRACE_TRACEME and PTRACE_ATTACH for parent and child. */
 TEST_F(hierarchy, trace)
 {
 	pid_t child, parent;
 	int status;
 	int pipe_child[2], pipe_parent[2];
 	char buf_parent;
+	long ret;
 
 	disable_caps(_metadata);
 
 	parent = getpid();
-	ASSERT_EQ(0, pipe(pipe_child));
-	ASSERT_EQ(0, pipe(pipe_parent));
-	if (variant->domain_both)
+	ASSERT_EQ(0, pipe2(pipe_child, O_CLOEXEC));
+	ASSERT_EQ(0, pipe2(pipe_parent, O_CLOEXEC));
+	if (variant->domain_both) {
 		create_domain(_metadata);
+		if (!_metadata->passed)
+			/* Aborts before forking. */
+			return;
+	}
 
 	child = fork();
 	ASSERT_LE(0, child);
 	if (child == 0) {
 		char buf_child;
 
-		EXPECT_EQ(0, close(pipe_parent[1]));
-		EXPECT_EQ(0, close(pipe_child[0]));
+		ASSERT_EQ(0, close(pipe_parent[1]));
+		ASSERT_EQ(0, close(pipe_child[0]));
 		if (variant->domain_child)
 			create_domain(_metadata);
 
-		/* sync #1 */
-		ASSERT_EQ(1, read(pipe_parent[0], &buf_child, 1)) {
-			TH_LOG("Failed to read() sync #1 from parent");
-		}
-		ASSERT_EQ('.', buf_child);
+		/* Waits for the parent to be in a domain, if any. */
+		ASSERT_EQ(1, read(pipe_parent[0], &buf_child, 1));
 
-		/* Tests the parent protection. */
-		ASSERT_EQ(variant->domain_child ? -1 : 0,
-				ptrace(PTRACE_ATTACH, parent, NULL, 0));
+		/* Tests PTRACE_ATTACH on the parent. */
+		ret = ptrace(PTRACE_ATTACH, parent, NULL, 0);
 		if (variant->domain_child) {
-			ASSERT_EQ(EPERM, errno);
+			EXPECT_EQ(-1, ret);
+			EXPECT_EQ(EPERM, errno);
 		} else {
+			EXPECT_EQ(0, ret);
+		}
+		if (ret == 0) {
 			ASSERT_EQ(parent, waitpid(parent, &status, 0));
 			ASSERT_EQ(1, WIFSTOPPED(status));
 			ASSERT_EQ(0, ptrace(PTRACE_DETACH, parent, NULL, 0));
 		}
 
-		/* sync #2 */
-		ASSERT_EQ(1, write(pipe_child[1], ".", 1)) {
-			TH_LOG("Failed to write() sync #2 to parent");
+		/* Tests child PTRACE_TRACEME. */
+		ret = ptrace(PTRACE_TRACEME);
+		if (variant->domain_parent) {
+			EXPECT_EQ(-1, ret);
+			EXPECT_EQ(EPERM, errno);
+		} else {
+			EXPECT_EQ(0, ret);
 		}
 
-		/* Tests traceme. */
-		ASSERT_EQ(variant->domain_parent ? -1 : 0,
-				ptrace(PTRACE_TRACEME));
-		if (variant->domain_parent) {
-			ASSERT_EQ(EPERM, errno);
-		} else {
+		/*
+		 * Signals that the PTRACE_ATTACH test is done and the
+		 * PTRACE_TRACEME test is ongoing.
+		 */
+		ASSERT_EQ(1, write(pipe_child[1], ".", 1));
+
+		if (!variant->domain_parent) {
 			ASSERT_EQ(0, raise(SIGSTOP));
 		}
 
-		/* sync #3 */
-		ASSERT_EQ(1, read(pipe_parent[0], &buf_child, 1)) {
-			TH_LOG("Failed to read() sync #3 from parent");
-		}
-		ASSERT_EQ('.', buf_child);
+		/* Waits for the parent PTRACE_ATTACH test. */
+		ASSERT_EQ(1, read(pipe_parent[0], &buf_child, 1));
 		_exit(_metadata->passed ? EXIT_SUCCESS : EXIT_FAILURE);
+		return;
 	}
 
-	EXPECT_EQ(0, close(pipe_child[1]));
-	EXPECT_EQ(0, close(pipe_parent[0]));
+	ASSERT_EQ(0, close(pipe_child[1]));
+	ASSERT_EQ(0, close(pipe_parent[0]));
 	if (variant->domain_parent)
 		create_domain(_metadata);
 
-	/* sync #1 */
-	ASSERT_EQ(1, write(pipe_parent[1], ".", 1)) {
-		TH_LOG("Failed to write() sync #1 to child");
-	}
+	/* Signals that the parent is in a domain, if any. */
+	ASSERT_EQ(1, write(pipe_parent[1], ".", 1));
 
-	/* Tests the parent protection. */
-	/* sync #2 */
-	ASSERT_EQ(1, read(pipe_child[0], &buf_parent, 1)) {
-		TH_LOG("Failed to read() sync #2 from child");
-	}
-	ASSERT_EQ('.', buf_parent);
+	/*
+	 * Waits for the child to test PTRACE_ATTACH on the parent and start
+	 * testing PTRACE_TRACEME.
+	 */
+	ASSERT_EQ(1, read(pipe_child[0], &buf_parent, 1));
 
-	/* Tests traceme. */
+	/* Tests child PTRACE_TRACEME. */
 	if (!variant->domain_parent) {
 		ASSERT_EQ(child, waitpid(child, &status, 0));
 		ASSERT_EQ(1, WIFSTOPPED(status));
 		ASSERT_EQ(0, ptrace(PTRACE_DETACH, child, NULL, 0));
-	}
-	/* Tests attach. */
-	ASSERT_EQ(variant->domain_parent ? -1 : 0,
-			ptrace(PTRACE_ATTACH, child, NULL, 0));
-	if (variant->domain_parent) {
-		ASSERT_EQ(EPERM, errno);
 	} else {
+		/* The child should not be traced by the parent. */
+		EXPECT_EQ(-1, ptrace(PTRACE_DETACH, child, NULL, 0));
+		EXPECT_EQ(ESRCH, errno);
+	}
+
+	/* Tests PTRACE_ATTACH on the child. */
+	ret = ptrace(PTRACE_ATTACH, child, NULL, 0);
+	if (variant->domain_parent) {
+		EXPECT_EQ(-1, ret);
+		EXPECT_EQ(EPERM, errno);
+	} else {
+		EXPECT_EQ(0, ret);
+	}
+	if (ret == 0) {
 		ASSERT_EQ(child, waitpid(child, &status, 0));
 		ASSERT_EQ(1, WIFSTOPPED(status));
 		ASSERT_EQ(0, ptrace(PTRACE_DETACH, child, NULL, 0));
 	}
 
-	/* sync #3 */
-	ASSERT_EQ(1, write(pipe_parent[1], ".", 1)) {
-		TH_LOG("Failed to write() sync #3 to child");
-	}
+	/* Signals that the parent PTRACE_ATTACH test is done. */
+	ASSERT_EQ(1, write(pipe_parent[1], ".", 1));
 	ASSERT_EQ(child, waitpid(child, &status, 0));
-	if (WIFSIGNALED(status) || WEXITSTATUS(status))
+	if (WIFSIGNALED(status) || !WIFEXITED(status) ||
+			WEXITSTATUS(status) != EXIT_SUCCESS)
 		_metadata->passed = 0;
 }
 

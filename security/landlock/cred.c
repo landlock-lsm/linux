@@ -39,7 +39,7 @@ static struct security_hook_list landlock_hooks[] __lsm_ro_after_init = {
 	LSM_HOOK_INIT(cred_free, hook_cred_free),
 };
 
-__init void landlock_add_hooks_cred(void)
+__init void landlock_add_cred_hooks(void)
 {
 	security_add_hooks(landlock_hooks, ARRAY_SIZE(landlock_hooks),
 			LANDLOCK_NAME);

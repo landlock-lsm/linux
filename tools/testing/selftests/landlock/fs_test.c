@@ -4,6 +4,7 @@
  *
  * Copyright © 2017-2020 Mickaël Salaün <mic@digikod.net>
  * Copyright © 2020 ANSSI
+ * Copyright © 2020 Microsoft Corporation
  */
 
 #define _GNU_SOURCE
@@ -492,10 +493,10 @@ TEST_F(layout1, unpriv) {
 
 	/* enforce_ruleset() calls prctl(no_new_privs). */
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 }
 
-TEST_F(layout1, whitelist)
+TEST_F(layout1, effective_access)
 {
 	const struct rule rules[] = {
 		{
@@ -515,7 +516,7 @@ TEST_F(layout1, whitelist)
 
 	ASSERT_LE(0, ruleset_fd);
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	/* Tests on a directory. */
 	ASSERT_EQ(EACCES, test_open("/", O_RDONLY));
@@ -561,7 +562,7 @@ TEST_F(layout1, unhandled_access)
 
 	ASSERT_LE(0, ruleset_fd);
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	/*
 	 * Because the policy does not handle LANDLOCK_ACCESS_FS_WRITE_FILE,
@@ -594,7 +595,7 @@ TEST_F(layout1, ruleset_overlap)
 
 	ASSERT_LE(0, ruleset_fd);
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	/* Checks s1d1 hierarchy. */
 	ASSERT_EQ(EACCES, test_open(file1_s1d1, O_RDONLY));
@@ -695,7 +696,7 @@ TEST_F(layout1, interleaved_masked_accesses)
 			layer1_read);
 	ASSERT_LE(0, ruleset_fd);
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	/* Checks that access is granted for file1_s1d3 with layer 1. */
 	ASSERT_EQ(0, test_open(file1_s1d3, O_RDWR));
@@ -706,7 +707,7 @@ TEST_F(layout1, interleaved_masked_accesses)
 			layer2_read);
 	ASSERT_LE(0, ruleset_fd);
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	/* Checks that previous access rights are unchanged with layer 2. */
 	ASSERT_EQ(0, test_open(file1_s1d3, O_RDWR));
@@ -717,7 +718,7 @@ TEST_F(layout1, interleaved_masked_accesses)
 			layer3_read);
 	ASSERT_LE(0, ruleset_fd);
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	/* Checks that previous access rights are unchanged with layer 3. */
 	ASSERT_EQ(0, test_open(file1_s1d3, O_RDWR));
@@ -729,7 +730,7 @@ TEST_F(layout1, interleaved_masked_accesses)
 			layer4_write);
 	ASSERT_LE(0, ruleset_fd);
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	/*
 	 * Checks that the only change with layer 4 is that write access is
@@ -744,7 +745,7 @@ TEST_F(layout1, interleaved_masked_accesses)
 			layer5_read);
 	ASSERT_LE(0, ruleset_fd);
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	/* Checks that previous access rights are unchanged with layer 5. */
 	ASSERT_EQ(0, test_open(file1_s1d3, O_RDONLY));
@@ -756,7 +757,7 @@ TEST_F(layout1, interleaved_masked_accesses)
 			layer6_read);
 	ASSERT_LE(0, ruleset_fd);
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	/* Checks read access is now denied with layer 6. */
 	ASSERT_EQ(EACCES, test_open(file1_s1d3, O_RDONLY));
@@ -856,7 +857,7 @@ TEST_F(layout1, inherit_subset)
 	add_path_beneath(_metadata, ruleset_fd, LANDLOCK_ACCESS_FS_WRITE_FILE,
 			dir_s1d3);
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	/*
 	 * Same tests and results as above, except for open(dir_s1d3) which is
@@ -904,7 +905,7 @@ TEST_F(layout1, inherit_superset)
 	add_path_beneath(_metadata, ruleset_fd, LANDLOCK_ACCESS_FS_READ_FILE |
 			LANDLOCK_ACCESS_FS_READ_DIR, dir_s1d2);
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	/* Readdir access is still denied for dir_s1d2. */
 	ASSERT_EQ(EACCES, test_open(dir_s1d2, O_RDONLY | O_DIRECTORY));
@@ -935,7 +936,7 @@ TEST_F(layout1, max_layers)
 		ASSERT_EQ(-1, err);
 		ASSERT_EQ(E2BIG, errno);
 	}
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 }
 
 TEST_F(layout1, empty_or_same_ruleset)
@@ -969,7 +970,7 @@ TEST_F(layout1, empty_or_same_ruleset)
 
 	/* Enforces a second time with the same ruleset. */
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 }
 
 TEST_F(layout1, rule_on_mountpoint)
@@ -990,7 +991,7 @@ TEST_F(layout1, rule_on_mountpoint)
 
 	ASSERT_LE(0, ruleset_fd);
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	ASSERT_EQ(0, test_open(dir_s1d1, O_RDONLY));
 
@@ -1019,7 +1020,7 @@ TEST_F(layout1, rule_over_mountpoint)
 
 	ASSERT_LE(0, ruleset_fd);
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	ASSERT_EQ(0, test_open(dir_s1d1, O_RDONLY));
 
@@ -1047,7 +1048,7 @@ TEST_F(layout1, rule_over_root_allow_then_deny)
 
 	ASSERT_LE(0, ruleset_fd);
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	/* Checks allowed access. */
 	ASSERT_EQ(0, test_open("/", O_RDONLY));
@@ -1057,7 +1058,7 @@ TEST_F(layout1, rule_over_root_allow_then_deny)
 	ruleset_fd = create_ruleset(_metadata, ACCESS_RW, rules);
 	ASSERT_LE(0, ruleset_fd);
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	/* Checks denied access (on a directory). */
 	ASSERT_EQ(EACCES, test_open("/", O_RDONLY));
@@ -1077,7 +1078,7 @@ TEST_F(layout1, rule_over_root_deny)
 
 	ASSERT_LE(0, ruleset_fd);
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	/* Checks denied access (on a directory). */
 	ASSERT_EQ(EACCES, test_open("/", O_RDONLY));
@@ -1107,7 +1108,7 @@ TEST_F(layout1, rule_inside_mount_ns)
 	ruleset_fd = create_ruleset(_metadata, ACCESS_RW, rules);
 	ASSERT_LE(0, ruleset_fd);
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	ASSERT_EQ(0, test_open("s3d3", O_RDONLY));
 	ASSERT_EQ(EACCES, test_open("/", O_RDONLY));
@@ -1129,7 +1130,7 @@ TEST_F(layout1, mount_and_pivot)
 	ASSERT_EQ(0, mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL));
 
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	ASSERT_EQ(-1, mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL));
 	ASSERT_EQ(EPERM, errno);
@@ -1160,7 +1161,7 @@ TEST_F(layout1, move_mount)
 				dir_s3d2, 0));
 
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	ASSERT_EQ(-1, syscall(SYS_move_mount, AT_FDCWD, dir_s3d2, AT_FDCWD,
 				dir_s1d2, 0));
@@ -1193,7 +1194,7 @@ TEST_F(layout1, release_inodes)
 	clear_cap(_metadata, CAP_SYS_ADMIN);
 
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	ASSERT_EQ(0, test_open(file1_s1d1, O_RDONLY));
 	ASSERT_EQ(EACCES, test_open(dir_s3d2, O_RDONLY));
@@ -1292,8 +1293,8 @@ static void test_relative_path(struct __test_metadata *const _metadata,
 	}
 
 	if (rel == REL_OPEN)
-		EXPECT_EQ(0, close(dirfd));
-	EXPECT_EQ(0, close(ruleset_fd));
+		ASSERT_EQ(0, close(dirfd));
+	ASSERT_EQ(0, close(ruleset_fd));
 }
 
 TEST_F(layout1, relative_open)
@@ -1382,7 +1383,7 @@ TEST_F(layout1, execute)
 	copy_binary(_metadata, file1_s1d3);
 
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	test_execute(_metadata, file1_s1d1, -1);
 	test_execute(_metadata, file1_s1d2, 0);
@@ -1408,7 +1409,7 @@ TEST_F(layout1, link)
 	ASSERT_EQ(0, unlink(file1_s1d3));
 
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	ASSERT_EQ(-1, link(file2_s1d1, file1_s1d1));
 	ASSERT_EQ(EACCES, errno);
@@ -1447,7 +1448,7 @@ TEST_F(layout1, rename_file)
 	ASSERT_EQ(0, unlink(file1_s1d2));
 
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	/* Replaces file. */
 	ASSERT_EQ(-1, rename(file1_s2d3, file1_s1d3));
@@ -1493,7 +1494,7 @@ TEST_F(layout1, rename_dir)
 	ASSERT_EQ(0, unlink(file2_s1d3));
 
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	/* Renames directory. */
 	ASSERT_EQ(-1, rename(dir_s2d3, dir_s1d3));
@@ -1526,7 +1527,7 @@ TEST_F(layout1, rmdir)
 	ASSERT_EQ(0, unlink(file2_s1d3));
 
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	ASSERT_EQ(0, rmdir(dir_s1d3));
 	/* dir_s1d2 itself cannot be removed. */
@@ -1550,7 +1551,7 @@ TEST_F(layout1, unlink)
 
 	ASSERT_LE(0, ruleset_fd);
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	ASSERT_EQ(-1, unlink(file1_s1d1));
 	ASSERT_EQ(EACCES, errno);
@@ -1580,7 +1581,7 @@ static void test_make_file(struct __test_metadata *const _metadata,
 	unlink(file1_s1d3);
 
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	ASSERT_EQ(-1, mknod(file1_s1d1, mode | 0400, dev));
 	ASSERT_EQ(EACCES, errno);
@@ -1642,7 +1643,7 @@ TEST_F(layout1, make_sym)
 	ASSERT_EQ(0, unlink(file1_s1d3));
 
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	ASSERT_EQ(-1, symlink("none", file1_s1d1));
 	ASSERT_EQ(EACCES, errno);
@@ -1672,7 +1673,7 @@ TEST_F(layout1, make_dir)
 	ASSERT_EQ(0, unlink(file1_s1d3));
 
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	/* Uses file_* as directory names. */
 	ASSERT_EQ(-1, mkdir(file1_s1d1, 0700));
@@ -1712,7 +1713,7 @@ TEST_F(layout1, proc_unlinked_file)
 
 	ASSERT_LE(0, ruleset_fd);
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	ASSERT_EQ(EACCES, test_open(file1_s1d2, O_RDWR));
 	ASSERT_EQ(0, test_open(file1_s1d2, O_RDONLY));
@@ -1722,7 +1723,7 @@ TEST_F(layout1, proc_unlinked_file)
 
 	proc_fd = open_proc_fd(_metadata, reg_fd, O_RDONLY | O_CLOEXEC);
 	ASSERT_LE(0, proc_fd);
-	EXPECT_EQ(0, close(proc_fd));
+	ASSERT_EQ(0, close(proc_fd));
 
 	proc_fd = open_proc_fd(_metadata, reg_fd, O_RDWR | O_CLOEXEC);
 	ASSERT_EQ(-1, proc_fd) {
@@ -1731,7 +1732,7 @@ TEST_F(layout1, proc_unlinked_file)
 	}
 	ASSERT_EQ(EACCES, errno);
 
-	EXPECT_EQ(0, close(reg_fd));
+	ASSERT_EQ(0, close(reg_fd));
 }
 
 TEST_F(layout1, proc_pipe)
@@ -1753,14 +1754,14 @@ TEST_F(layout1, proc_pipe)
 
 	ASSERT_LE(0, ruleset_fd);
 	enforce_ruleset(_metadata, ruleset_fd);
-	EXPECT_EQ(0, close(ruleset_fd));
+	ASSERT_EQ(0, close(ruleset_fd));
 
 	/* Checks enforcement for normal files. */
 	ASSERT_EQ(0, test_open(file1_s1d2, O_RDWR));
 	ASSERT_EQ(EACCES, test_open(file1_s1d1, O_RDWR));
 
 	/* Checks access to pipes through FD. */
-	ASSERT_EQ(0, pipe(pipe_fds));
+	ASSERT_EQ(0, pipe2(pipe_fds, O_CLOEXEC));
 	ASSERT_EQ(1, write(pipe_fds[1], ".", 1)) {
 		TH_LOG("Failed to write in pipe: %s", strerror(errno));
 	}
@@ -1774,7 +1775,7 @@ TEST_F(layout1, proc_pipe)
 		TH_LOG("Failed to write through /proc/self/fd/%d: %s",
 				pipe_fds[1], strerror(errno));
 	}
-	EXPECT_EQ(0, close(proc_fd));
+	ASSERT_EQ(0, close(proc_fd));
 
 	/* Checks read access to pipe through /proc/self/fd . */
 	proc_fd = open_proc_fd(_metadata, pipe_fds[0], O_RDONLY | O_CLOEXEC);
@@ -1784,10 +1785,10 @@ TEST_F(layout1, proc_pipe)
 		TH_LOG("Failed to read through /proc/self/fd/%d: %s",
 				pipe_fds[1], strerror(errno));
 	}
-	EXPECT_EQ(0, close(proc_fd));
+	ASSERT_EQ(0, close(proc_fd));
 
-	EXPECT_EQ(0, close(pipe_fds[0]));
-	EXPECT_EQ(0, close(pipe_fds[1]));
+	ASSERT_EQ(0, close(pipe_fds[0]));
+	ASSERT_EQ(0, close(pipe_fds[1]));
 }
 
 TEST(cleanup)

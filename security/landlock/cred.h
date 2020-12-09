@@ -53,6 +53,6 @@ static inline bool landlocked(const struct task_struct *const task)
 	return has_dom;
 }
 
-__init void landlock_add_hooks_cred(void);
+__init void landlock_add_cred_hooks(void);
 
 #endif /* _SECURITY_LANDLOCK_CRED_H */

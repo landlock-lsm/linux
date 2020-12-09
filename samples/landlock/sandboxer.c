@@ -26,7 +26,6 @@ static inline int landlock_create_ruleset(
 		const struct landlock_ruleset_attr *const attr,
 		const size_t size, const __u32 flags)
 {
-	errno = 0;
 	return syscall(__NR_landlock_create_ruleset, attr, size, flags);
 }
 #endif
@@ -36,7 +35,6 @@ static inline int landlock_add_rule(const int ruleset_fd,
 		const enum landlock_rule_type rule_type,
 		const void *const rule_attr, const __u32 flags)
 {
-	errno = 0;
 	return syscall(__NR_landlock_add_rule, ruleset_fd, rule_type,
 			rule_attr, flags);
 }
@@ -46,7 +44,6 @@ static inline int landlock_add_rule(const int ruleset_fd,
 static inline int landlock_enforce_ruleset_current(const int ruleset_fd,
 		const __u32 flags)
 {
-	errno = 0;
 	return syscall(__NR_landlock_enforce_ruleset_current, ruleset_fd,
 			flags);
 }
@@ -58,20 +55,20 @@ static inline int landlock_enforce_ruleset_current(const int ruleset_fd,
 
 static int parse_path(char *env_path, const char ***const path_list)
 {
-	int i, path_nb = 0;
+	int i, num_paths = 0;
 
 	if (env_path) {
-		path_nb++;
+		num_paths++;
 		for (i = 0; env_path[i]; i++) {
 			if (env_path[i] == ENV_PATH_TOKEN[0])
-				path_nb++;
+				num_paths++;
 		}
 	}
-	*path_list = malloc(path_nb * sizeof(**path_list));
-	for (i = 0; i < path_nb; i++)
+	*path_list = malloc(num_paths * sizeof(**path_list));
+	for (i = 0; i < num_paths; i++)
 		(*path_list)[i] = strsep(&env_path, ENV_PATH_TOKEN);
 
-	return path_nb;
+	return num_paths;
 }
 
 #define ACCESS_FILE ( \
@@ -83,7 +80,7 @@ static int populate_ruleset(
 		const char *const env_var, const int ruleset_fd,
 		const __u64 allowed_access)
 {
-	int path_nb, i;
+	int num_paths, i;
 	char *env_path_name;
 	const char **path_list = NULL;
 	struct landlock_path_beneath_attr path_beneath = {
@@ -97,13 +94,13 @@ static int populate_ruleset(
 	}
 	env_path_name = strdup(env_path_name);
 	unsetenv(env_var);
-	path_nb = parse_path(env_path_name, &path_list);
-	if (path_nb == 1 && path_list[0][0] == '\0') {
+	num_paths = parse_path(env_path_name, &path_list);
+	if (num_paths == 1 && path_list[0][0] == '\0') {
 		fprintf(stderr, "Missing path in %s\n", env_var);
 		goto err_free_name;
 	}
 
-	for (i = 0; i < path_nb; i++) {
+	for (i = 0; i < num_paths; i++) {
 		struct stat statbuf;
 
 		path_beneath.parent_fd = open(path_list[i], O_PATH |

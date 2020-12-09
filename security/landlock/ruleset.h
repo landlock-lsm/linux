@@ -16,8 +16,6 @@
 
 #include "object.h"
 
-#define LANDLOCK_MAX_NB_LAYERS	64
-
 /**
  * struct landlock_layer - Access rights for a given layer
  */
@@ -49,9 +47,9 @@ struct landlock_rule {
 	 */
 	struct landlock_object *object;
 	/**
-	 * @nb_layers: Number of entries in @layers.
+	 * @num_layers: Number of entries in @layers.
 	 */
-	u32 nb_layers;
+	u32 num_layers;
 	/**
 	 * @layers: Stack of layers, from the newest to the latest, implemented
 	 * as a flexible array member.
@@ -98,7 +96,7 @@ struct landlock_ruleset {
 		 * @work_free: Enables to free a ruleset within a lockless
 		 * section.  This is only used by
 		 * landlock_put_ruleset_deferred() when @usage reaches zero.
-		 * The fields @lock, @usage, @nb_layers, @nb_rules and
+		 * The fields @lock, @usage, @num_layers, @num_rules and
 		 * @fs_access_mask are then unused.
 		 */
 		struct work_struct work_free;
@@ -114,17 +112,17 @@ struct landlock_ruleset {
 			 */
 			refcount_t usage;
 			/**
-			 * @nb_rules: Number of non-overlapping (i.e. not for
+			 * @num_rules: Number of non-overlapping (i.e. not for
 			 * the same object) rules in this ruleset.
 			 */
-			u32 nb_rules;
+			u32 num_rules;
 			/**
-			 * @nb_layers: Number of layers which are used in this
+			 * @num_layers: Number of layers which are used in this
 			 * ruleset.  This enables to check that all the layers
 			 * allow an access request.  A value of 0 identifies a
 			 * non-merged ruleset (i.e. not a domain).
 			 */
-			u32 nb_layers;
+			u32 num_layers;
 			/**
 			 * @fs_access_mask: Contains the subset of filesystem
 			 * actions which are restricted by a ruleset.  This is

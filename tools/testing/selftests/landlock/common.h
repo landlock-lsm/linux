@@ -22,7 +22,6 @@ static inline int landlock_create_ruleset(
 		const struct landlock_ruleset_attr *const attr,
 		const size_t size, const __u32 flags)
 {
-	errno = 0;
 	return syscall(__NR_landlock_create_ruleset, attr, size, flags);
 }
 #endif
@@ -32,7 +31,6 @@ static inline int landlock_add_rule(const int ruleset_fd,
 		const enum landlock_rule_type rule_type,
 		const void *const rule_attr, const __u32 flags)
 {
-	errno = 0;
 	return syscall(__NR_landlock_add_rule, ruleset_fd, rule_type,
 			rule_attr, flags);
 }
@@ -42,7 +40,6 @@ static inline int landlock_add_rule(const int ruleset_fd,
 static inline int landlock_enforce_ruleset_current(const int ruleset_fd,
 		const __u32 flags)
 {
-	errno = 0;
 	return syscall(__NR_landlock_enforce_ruleset_current, ruleset_fd,
 			flags);
 }

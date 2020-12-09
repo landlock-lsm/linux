@@ -7,6 +7,7 @@
  */
 
 #include <linux/atomic.h>
+#include <linux/bitops.h>
 #include <linux/bits.h>
 #include <linux/compiler_types.h>
 #include <linux/dcache.h>
@@ -31,6 +32,7 @@
 #include "common.h"
 #include "cred.h"
 #include "fs.h"
+#include "limits.h"
 #include "object.h"
 #include "ruleset.h"
 #include "setup.h"
@@ -147,7 +149,7 @@ int landlock_append_fs_rule(struct landlock_ruleset *const ruleset,
 		return -EINVAL;
 
 	/* Transforms relative access rights to absolute ones. */
-	access_rights |= _LANDLOCK_ACCESS_FS_MASK & ~ruleset->fs_access_mask;
+	access_rights |= LANDLOCK_MASK_ACCESS_FS & ~ruleset->fs_access_mask;
 	object = get_inode_object(d_backing_inode(path->dentry));
 	if (IS_ERR(object))
 		return PTR_ERR(object);
@@ -190,7 +192,7 @@ static bool check_access_path_continue(
 	 * position in the layer stack.  We must then check not-yet-seen layers
 	 * for each inode, from the last one added to the first one.
 	 */
-	for (i = 0; i < rule->nb_layers; i++) {
+	for (i = 0; i < rule->num_layers; i++) {
 		const struct landlock_layer *const layer = &rule->layers[i];
 		const u64 layer_level = BIT_ULL(layer->level - 1);
 
@@ -203,20 +205,6 @@ static bool check_access_path_continue(
 	return true;
 }
 
-static inline void build_check_layer(void)
-{
-	const struct landlock_layer layer = {
-		.level = ~0,
-		.access = ~0,
-	};
-
-	/* Make sure all layers can be stored. */
-	BUILD_BUG_ON(layer.level < LANDLOCK_MAX_NB_LAYERS);
-
-	/* Make sure all accesses can be stored. */
-	BUILD_BUG_ON(layer.access < _LANDLOCK_ACCESS_FS_MASK);
-}
-
 static int check_access_path(const struct landlock_ruleset *const domain,
 		const struct path *const path, u32 access_request)
 {
@@ -225,8 +213,7 @@ static int check_access_path(const struct landlock_ruleset *const domain,
 	u64 layer_mask;
 
 	/* Make sure all layers can be checked. */
-	BUILD_BUG_ON((sizeof(layer_mask) * BITS_PER_BYTE) < LANDLOCK_MAX_NB_LAYERS);
-	build_check_layer();
+	BUILD_BUG_ON(BITS_PER_TYPE(layer_mask) < LANDLOCK_MAX_NUM_LAYERS);
 
 	if (WARN_ON_ONCE(!domain || !path))
 		return 0;
@@ -239,10 +226,10 @@ static int check_access_path(const struct landlock_ruleset *const domain,
 			(d_is_positive(path->dentry) &&
 			 unlikely(IS_PRIVATE(d_backing_inode(path->dentry)))))
 		return 0;
-	if (WARN_ON_ONCE(domain->nb_layers < 1))
+	if (WARN_ON_ONCE(domain->num_layers < 1))
 		return -EACCES;
 
-	layer_mask = GENMASK_ULL(domain->nb_layers - 1, 0);
+	layer_mask = GENMASK_ULL(domain->num_layers - 1, 0);
 	/*
 	 * An access request which is not handled by the domain should be
 	 * allowed.
@@ -628,7 +615,7 @@ static struct security_hook_list landlock_hooks[] __lsm_ro_after_init = {
 	LSM_HOOK_INIT(file_open, hook_file_open),
 };
 
-__init void landlock_add_hooks_fs(void)
+__init void landlock_add_fs_hooks(void)
 {
 	security_add_hooks(landlock_hooks, ARRAY_SIZE(landlock_hooks),
 			LANDLOCK_NAME);
