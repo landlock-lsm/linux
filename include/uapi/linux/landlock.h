@@ -6,8 +6,8 @@
  * Copyright © 2018-2020 ANSSI
  */
 
-#ifndef _UAPI__LINUX_LANDLOCK_H__
-#define _UAPI__LINUX_LANDLOCK_H__
+#ifndef _UAPI_LINUX_LANDLOCK_H
+#define _UAPI_LINUX_LANDLOCK_H
 
 #include <linux/types.h>
 
@@ -58,7 +58,7 @@ struct landlock_path_beneath_attr {
 	__s32 parent_fd;
 	/*
 	 * This struct is packed to avoid trailing reserved members.
-	 * Cf. security/landlock/syscall.c:build_check_abi()
+	 * Cf. security/landlock/syscalls.c:build_check_abi()
 	 */
 } __attribute__((packed));
 
@@ -108,7 +108,7 @@ struct landlock_path_beneath_attr {
  *   accessible through these syscall families: :manpage:`chdir(2)`,
  *   :manpage:`truncate(2)`, :manpage:`stat(2)`, :manpage:`flock(2)`,
  *   :manpage:`chmod(2)`, :manpage:`chown(2)`, :manpage:`setxattr(2)`,
- *   :manpage:`ioctl(2)`, :manpage:`fcntl(2)`.
+ *   :manpage:`utime(2)`, :manpage:`ioctl(2)`, :manpage:`fcntl(2)`.
  *   Future Landlock evolutions will enable to restrict them.
  */
 #define LANDLOCK_ACCESS_FS_EXECUTE			(1ULL << 0)
@@ -125,4 +125,4 @@ struct landlock_path_beneath_attr {
 #define LANDLOCK_ACCESS_FS_MAKE_BLOCK			(1ULL << 11)
 #define LANDLOCK_ACCESS_FS_MAKE_SYM			(1ULL << 12)
 
-#endif /* _UAPI__LINUX_LANDLOCK_H__ */
+#endif /* _UAPI_LINUX_LANDLOCK_H */

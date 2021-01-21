@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 /*
  * Simple Landlock sandbox manager able to launch a process restricted by a
- * user-defined filesystem access control.
+ * user-defined filesystem access control policy.
  *
  * Copyright © 2017-2020 Mickaël Salaün <mic@digikod.net>
  * Copyright © 2020 ANSSI
@@ -40,11 +40,11 @@ static inline int landlock_add_rule(const int ruleset_fd,
 }
 #endif
 
-#ifndef landlock_enforce_ruleset_current
-static inline int landlock_enforce_ruleset_current(const int ruleset_fd,
+#ifndef landlock_enforce_ruleset_self
+static inline int landlock_enforce_ruleset_self(const int ruleset_fd,
 		const __u32 flags)
 {
-	return syscall(__NR_landlock_enforce_ruleset_current, ruleset_fd,
+	return syscall(__NR_landlock_enforce_ruleset_self, ruleset_fd,
 			flags);
 }
 #endif
@@ -80,7 +80,7 @@ static int populate_ruleset(
 		const char *const env_var, const int ruleset_fd,
 		const __u64 allowed_access)
 {
-	int num_paths, i;
+	int num_paths, i, ret = 1;
 	char *env_path_name;
 	const char **path_list = NULL;
 	struct landlock_path_beneath_attr path_beneath = {
@@ -89,6 +89,7 @@ static int populate_ruleset(
 
 	env_path_name = getenv(env_var);
 	if (!env_path_name) {
+		/* Prevents users to forget a setting. */
 		fprintf(stderr, "Missing environment variable %s\n", env_var);
 		return 1;
 	}
@@ -96,8 +97,12 @@ static int populate_ruleset(
 	unsetenv(env_var);
 	num_paths = parse_path(env_path_name, &path_list);
 	if (num_paths == 1 && path_list[0][0] == '\0') {
-		fprintf(stderr, "Missing path in %s\n", env_var);
-		goto err_free_name;
+		/*
+		 * Allows to not use all possible restrictions (e.g. use
+		 * LL_FS_RO without LL_FS_RW).
+		 */
+		ret = 0;
+		goto out_free_name;
 	}
 
 	for (i = 0; i < num_paths; i++) {
@@ -109,11 +114,11 @@ static int populate_ruleset(
 			fprintf(stderr, "Failed to open \"%s\": %s\n",
 					path_list[i],
 					strerror(errno));
-			goto err_free_name;
+			goto out_free_name;
 		}
 		if (fstat(path_beneath.parent_fd, &statbuf)) {
 			close(path_beneath.parent_fd);
-			goto err_free_name;
+			goto out_free_name;
 		}
 		path_beneath.allowed_access = allowed_access;
 		if (!S_ISDIR(statbuf.st_mode))
@@ -123,16 +128,15 @@ static int populate_ruleset(
 			fprintf(stderr, "Failed to update the ruleset with \"%s\": %s\n",
 					path_list[i], strerror(errno));
 			close(path_beneath.parent_fd);
-			goto err_free_name;
+			goto out_free_name;
 		}
 		close(path_beneath.parent_fd);
 	}
-	free(env_path_name);
-	return 0;
+	ret = 0;
 
-err_free_name:
+out_free_name:
 	free(env_path_name);
-	return 1;
+	return ret;
 }
 
 #define ACCESS_FS_ROUGHLY_READ ( \
@@ -171,7 +175,7 @@ int main(const int argc, char *const argv[], char *const *const envp)
 		fprintf(stderr, "* %s: list of paths allowed to be used in a read-only way.\n",
 				ENV_FS_RO_NAME);
 		fprintf(stderr, "* %s: list of paths allowed to be used in a read-write way.\n",
-				ENV_FS_RO_NAME);
+				ENV_FS_RW_NAME);
 		fprintf(stderr, "\nexample:\n"
 				"%s=\"/bin:/lib:/usr:/proc:/etc:/dev/urandom\" "
 				"%s=\"/dev/null:/dev/full:/dev/zero:/dev/pts:/tmp\" "
@@ -182,8 +186,10 @@ int main(const int argc, char *const argv[], char *const *const envp)
 
 	ruleset_fd = landlock_create_ruleset(&ruleset_attr, sizeof(ruleset_attr), 0);
 	if (ruleset_fd < 0) {
+		const int err = errno;
+
 		perror("Failed to create a ruleset");
-		switch (errno) {
+		switch (err) {
 		case ENOSYS:
 			fprintf(stderr, "Hint: Landlock is not supported by the current kernel. "
 					"To support it, build the kernel with "
@@ -212,7 +218,7 @@ int main(const int argc, char *const argv[], char *const *const envp)
 		perror("Failed to restrict privileges");
 		goto err_close_ruleset;
 	}
-	if (landlock_enforce_ruleset_current(ruleset_fd, 0)) {
+	if (landlock_enforce_ruleset_self(ruleset_fd, 0)) {
 		perror("Failed to enforce ruleset");
 		goto err_close_ruleset;
 	}

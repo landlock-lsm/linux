@@ -128,7 +128,7 @@ retry:
 	return new_object;
 }
 
-/* All access rights which can be tied to files. */
+/* All access rights that can be tied to files. */
 #define ACCESS_FILE ( \
 	LANDLOCK_ACCESS_FS_EXECUTE | \
 	LANDLOCK_ACCESS_FS_WRITE_FILE | \
@@ -166,10 +166,10 @@ int landlock_append_fs_rule(struct landlock_ruleset *const ruleset,
 
 /* Access-control management */
 
-static bool check_access_path_continue(
+static inline u64 unmask_layers(
 		const struct landlock_ruleset *const domain,
 		const struct path *const path, const u32 access_request,
-		u64 *const layer_mask)
+		u64 layer_mask)
 {
 	const struct landlock_rule *rule;
 	const struct inode *inode;
@@ -177,32 +177,34 @@ static bool check_access_path_continue(
 
 	if (d_is_negative(path->dentry))
 		/* Continues to walk while there is no mapped inode. */
-		return true;
+		return layer_mask;
 	inode = d_backing_inode(path->dentry);
 	rcu_read_lock();
 	rule = landlock_find_rule(domain,
 			rcu_dereference(landlock_inode(inode)->object));
 	rcu_read_unlock();
 	if (!rule)
-		return true;
+		return layer_mask;
 
 	/*
 	 * An access is granted if, for each policy layer, at least one rule
-	 * encountered on the pathwalk grants the access, regardless of their
-	 * position in the layer stack.  We must then check not-yet-seen layers
-	 * for each inode, from the last one added to the first one.
+	 * encountered on the pathwalk grants the requested accesses,
+	 * regardless of their position in the layer stack.  We must then check
+	 * the remaining layers for each inode, from the last added layer to
+	 * the first one.
 	 */
 	for (i = 0; i < rule->num_layers; i++) {
 		const struct landlock_layer *const layer = &rule->layers[i];
 		const u64 layer_level = BIT_ULL(layer->level - 1);
 
-		if (!(layer_level & *layer_mask))
-			continue;
-		if ((layer->access & access_request) != access_request)
-			return false;
-		*layer_mask &= ~layer_level;
+		if ((layer->access & access_request) == access_request) {
+			layer_mask &= ~layer_level;
+
+			if (layer_mask == 0)
+				return layer_mask;
+		}
 	}
-	return true;
+	return layer_mask;
 }
 
 static int check_access_path(const struct landlock_ruleset *const domain,
@@ -231,7 +233,7 @@ static int check_access_path(const struct landlock_ruleset *const domain,
 
 	layer_mask = GENMASK_ULL(domain->num_layers - 1, 0);
 	/*
-	 * An access request which is not handled by the domain should be
+	 * An access request that is not handled by the domain should be
 	 * allowed.
 	 */
 	access_request &= domain->fs_access_mask;
@@ -243,21 +245,18 @@ static int check_access_path(const struct landlock_ruleset *const domain,
 	 * We need to walk through all the hierarchy to not miss any relevant
 	 * restriction.
 	 */
-	while (check_access_path_continue(domain, &walker_path, access_request,
-				&layer_mask)) {
+	while (true) {
 		struct dentry *parent_dentry;
 
-		/* Stops when a rule from each layer granted access. */
+		layer_mask = unmask_layers(domain, &walker_path,
+				access_request, layer_mask);
 		if (layer_mask == 0) {
+			/* Stops when a rule from each layer grants access. */
 			allowed = true;
 			break;
 		}
 
 jump_up:
-		/*
-		 * Does not work with orphaned/private mounts like overlayfs
-		 * layers for now (cf. ovl_path_real() and ovl_path_open()).
-		 */
 		if (walker_path.dentry == walker_path.mnt->mnt_root) {
 			if (follow_up(&walker_path)) {
 				/* Ignores hidden mount points. */
@@ -274,7 +273,7 @@ jump_up:
 		if (unlikely(IS_ROOT(walker_path.dentry))) {
 			/*
 			 * Stops at disconnected root directories.  Only allows
-			 * access to internal filesystems (e.g. nsfs which is
+			 * access to internal filesystems (e.g. nsfs, which is
 			 * reachable through /proc/self/ns).
 			 */
 			allowed = !!(walker_path.mnt->mnt_flags & MNT_INTERNAL);
@@ -593,7 +592,7 @@ static int hook_file_open(struct file *const file)
 	 * return 0.  This case will be handled with a future Landlock
 	 * evolution.
 	 */
-	return current_check_access_path(&file->f_path, get_file_access(file));
+	return check_access_path(dom, &file->f_path, get_file_access(file));
 }
 
 static struct security_hook_list landlock_hooks[] __lsm_ro_after_init = {

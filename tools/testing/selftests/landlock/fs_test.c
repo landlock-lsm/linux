@@ -4,7 +4,7 @@
  *
  * Copyright © 2017-2020 Mickaël Salaün <mic@digikod.net>
  * Copyright © 2020 ANSSI
- * Copyright © 2020 Microsoft Corporation
+ * Copyright © 2020-2021 Microsoft Corporation
  */
 
 #define _GNU_SOURCE
@@ -22,105 +22,186 @@
 
 #include "common.h"
 
-#define TMP_DIR "tmp/"
-#define FILE_1 "file1"
-#define FILE_2 "file2"
-#define BINARY_PATH "./true"
+#define TMP_DIR		"tmp"
+#define BINARY_PATH	"./true"
 
 /* Paths (sibling number and depth) */
-static const char dir_s1d1[] = TMP_DIR "s1d1";
-static const char file1_s1d1[] = TMP_DIR "s1d1/" FILE_1;
-static const char file2_s1d1[] = TMP_DIR "s1d1/" FILE_2;
-static const char dir_s1d2[] = TMP_DIR "s1d1/s1d2";
-static const char file1_s1d2[] = TMP_DIR "s1d1/s1d2/" FILE_1;
-static const char file2_s1d2[] = TMP_DIR "s1d1/s1d2/" FILE_2;
-static const char dir_s1d3[] = TMP_DIR "s1d1/s1d2/s1d3";
-static const char file1_s1d3[] = TMP_DIR "s1d1/s1d2/s1d3/" FILE_1;
-static const char file2_s1d3[] = TMP_DIR "s1d1/s1d2/s1d3/" FILE_2;
+static const char dir_s1d1[] = TMP_DIR "/s1d1";
+static const char file1_s1d1[] = TMP_DIR "/s1d1/f1";
+static const char file2_s1d1[] = TMP_DIR "/s1d1/f2";
+static const char dir_s1d2[] = TMP_DIR "/s1d1/s1d2";
+static const char file1_s1d2[] = TMP_DIR "/s1d1/s1d2/f1";
+static const char file2_s1d2[] = TMP_DIR "/s1d1/s1d2/f2";
+static const char dir_s1d3[] = TMP_DIR "/s1d1/s1d2/s1d3";
+static const char file1_s1d3[] = TMP_DIR "/s1d1/s1d2/s1d3/f1";
+static const char file2_s1d3[] = TMP_DIR "/s1d1/s1d2/s1d3/f2";
 
-static const char dir_s2d1[] = TMP_DIR "s2d1";
-static const char file1_s2d1[] = TMP_DIR "s2d1/" FILE_1;
-static const char dir_s2d2[] = TMP_DIR "s2d1/s2d2";
-static const char file1_s2d2[] = TMP_DIR "s2d1/s2d2/" FILE_1;
-static const char dir_s2d3[] = TMP_DIR "s2d1/s2d2/s2d3";
-static const char file1_s2d3[] = TMP_DIR "s2d1/s2d2/s2d3/" FILE_1;
-static const char file2_s2d3[] = TMP_DIR "s2d1/s2d2/s2d3/" FILE_2;
+static const char dir_s2d1[] = TMP_DIR "/s2d1";
+static const char file1_s2d1[] = TMP_DIR "/s2d1/f1";
+static const char dir_s2d2[] = TMP_DIR "/s2d1/s2d2";
+static const char file1_s2d2[] = TMP_DIR "/s2d1/s2d2/f1";
+static const char dir_s2d3[] = TMP_DIR "/s2d1/s2d2/s2d3";
+static const char file1_s2d3[] = TMP_DIR "/s2d1/s2d2/s2d3/f1";
+static const char file2_s2d3[] = TMP_DIR "/s2d1/s2d2/s2d3/f2";
 
-static const char dir_s3d1[] = TMP_DIR "s3d1";
+static const char dir_s3d1[] = TMP_DIR "/s3d1";
 /* dir_s3d2 is a mount point. */
-static const char dir_s3d2[] = TMP_DIR "s3d1/s3d2";
-static const char dir_s3d3[] = TMP_DIR "s3d1/s3d2/s3d3";
+static const char dir_s3d2[] = TMP_DIR "/s3d1/s3d2";
+static const char dir_s3d3[] = TMP_DIR "/s3d1/s3d2/s3d3";
 
-static void create_dir_and_file(struct __test_metadata *const _metadata,
-		const char *const dir_path)
+/*
+ * layout1 hierarchy:
+ *
+ * tmp
+ * ├── s1d1
+ * │   ├── f1
+ * │   ├── f2
+ * │   └── s1d2
+ * │       ├── f1
+ * │       ├── f2
+ * │       └── s1d3
+ * │           ├── f1
+ * │           └── f2
+ * ├── s2d1
+ * │   ├── f1
+ * │   └── s2d2
+ * │       ├── f1
+ * │       └── s2d3
+ * │           ├── f1
+ * │           └── f2
+ * └── s3d1
+ *     └── s3d2
+ *         └── s3d3
+ */
+
+static void mkdir_parents(struct __test_metadata *const _metadata,
+		const char *const path)
 {
-	int file_fd;
-	char *const file1_path = alloca(strlen(dir_path) + sizeof(FILE_1) + 2);
-	char *const file2_path = alloca(strlen(dir_path) + sizeof(FILE_2) + 2);
+	char *walker;
+	const char*parent;
+	int i, err;
 
-	strcpy(file1_path, dir_path);
-	strcat(file1_path, "/");
-	strcat(file1_path, FILE_1);
+	ASSERT_NE(path[0], '\0');
+	walker = strdup(path);
+	ASSERT_NE(NULL, walker);
+	parent = walker;
+	for (i = 1; walker[i]; i++) {
+		if (walker[i] != '/')
+			continue;
+		walker[i] = '\0';
+		err = mkdir(parent, 0700);
+		ASSERT_FALSE(err && errno != EEXIST) {
+			TH_LOG("Failed to create directory \"%s\": %s",
+					parent, strerror(errno));
+		}
+		walker[i] = '/';
+	}
+	free(walker);
+}
 
-	strcpy(file2_path, dir_path);
-	strcat(file2_path, "/");
-	strcat(file2_path, FILE_2);
-
-	ASSERT_EQ(0, mkdir(dir_path, 0700)) {
-		TH_LOG("Failed to create directory \"%s\": %s", dir_path,
+static void create_directory(struct __test_metadata *const _metadata,
+		const char *const path)
+{
+	mkdir_parents(_metadata, path);
+	ASSERT_EQ(0, mkdir(path, 0700)) {
+		TH_LOG("Failed to create directory \"%s\": %s", path,
 				strerror(errno));
 	}
-	file_fd = open(file1_path, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC,
-			0700);
-	ASSERT_LE(0, file_fd);
-	ASSERT_EQ(0, close(file_fd));
-
-	file_fd = open(file2_path, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC,
-			0700);
-	ASSERT_LE(0, file_fd);
-	ASSERT_EQ(0, close(file_fd));
 }
 
-static void delete_dir_and_file(const char *const dir_path)
+static void create_file(struct __test_metadata *const _metadata,
+		const char *const path)
 {
-	char *const file1_path = alloca(strlen(dir_path) +
-			sizeof(FILE_1) + 2);
-	char *const file2_path = alloca(strlen(dir_path) +
-			sizeof(FILE_2) + 2);
-
-	strcpy(file1_path, dir_path);
-	strcat(file1_path, "/");
-	strcat(file1_path, FILE_1);
-
-	strcpy(file2_path, dir_path);
-	strcat(file2_path, "/");
-	strcat(file2_path, FILE_2);
-
-	unlink(file1_path);
-	unlink(file2_path);
-	/* file1_path may be a directory, cf. layout1/make_directory. */
-	rmdir(file1_path);
-	rmdir(dir_path);
+	mkdir_parents(_metadata, path);
+	ASSERT_EQ(0, mknod(path, S_IFREG | 0700, 0)) {
+		TH_LOG("Failed to create file \"%s\": %s", path,
+				strerror(errno));
+	}
 }
 
-static void cleanup_layout1(struct __test_metadata *const _metadata)
+static int remove_path(const char *const path)
 {
-	delete_dir_and_file(dir_s1d3);
-	delete_dir_and_file(dir_s1d2);
-	delete_dir_and_file(dir_s1d1);
+	char *walker;
+	int i, ret, err = 0;
 
-	delete_dir_and_file(dir_s2d3);
-	delete_dir_and_file(dir_s2d2);
-	delete_dir_and_file(dir_s2d1);
+	walker = strdup(path);
+	if (!walker) {
+		err = ENOMEM;
+		goto out;
+	}
+	if (unlink(path) && rmdir(path)) {
+		if (errno != ENOENT)
+			err = errno;
+		goto out;
+	}
+	for (i = strlen(walker); i > 0; i--) {
+		if (walker[i] != '/')
+			continue;
+		walker[i] = '\0';
+		ret = rmdir(walker);
+		if (ret) {
+			if (errno != ENOTEMPTY && errno != EBUSY)
+				err = errno;
+			goto out;
+		}
+		if (strcmp(walker, TMP_DIR) == 0)
+			goto out;
+	}
 
-	delete_dir_and_file(dir_s3d3);
+out:
+	free(walker);
+	return err;
+}
+
+static void create_layout1(struct __test_metadata *const _metadata)
+{
+	/* Do not pollute the rest of the system. */
+	set_cap(_metadata, CAP_SYS_ADMIN);
+	ASSERT_EQ(0, unshare(CLONE_NEWNS));
+	clear_cap(_metadata, CAP_SYS_ADMIN);
+	umask(0077);
+
+	create_file(_metadata, file1_s1d1);
+	create_file(_metadata, file1_s1d2);
+	create_file(_metadata, file1_s1d3);
+	create_file(_metadata, file2_s1d1);
+	create_file(_metadata, file2_s1d2);
+	create_file(_metadata, file2_s1d3);
+
+	create_file(_metadata, file1_s2d1);
+	create_file(_metadata, file1_s2d2);
+	create_file(_metadata, file1_s2d3);
+	create_file(_metadata, file2_s2d3);
+
+	create_directory(_metadata, dir_s3d2);
+	set_cap(_metadata, CAP_SYS_ADMIN);
+	ASSERT_EQ(0, mount("tmp", dir_s3d2, "tmpfs", 0, "size=4m,mode=700"));
+	clear_cap(_metadata, CAP_SYS_ADMIN);
+
+	ASSERT_EQ(0, mkdir(dir_s3d3, 0700));
+}
+
+static void remove_layout1(struct __test_metadata *const _metadata)
+{
+	EXPECT_EQ(0, remove_path(file2_s1d3));
+	EXPECT_EQ(0, remove_path(file2_s1d2));
+	EXPECT_EQ(0, remove_path(file2_s1d1));
+	EXPECT_EQ(0, remove_path(file1_s1d3));
+	EXPECT_EQ(0, remove_path(file1_s1d2));
+	EXPECT_EQ(0, remove_path(file1_s1d1));
+
+	EXPECT_EQ(0, remove_path(file2_s2d3));
+	EXPECT_EQ(0, remove_path(file1_s2d3));
+	EXPECT_EQ(0, remove_path(file1_s2d2));
+	EXPECT_EQ(0, remove_path(file1_s2d1));
+
+	EXPECT_EQ(0, remove_path(dir_s3d3));
 	set_cap(_metadata, CAP_SYS_ADMIN);
 	umount(dir_s3d2);
 	clear_cap(_metadata, CAP_SYS_ADMIN);
-	delete_dir_and_file(dir_s3d2);
-	delete_dir_and_file(dir_s3d1);
+	EXPECT_EQ(0, remove_path(dir_s3d2));
 
-	delete_dir_and_file(TMP_DIR);
+	EXPECT_EQ(0, remove_path(TMP_DIR));
 }
 
 FIXTURE(layout1) {
@@ -129,36 +210,12 @@ FIXTURE(layout1) {
 FIXTURE_SETUP(layout1)
 {
 	disable_caps(_metadata);
-	cleanup_layout1(_metadata);
-
-	/* Do not pollute the rest of the system. */
-	set_cap(_metadata, CAP_SYS_ADMIN);
-	ASSERT_EQ(0, unshare(CLONE_NEWNS));
-	clear_cap(_metadata, CAP_SYS_ADMIN);
-	umask(0077);
-	create_dir_and_file(_metadata, TMP_DIR);
-
-	create_dir_and_file(_metadata, dir_s1d1);
-	create_dir_and_file(_metadata, dir_s1d2);
-	create_dir_and_file(_metadata, dir_s1d3);
-
-	create_dir_and_file(_metadata, dir_s2d1);
-	create_dir_and_file(_metadata, dir_s2d2);
-	create_dir_and_file(_metadata, dir_s2d3);
-
-	create_dir_and_file(_metadata, dir_s3d1);
-	create_dir_and_file(_metadata, dir_s3d2);
-	set_cap(_metadata, CAP_SYS_ADMIN);
-	ASSERT_EQ(0, mount("tmp", dir_s3d2, "tmpfs", 0, "size=4m,mode=700"));
-	clear_cap(_metadata, CAP_SYS_ADMIN);
-	create_dir_and_file(_metadata, dir_s3d3);
+	create_layout1(_metadata);
 }
 
 FIXTURE_TEARDOWN(layout1)
 {
-	/*
-	 * cleanup_layout1() would be denied here, use TEST(cleanup) instead.
-	 */
+	remove_layout1(_metadata);
 }
 
 /*
@@ -187,7 +244,7 @@ static int test_open(const char *const path, const int flags)
 	return test_open_rel(AT_FDCWD, path, flags);
 }
 
-TEST_F(layout1, no_restriction)
+TEST_F_FORK(layout1, no_restriction)
 {
 	ASSERT_EQ(0, test_open(dir_s1d1, O_RDONLY));
 	ASSERT_EQ(0, test_open(file1_s1d1, O_RDONLY));
@@ -210,7 +267,7 @@ TEST_F(layout1, no_restriction)
 	ASSERT_EQ(0, test_open(dir_s3d3, O_RDONLY));
 }
 
-TEST_F(layout1, inval)
+TEST_F_FORK(layout1, inval)
 {
 	struct landlock_path_beneath_attr path_beneath = {
 		.allowed_access = LANDLOCK_ACCESS_FS_READ_FILE |
@@ -288,7 +345,7 @@ TEST_F(layout1, inval)
 
 	/* Enforces the ruleset. */
 	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0));
-	ASSERT_EQ(0, landlock_enforce_ruleset_current(ruleset_fd, 0));
+	ASSERT_EQ(0, landlock_enforce_ruleset_self(ruleset_fd, 0));
 
 	ASSERT_EQ(0, close(ruleset_fd));
 }
@@ -313,7 +370,7 @@ TEST_F(layout1, inval)
 	LANDLOCK_ACCESS_FS_MAKE_BLOCK | \
 	ACCESS_LAST)
 
-TEST_F(layout1, file_access_rights)
+TEST_F_FORK(layout1, file_access_rights)
 {
 	__u64 access;
 	int err;
@@ -409,12 +466,12 @@ static void enforce_ruleset(struct __test_metadata *const _metadata,
 		const int ruleset_fd)
 {
 	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0));
-	ASSERT_EQ(0, landlock_enforce_ruleset_current(ruleset_fd, 0)) {
+	ASSERT_EQ(0, landlock_enforce_ruleset_self(ruleset_fd, 0)) {
 		TH_LOG("Failed to enforce ruleset: %s", strerror(errno));
 	}
 }
 
-TEST_F(layout1, proc_nsfs)
+TEST_F_FORK(layout1, proc_nsfs)
 {
 	const struct rule rules[] = {
 		{
@@ -475,7 +532,7 @@ static void drop_privileges(struct __test_metadata *const _metadata)
 	ASSERT_EQ(0, cap_free(caps));
 }
 
-TEST_F(layout1, unpriv) {
+TEST_F_FORK(layout1, unpriv) {
 	const struct rule rules[] = {
 		{
 			.path = dir_s1d2,
@@ -488,7 +545,7 @@ TEST_F(layout1, unpriv) {
 	drop_privileges(_metadata);
 	ruleset_fd = create_ruleset(_metadata, ACCESS_RO, rules);
 	ASSERT_LE(0, ruleset_fd);
-	ASSERT_EQ(-1, landlock_enforce_ruleset_current(ruleset_fd, 0));
+	ASSERT_EQ(-1, landlock_enforce_ruleset_self(ruleset_fd, 0));
 	ASSERT_EQ(EPERM, errno);
 
 	/* enforce_ruleset() calls prctl(no_new_privs). */
@@ -496,7 +553,7 @@ TEST_F(layout1, unpriv) {
 	ASSERT_EQ(0, close(ruleset_fd));
 }
 
-TEST_F(layout1, effective_access)
+TEST_F_FORK(layout1, effective_access)
 {
 	const struct rule rules[] = {
 		{
@@ -548,7 +605,7 @@ TEST_F(layout1, effective_access)
 	ASSERT_EQ(0, close(reg_fd));
 }
 
-TEST_F(layout1, unhandled_access)
+TEST_F_FORK(layout1, unhandled_access)
 {
 	const struct rule rules[] = {
 		{
@@ -575,7 +632,7 @@ TEST_F(layout1, unhandled_access)
 	ASSERT_EQ(0, test_open(file1_s1d2, O_RDWR));
 }
 
-TEST_F(layout1, ruleset_overlap)
+TEST_F_FORK(layout1, ruleset_overlap)
 {
 	const struct rule rules[] = {
 		/* These rules should be ORed among them. */
@@ -616,7 +673,7 @@ TEST_F(layout1, ruleset_overlap)
 	ASSERT_EQ(0, test_open(dir_s1d3, O_RDONLY | O_DIRECTORY));
 }
 
-TEST_F(layout1, interleaved_masked_accesses)
+TEST_F_FORK(layout1, interleaved_masked_accesses)
 {
 	/*
 	 * Checks overly restrictive rules:
@@ -766,7 +823,7 @@ TEST_F(layout1, interleaved_masked_accesses)
 	ASSERT_EQ(EACCES, test_open(file2_s1d3, O_RDONLY));
 }
 
-TEST_F(layout1, inherit_subset)
+TEST_F_FORK(layout1, inherit_subset)
 {
 	const struct rule rules[] = {
 		{
@@ -876,11 +933,14 @@ TEST_F(layout1, inherit_subset)
 
 	/* It is still forbidden to write in file1_s1d3. */
 	ASSERT_EQ(EACCES, test_open(file1_s1d3, O_WRONLY));
-	/* Readdir of dir_s1d3 is now forbidden too. */
-	ASSERT_EQ(EACCES, test_open(dir_s1d3, O_RDONLY | O_DIRECTORY));
+	/*
+	 * Readdir of dir_s1d3 is still allowed because of the OR policy inside
+	 * the same layer.
+	 */
+	ASSERT_EQ(0, test_open(dir_s1d3, O_RDONLY | O_DIRECTORY));
 }
 
-TEST_F(layout1, inherit_superset)
+TEST_F_FORK(layout1, inherit_superset)
 {
 	const struct rule rules[] = {
 		{
@@ -915,7 +975,7 @@ TEST_F(layout1, inherit_superset)
 	ASSERT_EQ(0, test_open(file1_s1d3, O_RDONLY));
 }
 
-TEST_F(layout1, max_layers)
+TEST_F_FORK(layout1, max_layers)
 {
 	int i, err;
 	const struct rule rules[] = {
@@ -932,14 +992,14 @@ TEST_F(layout1, max_layers)
 		enforce_ruleset(_metadata, ruleset_fd);
 
 	for (i = 0; i < 2; i++) {
-		err = landlock_enforce_ruleset_current(ruleset_fd, 0);
+		err = landlock_enforce_ruleset_self(ruleset_fd, 0);
 		ASSERT_EQ(-1, err);
 		ASSERT_EQ(E2BIG, errno);
 	}
 	ASSERT_EQ(0, close(ruleset_fd));
 }
 
-TEST_F(layout1, empty_or_same_ruleset)
+TEST_F_FORK(layout1, empty_or_same_ruleset)
 {
 	struct landlock_ruleset_attr ruleset_attr = {};
 	int ruleset_fd;
@@ -973,7 +1033,7 @@ TEST_F(layout1, empty_or_same_ruleset)
 	ASSERT_EQ(0, close(ruleset_fd));
 }
 
-TEST_F(layout1, rule_on_mountpoint)
+TEST_F_FORK(layout1, rule_on_mountpoint)
 {
 	const struct rule rules[] = {
 		{
@@ -1002,7 +1062,7 @@ TEST_F(layout1, rule_on_mountpoint)
 	ASSERT_EQ(0, test_open(dir_s3d3, O_RDONLY));
 }
 
-TEST_F(layout1, rule_over_mountpoint)
+TEST_F_FORK(layout1, rule_over_mountpoint)
 {
 	const struct rule rules[] = {
 		{
@@ -1035,7 +1095,7 @@ TEST_F(layout1, rule_over_mountpoint)
  * This test verifies that we can apply a landlock rule on the root directory
  * (which might require special handling).
  */
-TEST_F(layout1, rule_over_root_allow_then_deny)
+TEST_F_FORK(layout1, rule_over_root_allow_then_deny)
 {
 	struct rule rules[] = {
 		{
@@ -1065,7 +1125,7 @@ TEST_F(layout1, rule_over_root_allow_then_deny)
 	ASSERT_EQ(EACCES, test_open(dir_s1d1, O_RDONLY));
 }
 
-TEST_F(layout1, rule_over_root_deny)
+TEST_F_FORK(layout1, rule_over_root_deny)
 {
 	const struct rule rules[] = {
 		{
@@ -1085,7 +1145,7 @@ TEST_F(layout1, rule_over_root_deny)
 	ASSERT_EQ(EACCES, test_open(dir_s1d1, O_RDONLY));
 }
 
-TEST_F(layout1, rule_inside_mount_ns)
+TEST_F_FORK(layout1, rule_inside_mount_ns)
 {
 	const struct rule rules[] = {
 		{
@@ -1114,7 +1174,7 @@ TEST_F(layout1, rule_inside_mount_ns)
 	ASSERT_EQ(EACCES, test_open("/", O_RDONLY));
 }
 
-TEST_F(layout1, mount_and_pivot)
+TEST_F_FORK(layout1, mount_and_pivot)
 {
 	const struct rule rules[] = {
 		{
@@ -1138,7 +1198,7 @@ TEST_F(layout1, mount_and_pivot)
 	ASSERT_EQ(EPERM, errno);
 }
 
-TEST_F(layout1, move_mount)
+TEST_F_FORK(layout1, move_mount)
 {
 	const struct rule rules[] = {
 		{
@@ -1168,7 +1228,7 @@ TEST_F(layout1, move_mount)
 	ASSERT_EQ(EPERM, errno);
 }
 
-TEST_F(layout1, release_inodes)
+TEST_F_FORK(layout1, release_inodes)
 {
 	const struct rule rules[] = {
 		{
@@ -1297,22 +1357,22 @@ static void test_relative_path(struct __test_metadata *const _metadata,
 	ASSERT_EQ(0, close(ruleset_fd));
 }
 
-TEST_F(layout1, relative_open)
+TEST_F_FORK(layout1, relative_open)
 {
 	test_relative_path(_metadata, REL_OPEN);
 }
 
-TEST_F(layout1, relative_chdir)
+TEST_F_FORK(layout1, relative_chdir)
 {
 	test_relative_path(_metadata, REL_CHDIR);
 }
 
-TEST_F(layout1, relative_chroot_only)
+TEST_F_FORK(layout1, relative_chroot_only)
 {
 	test_relative_path(_metadata, REL_CHROOT_ONLY);
 }
 
-TEST_F(layout1, relative_chroot_chdir)
+TEST_F_FORK(layout1, relative_chroot_chdir)
 {
 	test_relative_path(_metadata, REL_CHROOT_CHDIR);
 }
@@ -1365,7 +1425,7 @@ static void test_execute(struct __test_metadata *const _metadata,
 	};
 }
 
-TEST_F(layout1, execute)
+TEST_F_FORK(layout1, execute)
 {
 	const struct rule rules[] = {
 		{
@@ -1390,7 +1450,7 @@ TEST_F(layout1, execute)
 	test_execute(_metadata, file1_s1d3, 0);
 }
 
-TEST_F(layout1, link)
+TEST_F_FORK(layout1, link)
 {
 	const struct rule rules[] = {
 		{
@@ -1426,7 +1486,7 @@ TEST_F(layout1, link)
 	ASSERT_EQ(0, link(file2_s1d3, file1_s1d3));
 }
 
-TEST_F(layout1, rename_file)
+TEST_F_FORK(layout1, rename_file)
 {
 	const struct rule rules[] = {
 		{
@@ -1471,7 +1531,7 @@ TEST_F(layout1, rename_file)
 	ASSERT_EQ(0, rename(file2_s1d3, file1_s1d3));
 }
 
-TEST_F(layout1, rename_dir)
+TEST_F_FORK(layout1, rename_dir)
 {
 	const struct rule rules[] = {
 		{
@@ -1507,7 +1567,7 @@ TEST_F(layout1, rename_dir)
 	ASSERT_EQ(0, rmdir(file1_s1d2));
 }
 
-TEST_F(layout1, rmdir)
+TEST_F_FORK(layout1, rmdir)
 {
 	const struct rule rules[] = {
 		{
@@ -1537,7 +1597,7 @@ TEST_F(layout1, rmdir)
 	ASSERT_EQ(EACCES, errno);
 }
 
-TEST_F(layout1, unlink)
+TEST_F_FORK(layout1, unlink)
 {
 	const struct rule rules[] = {
 		{
@@ -1592,7 +1652,7 @@ static void test_make_file(struct __test_metadata *const _metadata,
 	ASSERT_EQ(0, mknod(file1_s1d3, mode | 0400, dev));
 }
 
-TEST_F(layout1, make_char)
+TEST_F_FORK(layout1, make_char)
 {
 	/* Creates a /dev/null device. */
 	set_cap(_metadata, CAP_MKNOD);
@@ -1600,7 +1660,7 @@ TEST_F(layout1, make_char)
 			makedev(1, 3));
 }
 
-TEST_F(layout1, make_block)
+TEST_F_FORK(layout1, make_block)
 {
 	/* Creates a /dev/loop0 device. */
 	set_cap(_metadata, CAP_MKNOD);
@@ -1608,23 +1668,23 @@ TEST_F(layout1, make_block)
 			makedev(7, 0));
 }
 
-TEST_F(layout1, make_reg)
+TEST_F_FORK(layout1, make_reg)
 {
 	test_make_file(_metadata, LANDLOCK_ACCESS_FS_MAKE_REG, S_IFREG, 0);
 	test_make_file(_metadata, LANDLOCK_ACCESS_FS_MAKE_REG, 0, 0);
 }
 
-TEST_F(layout1, make_sock)
+TEST_F_FORK(layout1, make_sock)
 {
 	test_make_file(_metadata, LANDLOCK_ACCESS_FS_MAKE_SOCK, S_IFSOCK, 0);
 }
 
-TEST_F(layout1, make_fifo)
+TEST_F_FORK(layout1, make_fifo)
 {
 	test_make_file(_metadata, LANDLOCK_ACCESS_FS_MAKE_FIFO, S_IFIFO, 0);
 }
 
-TEST_F(layout1, make_sym)
+TEST_F_FORK(layout1, make_sym)
 {
 	const struct rule rules[] = {
 		{
@@ -1654,7 +1714,7 @@ TEST_F(layout1, make_sym)
 	ASSERT_EQ(0, symlink("none", file1_s1d3));
 }
 
-TEST_F(layout1, make_dir)
+TEST_F_FORK(layout1, make_dir)
 {
 	const struct rule rules[] = {
 		{
@@ -1697,7 +1757,7 @@ static int open_proc_fd(struct __test_metadata *const _metadata, const int fd,
 	return open(procfd_path, open_flags);
 }
 
-TEST_F(layout1, proc_unlinked_file)
+TEST_F_FORK(layout1, proc_unlinked_file)
 {
 	const struct rule rules[] = {
 		{
@@ -1735,7 +1795,7 @@ TEST_F(layout1, proc_unlinked_file)
 	ASSERT_EQ(0, close(reg_fd));
 }
 
-TEST_F(layout1, proc_pipe)
+TEST_F_FORK(layout1, proc_pipe)
 {
 	int proc_fd;
 	int pipe_fds[2];
@@ -1791,9 +1851,735 @@ TEST_F(layout1, proc_pipe)
 	ASSERT_EQ(0, close(pipe_fds[1]));
 }
 
-TEST(cleanup)
+static void create_layout1_bind(struct __test_metadata *const _metadata)
 {
-	cleanup_layout1(_metadata);
+	create_layout1(_metadata);
+
+	set_cap(_metadata, CAP_SYS_ADMIN);
+	ASSERT_EQ(0, mount(dir_s1d2, dir_s2d2, NULL, MS_BIND, NULL));
+	clear_cap(_metadata, CAP_SYS_ADMIN);
+}
+
+static void remove_layout1_bind(struct __test_metadata *const _metadata)
+{
+	set_cap(_metadata, CAP_SYS_ADMIN);
+	EXPECT_EQ(0, umount(dir_s2d2));
+	clear_cap(_metadata, CAP_SYS_ADMIN);
+
+	remove_layout1(_metadata);
+}
+
+FIXTURE(layout1_bind) {
+};
+
+FIXTURE_SETUP(layout1_bind)
+{
+	disable_caps(_metadata);
+	create_layout1_bind(_metadata);
+}
+
+FIXTURE_TEARDOWN(layout1_bind)
+{
+	remove_layout1_bind(_metadata);
+}
+
+static const char bind_dir_s1d3[] = TMP_DIR "/s2d1/s2d2/s1d3";
+static const char bind_file1_s1d3[] = TMP_DIR "/s2d1/s2d2/s1d3/f1";
+
+/*
+ * layout1_bind hierarchy:
+ *
+ * tmp
+ * ├── s1d1
+ * │   ├── f1
+ * │   ├── f2
+ * │   └── s1d2
+ * │       ├── f1
+ * │       ├── f2
+ * │       └── s1d3
+ * │           ├── f1
+ * │           └── f2
+ * ├── s2d1
+ * │   ├── f1
+ * │   └── s2d2
+ * │       ├── f1
+ * │       ├── f2
+ * │       └── s1d3
+ * │           ├── f1
+ * │           └── f2
+ * └── s3d1
+ *     └── s3d2
+ *         └── s3d3
+ */
+
+TEST_F_FORK(layout1_bind, no_restriction)
+{
+	ASSERT_EQ(0, test_open(dir_s1d1, O_RDONLY));
+	ASSERT_EQ(0, test_open(file1_s1d1, O_RDONLY));
+	ASSERT_EQ(0, test_open(dir_s1d2, O_RDONLY));
+	ASSERT_EQ(0, test_open(file1_s1d2, O_RDONLY));
+	ASSERT_EQ(0, test_open(dir_s1d3, O_RDONLY));
+	ASSERT_EQ(0, test_open(file1_s1d3, O_RDONLY));
+
+	ASSERT_EQ(0, test_open(dir_s2d1, O_RDONLY));
+	ASSERT_EQ(0, test_open(file1_s2d1, O_RDONLY));
+	ASSERT_EQ(0, test_open(dir_s2d2, O_RDONLY));
+	ASSERT_EQ(0, test_open(file1_s2d2, O_RDONLY));
+	ASSERT_EQ(ENOENT, test_open(dir_s2d3, O_RDONLY));
+	ASSERT_EQ(ENOENT, test_open(file1_s2d3, O_RDONLY));
+
+	ASSERT_EQ(0, test_open(bind_dir_s1d3, O_RDONLY));
+	ASSERT_EQ(0, test_open(bind_file1_s1d3, O_RDONLY));
+
+	ASSERT_EQ(0, test_open(dir_s3d1, O_RDONLY));
+}
+
+TEST_F_FORK(layout1_bind, same_content_same_file)
+{
+	/*
+	 * Sets access right on parent directories of both source and
+	 * destination mount points.
+	 */
+	const struct rule layer1_parent[] = {
+		{
+			.path = dir_s1d1,
+			.access = ACCESS_RO,
+		},
+		{
+			.path = dir_s2d1,
+			.access = ACCESS_RW,
+		},
+		{}
+	};
+	/*
+	 * Sets access rights on the same bind-mounted directories.  The result
+	 * should be ACCESS_RW for both directories, but not both hierarchies
+	 * because of the first layer.
+	 */
+	const struct rule layer2_mount_point[] = {
+		{
+			.path = dir_s1d2,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE,
+		},
+		{
+			.path = dir_s2d2,
+			.access = ACCESS_RW,
+		},
+		{}
+	};
+	/* Only allow read-access to the s1d3 hierarchies. */
+	const struct rule layer3_source[] = {
+		{
+			.path = dir_s1d3,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE,
+		},
+		{}
+	};
+	/* Removes all access rights. */
+	const struct rule layer4_destination[] = {
+		{
+			.path = bind_file1_s1d3,
+			.access = LANDLOCK_ACCESS_FS_WRITE_FILE,
+		},
+		{}
+	};
+	int ruleset_fd;
+
+	/* Sets rules for the parent directories. */
+	ruleset_fd = create_ruleset(_metadata, ACCESS_RW, layer1_parent);
+	ASSERT_LE(0, ruleset_fd);
+	enforce_ruleset(_metadata, ruleset_fd);
+	ASSERT_EQ(0, close(ruleset_fd));
+
+	/* Checks source hierarchy. */
+	ASSERT_EQ(0, test_open(file1_s1d1, O_RDONLY));
+	ASSERT_EQ(EACCES, test_open(file1_s1d1, O_WRONLY));
+	ASSERT_EQ(0, test_open(dir_s1d1, O_RDONLY | O_DIRECTORY));
+
+	ASSERT_EQ(0, test_open(file1_s1d2, O_RDONLY));
+	ASSERT_EQ(EACCES, test_open(file1_s1d2, O_WRONLY));
+	ASSERT_EQ(0, test_open(dir_s1d2, O_RDONLY | O_DIRECTORY));
+
+	/* Checks destination hierarchy. */
+	ASSERT_EQ(0, test_open(file1_s2d1, O_RDWR));
+	ASSERT_EQ(0, test_open(dir_s2d1, O_RDONLY | O_DIRECTORY));
+
+	ASSERT_EQ(0, test_open(file1_s2d2, O_RDWR));
+	ASSERT_EQ(0, test_open(dir_s2d2, O_RDONLY | O_DIRECTORY));
+
+	/* Sets rules for the mount points. */
+	ruleset_fd = create_ruleset(_metadata, ACCESS_RW, layer2_mount_point);
+	ASSERT_LE(0, ruleset_fd);
+	enforce_ruleset(_metadata, ruleset_fd);
+	ASSERT_EQ(0, close(ruleset_fd));
+
+	/* Checks source hierarchy. */
+	ASSERT_EQ(EACCES, test_open(file1_s1d1, O_RDONLY));
+	ASSERT_EQ(EACCES, test_open(file1_s1d1, O_WRONLY));
+	ASSERT_EQ(EACCES, test_open(dir_s1d1, O_RDONLY | O_DIRECTORY));
+
+	ASSERT_EQ(0, test_open(file1_s1d2, O_RDONLY));
+	ASSERT_EQ(EACCES, test_open(file1_s1d2, O_WRONLY));
+	ASSERT_EQ(0, test_open(dir_s1d2, O_RDONLY | O_DIRECTORY));
+
+	/* Checks destination hierarchy. */
+	ASSERT_EQ(EACCES, test_open(file1_s2d1, O_RDONLY));
+	ASSERT_EQ(EACCES, test_open(file1_s2d1, O_WRONLY));
+	ASSERT_EQ(EACCES, test_open(dir_s2d1, O_RDONLY | O_DIRECTORY));
+
+	ASSERT_EQ(0, test_open(file1_s2d2, O_RDWR));
+	ASSERT_EQ(0, test_open(dir_s2d2, O_RDONLY | O_DIRECTORY));
+	ASSERT_EQ(0, test_open(bind_dir_s1d3, O_RDONLY | O_DIRECTORY));
+
+	/* Sets a (shared) rule only on the source. */
+	ruleset_fd = create_ruleset(_metadata, ACCESS_RW, layer3_source);
+	ASSERT_LE(0, ruleset_fd);
+	enforce_ruleset(_metadata, ruleset_fd);
+	ASSERT_EQ(0, close(ruleset_fd));
+
+	/* Checks source hierarchy. */
+	ASSERT_EQ(EACCES, test_open(file1_s1d2, O_RDONLY));
+	ASSERT_EQ(EACCES, test_open(file1_s1d2, O_WRONLY));
+	ASSERT_EQ(EACCES, test_open(dir_s1d2, O_RDONLY | O_DIRECTORY));
+
+	ASSERT_EQ(0, test_open(file1_s1d3, O_RDONLY));
+	ASSERT_EQ(EACCES, test_open(file1_s1d3, O_WRONLY));
+	ASSERT_EQ(EACCES, test_open(dir_s1d3, O_RDONLY | O_DIRECTORY));
+
+	/* Checks destination hierarchy. */
+	ASSERT_EQ(EACCES, test_open(file1_s2d2, O_RDONLY));
+	ASSERT_EQ(EACCES, test_open(file1_s2d2, O_WRONLY));
+	ASSERT_EQ(EACCES, test_open(dir_s2d2, O_RDONLY | O_DIRECTORY));
+
+	ASSERT_EQ(0, test_open(bind_file1_s1d3, O_RDONLY));
+	ASSERT_EQ(EACCES, test_open(bind_file1_s1d3, O_WRONLY));
+	ASSERT_EQ(EACCES, test_open(bind_dir_s1d3, O_RDONLY | O_DIRECTORY));
+
+	/* Sets a (shared) rule only on the destination. */
+	ruleset_fd = create_ruleset(_metadata, ACCESS_RW, layer4_destination);
+	ASSERT_LE(0, ruleset_fd);
+	enforce_ruleset(_metadata, ruleset_fd);
+	ASSERT_EQ(0, close(ruleset_fd));
+
+	/* Checks source hierarchy. */
+	ASSERT_EQ(EACCES, test_open(file1_s1d3, O_RDONLY));
+	ASSERT_EQ(EACCES, test_open(file1_s1d3, O_WRONLY));
+
+	/* Checks destination hierarchy. */
+	ASSERT_EQ(EACCES, test_open(bind_file1_s1d3, O_RDONLY));
+	ASSERT_EQ(EACCES, test_open(bind_file1_s1d3, O_WRONLY));
+}
+
+#define LOWER_BASE	TMP_DIR "/lower"
+#define LOWER_DATA	LOWER_BASE "/data"
+static const char lower_fl1[] = LOWER_DATA "/fl1";
+static const char lower_dl1[] = LOWER_DATA "/dl1";
+static const char lower_dl1_fl2[] = LOWER_DATA "/dl1/fl2";
+static const char lower_fo1[] = LOWER_DATA "/fo1";
+static const char lower_do1[] = LOWER_DATA "/do1";
+static const char lower_do1_fo2[] = LOWER_DATA "/do1/fo2";
+static const char lower_do1_fl3[] = LOWER_DATA "/do1/fl3";
+
+static const char (*lower_base_files[])[] = {
+	&lower_fl1,
+	&lower_fo1,
+	NULL
+};
+static const char (*lower_base_directories[])[] = {
+	&lower_dl1,
+	&lower_do1,
+	NULL
+};
+static const char (*lower_sub_files[])[] = {
+	&lower_dl1_fl2,
+	&lower_do1_fo2,
+	&lower_do1_fl3,
+	NULL
+};
+
+#define UPPER_BASE	TMP_DIR "/upper"
+#define UPPER_DATA	UPPER_BASE "/data"
+#define UPPER_WORK	UPPER_BASE "/work"
+static const char upper_fu1[] = UPPER_DATA "/fu1";
+static const char upper_du1[] = UPPER_DATA "/du1";
+static const char upper_du1_fu2[] = UPPER_DATA "/du1/fu2";
+static const char upper_fo1[] = UPPER_DATA "/fo1";
+static const char upper_do1[] = UPPER_DATA "/do1";
+static const char upper_do1_fo2[] = UPPER_DATA "/do1/fo2";
+static const char upper_do1_fu3[] = UPPER_DATA "/do1/fu3";
+
+static const char (*upper_base_files[])[] = {
+	&upper_fu1,
+	&upper_fo1,
+	NULL
+};
+static const char (*upper_base_directories[])[] = {
+	&upper_du1,
+	&upper_do1,
+	NULL
+};
+static const char (*upper_sub_files[])[] = {
+	&upper_du1_fu2,
+	&upper_do1_fo2,
+	&upper_do1_fu3,
+	NULL
+};
+
+#define MERGE_BASE	TMP_DIR "/merge"
+#define MERGE_DATA	MERGE_BASE "/data"
+static const char merge_fl1[] = MERGE_DATA "/fl1";
+static const char merge_dl1[] = MERGE_DATA "/dl1";
+static const char merge_dl1_fl2[] = MERGE_DATA "/dl1/fl2";
+static const char merge_fu1[] = MERGE_DATA "/fu1";
+static const char merge_du1[] = MERGE_DATA "/du1";
+static const char merge_du1_fu2[] = MERGE_DATA "/du1/fu2";
+static const char merge_fo1[] = MERGE_DATA "/fo1";
+static const char merge_do1[] = MERGE_DATA "/do1";
+static const char merge_do1_fo2[] = MERGE_DATA "/do1/fo2";
+static const char merge_do1_fl3[] = MERGE_DATA "/do1/fl3";
+static const char merge_do1_fu3[] = MERGE_DATA "/do1/fu3";
+
+static const char (*merge_base_files[])[] = {
+	&merge_fl1,
+	&merge_fu1,
+	&merge_fo1,
+	NULL
+};
+static const char (*merge_base_directories[])[] = {
+	&merge_dl1,
+	&merge_du1,
+	&merge_do1,
+	NULL
+};
+static const char (*merge_sub_files[])[] = {
+	&merge_dl1_fl2,
+	&merge_du1_fu2,
+	&merge_do1_fo2,
+	&merge_do1_fl3,
+	&merge_do1_fu3,
+	NULL
+};
+
+/*
+ * layout2_overlay hierarchy:
+ *
+ * tmp
+ * ├── lower
+ * │   └── data
+ * │       ├── dl1
+ * │       │   └── fl2
+ * │       ├── do1
+ * │       │   ├── fl3
+ * │       │   └── fo2
+ * │       ├── fl1
+ * │       └── fo1
+ * ├── merge
+ * │   └── data
+ * │       ├── dl1
+ * │       │   └── fl2
+ * │       ├── do1
+ * │       │   ├── fl3
+ * │       │   ├── fo2
+ * │       │   └── fu3
+ * │       ├── du1
+ * │       │   └── fu2
+ * │       ├── fl1
+ * │       ├── fo1
+ * │       └── fu1
+ * └── upper
+ *     ├── data
+ *     │   ├── do1
+ *     │   │   ├── fo2
+ *     │   │   └── fu3
+ *     │   ├── du1
+ *     │   │   └── fu2
+ *     │   ├── fo1
+ *     │   └── fu1
+ *     └── work
+ *         └── work
+ */
+
+FIXTURE(layout2_overlay) {
+};
+
+FIXTURE_SETUP(layout2_overlay)
+{
+	disable_caps(_metadata);
+
+	/* Do not pollute the rest of the system. */
+	set_cap(_metadata, CAP_SYS_ADMIN);
+	ASSERT_EQ(0, unshare(CLONE_NEWNS));
+	clear_cap(_metadata, CAP_SYS_ADMIN);
+	umask(0077);
+
+	create_directory(_metadata, LOWER_BASE);
+	set_cap(_metadata, CAP_SYS_ADMIN);
+	/* Creates tmpfs mount points to get deterministic overlayfs. */
+	ASSERT_EQ(0, mount("tmp", LOWER_BASE, "tmpfs", 0, "size=4m,mode=700"));
+	clear_cap(_metadata, CAP_SYS_ADMIN);
+	create_file(_metadata, lower_fl1);
+	create_file(_metadata, lower_dl1_fl2);
+	create_file(_metadata, lower_fo1);
+	create_file(_metadata, lower_do1_fo2);
+	create_file(_metadata, lower_do1_fl3);
+
+	create_directory(_metadata, UPPER_BASE);
+	set_cap(_metadata, CAP_SYS_ADMIN);
+	ASSERT_EQ(0, mount("tmp", UPPER_BASE, "tmpfs", 0, "size=4m,mode=700"));
+	clear_cap(_metadata, CAP_SYS_ADMIN);
+	create_file(_metadata, upper_fu1);
+	create_file(_metadata, upper_du1_fu2);
+	create_file(_metadata, upper_fo1);
+	create_file(_metadata, upper_do1_fo2);
+	create_file(_metadata, upper_do1_fu3);
+	ASSERT_EQ(0, mkdir(UPPER_WORK, 0700));
+
+	create_directory(_metadata, MERGE_DATA);
+	set_cap(_metadata, CAP_SYS_ADMIN);
+	set_cap(_metadata, CAP_DAC_OVERRIDE);
+	ASSERT_EQ(0, mount("overlay", MERGE_DATA, "overlay", 0,
+				"lowerdir=" LOWER_DATA
+				",upperdir=" UPPER_DATA
+				",workdir=" UPPER_WORK));
+	clear_cap(_metadata, CAP_DAC_OVERRIDE);
+	clear_cap(_metadata, CAP_SYS_ADMIN);
+}
+
+FIXTURE_TEARDOWN(layout2_overlay)
+{
+	EXPECT_EQ(0, remove_path(lower_do1_fl3));
+	EXPECT_EQ(0, remove_path(lower_dl1_fl2));
+	EXPECT_EQ(0, remove_path(lower_fl1));
+	EXPECT_EQ(0, remove_path(lower_do1_fo2));
+	EXPECT_EQ(0, remove_path(lower_fo1));
+	set_cap(_metadata, CAP_SYS_ADMIN);
+	EXPECT_EQ(0, umount(LOWER_BASE));
+	clear_cap(_metadata, CAP_SYS_ADMIN);
+	EXPECT_EQ(0, remove_path(LOWER_BASE));
+
+	EXPECT_EQ(0, remove_path(upper_do1_fu3));
+	EXPECT_EQ(0, remove_path(upper_du1_fu2));
+	EXPECT_EQ(0, remove_path(upper_fu1));
+	EXPECT_EQ(0, remove_path(upper_do1_fo2));
+	EXPECT_EQ(0, remove_path(upper_fo1));
+	EXPECT_EQ(0, remove_path(UPPER_WORK "/work"));
+	set_cap(_metadata, CAP_SYS_ADMIN);
+	EXPECT_EQ(0, umount(UPPER_BASE));
+	clear_cap(_metadata, CAP_SYS_ADMIN);
+	EXPECT_EQ(0, remove_path(UPPER_BASE));
+
+	set_cap(_metadata, CAP_SYS_ADMIN);
+	EXPECT_EQ(0, umount(MERGE_DATA));
+	clear_cap(_metadata, CAP_SYS_ADMIN);
+	EXPECT_EQ(0, remove_path(MERGE_DATA));
+
+	EXPECT_EQ(0, remove_path(TMP_DIR));
+}
+
+TEST_F_FORK(layout2_overlay, no_restriction)
+{
+	ASSERT_EQ(0, test_open(lower_fl1, O_RDONLY));
+	ASSERT_EQ(0, test_open(lower_dl1, O_RDONLY));
+	ASSERT_EQ(0, test_open(lower_dl1_fl2, O_RDONLY));
+	ASSERT_EQ(0, test_open(lower_fo1, O_RDONLY));
+	ASSERT_EQ(0, test_open(lower_do1, O_RDONLY));
+	ASSERT_EQ(0, test_open(lower_do1_fo2, O_RDONLY));
+	ASSERT_EQ(0, test_open(lower_do1_fl3, O_RDONLY));
+
+	ASSERT_EQ(0, test_open(upper_fu1, O_RDONLY));
+	ASSERT_EQ(0, test_open(upper_du1, O_RDONLY));
+	ASSERT_EQ(0, test_open(upper_du1_fu2, O_RDONLY));
+	ASSERT_EQ(0, test_open(upper_fo1, O_RDONLY));
+	ASSERT_EQ(0, test_open(upper_do1, O_RDONLY));
+	ASSERT_EQ(0, test_open(upper_do1_fo2, O_RDONLY));
+	ASSERT_EQ(0, test_open(upper_do1_fu3, O_RDONLY));
+
+	ASSERT_EQ(0, test_open(merge_fl1, O_RDONLY));
+	ASSERT_EQ(0, test_open(merge_dl1, O_RDONLY));
+	ASSERT_EQ(0, test_open(merge_dl1_fl2, O_RDONLY));
+	ASSERT_EQ(0, test_open(merge_fu1, O_RDONLY));
+	ASSERT_EQ(0, test_open(merge_du1, O_RDONLY));
+	ASSERT_EQ(0, test_open(merge_du1_fu2, O_RDONLY));
+	ASSERT_EQ(0, test_open(merge_fo1, O_RDONLY));
+	ASSERT_EQ(0, test_open(merge_do1, O_RDONLY));
+	ASSERT_EQ(0, test_open(merge_do1_fo2, O_RDONLY));
+	ASSERT_EQ(0, test_open(merge_do1_fl3, O_RDONLY));
+	ASSERT_EQ(0, test_open(merge_do1_fu3, O_RDONLY));
+}
+
+#define for_each_path(path_list, path_entry, i)			\
+	for (i = 0, path_entry = *path_list[i]; path_list[i];	\
+			path_entry = *path_list[++i])
+
+TEST_F_FORK(layout2_overlay, same_content_different_file)
+{
+	/* Sets access right on parent directories of both layers. */
+	const struct rule layer1_base[] = {
+		{
+			.path = LOWER_BASE,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE,
+		},
+		{
+			.path = UPPER_BASE,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE,
+		},
+		{
+			.path = MERGE_BASE,
+			.access = ACCESS_RW,
+		},
+		{}
+	};
+	const struct rule layer2_data[] = {
+		{
+			.path = LOWER_DATA,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE,
+		},
+		{
+			.path = UPPER_DATA,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE,
+		},
+		{
+			.path = MERGE_DATA,
+			.access = ACCESS_RW,
+		},
+		{}
+	};
+	/* Sets access right on directories inside both layers. */
+	const struct rule layer3_subdirs[] = {
+		{
+			.path = lower_dl1,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE,
+		},
+		{
+			.path = lower_do1,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE,
+		},
+		{
+			.path = upper_du1,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE,
+		},
+		{
+			.path = upper_do1,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE,
+		},
+		{
+			.path = merge_dl1,
+			.access = ACCESS_RW,
+		},
+		{
+			.path = merge_du1,
+			.access = ACCESS_RW,
+		},
+		{
+			.path = merge_do1,
+			.access = ACCESS_RW,
+		},
+		{}
+	};
+	/* Tighten access rights to the files. */
+	const struct rule layer4_files[] = {
+		{
+			.path = lower_dl1_fl2,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE,
+		},
+		{
+			.path = lower_do1_fo2,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE,
+		},
+		{
+			.path = lower_do1_fl3,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE,
+		},
+		{
+			.path = upper_du1_fu2,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE,
+		},
+		{
+			.path = upper_do1_fo2,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE,
+		},
+		{
+			.path = upper_do1_fu3,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE,
+		},
+		{
+			.path = merge_dl1_fl2,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE |
+				LANDLOCK_ACCESS_FS_WRITE_FILE,
+		},
+		{
+			.path = merge_du1_fu2,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE |
+				LANDLOCK_ACCESS_FS_WRITE_FILE,
+		},
+		{
+			.path = merge_do1_fo2,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE |
+				LANDLOCK_ACCESS_FS_WRITE_FILE,
+		},
+		{
+			.path = merge_do1_fl3,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE |
+				LANDLOCK_ACCESS_FS_WRITE_FILE,
+		},
+		{
+			.path = merge_do1_fu3,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE |
+				LANDLOCK_ACCESS_FS_WRITE_FILE,
+		},
+		{}
+	};
+	const struct rule layer5_merge_only[] = {
+		{
+			.path = MERGE_DATA,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE |
+				LANDLOCK_ACCESS_FS_WRITE_FILE,
+		},
+		{}
+	};
+	int ruleset_fd;
+	size_t i;
+	const char *path_entry;
+
+	/* Sets rules on base directories (i.e. outside overlay scope). */
+	ruleset_fd = create_ruleset(_metadata, ACCESS_RW, layer1_base);
+	ASSERT_LE(0, ruleset_fd);
+	enforce_ruleset(_metadata, ruleset_fd);
+	ASSERT_EQ(0, close(ruleset_fd));
+
+	/* Checks lower layer. */
+	for_each_path(lower_base_files, path_entry, i) {
+		ASSERT_EQ(0, test_open(path_entry, O_RDONLY));
+		ASSERT_EQ(EACCES, test_open(path_entry, O_WRONLY));
+	}
+	for_each_path(lower_base_directories, path_entry, i) {
+		ASSERT_EQ(EACCES, test_open(path_entry, O_RDONLY | O_DIRECTORY));
+	}
+	for_each_path(lower_sub_files, path_entry, i) {
+		ASSERT_EQ(0, test_open(path_entry, O_RDONLY));
+		ASSERT_EQ(EACCES, test_open(path_entry, O_WRONLY));
+	}
+	/* Checks upper layer. */
+	for_each_path(upper_base_files, path_entry, i) {
+		ASSERT_EQ(0, test_open(path_entry, O_RDONLY));
+		ASSERT_EQ(EACCES, test_open(path_entry, O_WRONLY));
+	}
+	for_each_path(upper_base_directories, path_entry, i) {
+		ASSERT_EQ(EACCES, test_open(path_entry, O_RDONLY | O_DIRECTORY));
+	}
+	for_each_path(upper_sub_files, path_entry, i) {
+		ASSERT_EQ(0, test_open(path_entry, O_RDONLY));
+		ASSERT_EQ(EACCES, test_open(path_entry, O_WRONLY));
+	}
+	/*
+	 * Checks that access rights are independent from the lower and upper
+	 * layers: write access to upper files viewed through the merge point
+	 * is still allowed, and write access to lower file viewed (and copied)
+	 * through the merge point is still allowed.
+	 */
+	for_each_path(merge_base_files, path_entry, i) {
+		ASSERT_EQ(0, test_open(path_entry, O_RDWR));
+	}
+	for_each_path(merge_base_directories, path_entry, i) {
+		ASSERT_EQ(0, test_open(path_entry, O_RDONLY | O_DIRECTORY));
+	}
+	for_each_path(merge_sub_files, path_entry, i) {
+		ASSERT_EQ(0, test_open(path_entry, O_RDWR));
+	}
+
+	/* Sets rules on data directories (i.e. inside overlay scope). */
+	ruleset_fd = create_ruleset(_metadata, ACCESS_RW, layer2_data);
+	ASSERT_LE(0, ruleset_fd);
+	enforce_ruleset(_metadata, ruleset_fd);
+	ASSERT_EQ(0, close(ruleset_fd));
+
+	/* Checks merge. */
+	for_each_path(merge_base_files, path_entry, i) {
+		ASSERT_EQ(0, test_open(path_entry, O_RDWR));
+	}
+	for_each_path(merge_base_directories, path_entry, i) {
+		ASSERT_EQ(0, test_open(path_entry, O_RDONLY | O_DIRECTORY));
+	}
+	for_each_path(merge_sub_files, path_entry, i) {
+		ASSERT_EQ(0, test_open(path_entry, O_RDWR));
+	}
+
+	/* Same checks with tighter rules. */
+	ruleset_fd = create_ruleset(_metadata, ACCESS_RW, layer3_subdirs);
+	ASSERT_LE(0, ruleset_fd);
+	enforce_ruleset(_metadata, ruleset_fd);
+	ASSERT_EQ(0, close(ruleset_fd));
+
+	/* Checks changes for lower layer. */
+	for_each_path(lower_base_files, path_entry, i) {
+		ASSERT_EQ(EACCES, test_open(path_entry, O_RDONLY));
+	}
+	/* Checks changes for upper layer. */
+	for_each_path(upper_base_files, path_entry, i) {
+		ASSERT_EQ(EACCES, test_open(path_entry, O_RDONLY));
+	}
+	/* Checks all merge accesses. */
+	for_each_path(merge_base_files, path_entry, i) {
+		ASSERT_EQ(EACCES, test_open(path_entry, O_RDWR));
+	}
+	for_each_path(merge_base_directories, path_entry, i) {
+		ASSERT_EQ(0, test_open(path_entry, O_RDONLY | O_DIRECTORY));
+	}
+	for_each_path(merge_sub_files, path_entry, i) {
+		ASSERT_EQ(0, test_open(path_entry, O_RDWR));
+	}
+
+	/* Sets rules directly on overlayed files. */
+	ruleset_fd = create_ruleset(_metadata, ACCESS_RW, layer4_files);
+	ASSERT_LE(0, ruleset_fd);
+	enforce_ruleset(_metadata, ruleset_fd);
+	ASSERT_EQ(0, close(ruleset_fd));
+
+	/* Checks unchanged accesses on lower layer. */
+	for_each_path(lower_sub_files, path_entry, i) {
+		ASSERT_EQ(0, test_open(path_entry, O_RDONLY));
+		ASSERT_EQ(EACCES, test_open(path_entry, O_WRONLY));
+	}
+	/* Checks unchanged accesses on upper layer. */
+	for_each_path(upper_sub_files, path_entry, i) {
+		ASSERT_EQ(0, test_open(path_entry, O_RDONLY));
+		ASSERT_EQ(EACCES, test_open(path_entry, O_WRONLY));
+	}
+	/* Checks all merge accesses. */
+	for_each_path(merge_base_files, path_entry, i) {
+		ASSERT_EQ(EACCES, test_open(path_entry, O_RDWR));
+	}
+	for_each_path(merge_base_directories, path_entry, i) {
+		ASSERT_EQ(EACCES, test_open(path_entry, O_RDONLY | O_DIRECTORY));
+	}
+	for_each_path(merge_sub_files, path_entry, i) {
+		ASSERT_EQ(0, test_open(path_entry, O_RDWR));
+	}
+
+	/* Only allowes access to the merge hierarchy. */
+	ruleset_fd = create_ruleset(_metadata, ACCESS_RW, layer5_merge_only);
+	ASSERT_LE(0, ruleset_fd);
+	enforce_ruleset(_metadata, ruleset_fd);
+	ASSERT_EQ(0, close(ruleset_fd));
+
+	/* Checks new accesses on lower layer. */
+	for_each_path(lower_sub_files, path_entry, i) {
+		ASSERT_EQ(EACCES, test_open(path_entry, O_RDONLY));
+	}
+	/* Checks new accesses on upper layer. */
+	for_each_path(upper_sub_files, path_entry, i) {
+		ASSERT_EQ(EACCES, test_open(path_entry, O_RDONLY));
+	}
+	/* Checks all merge accesses. */
+	for_each_path(merge_base_files, path_entry, i) {
+		ASSERT_EQ(EACCES, test_open(path_entry, O_RDWR));
+	}
+	for_each_path(merge_base_directories, path_entry, i) {
+		ASSERT_EQ(EACCES, test_open(path_entry, O_RDONLY | O_DIRECTORY));
+	}
+	for_each_path(merge_sub_files, path_entry, i) {
+		ASSERT_EQ(0, test_open(path_entry, O_RDWR));
+	}
 }
 
 TEST_HARNESS_MAIN

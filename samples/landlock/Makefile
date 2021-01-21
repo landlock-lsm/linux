@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
-hostprogs := sandboxer
+userprogs-always-y := sandboxer
 
-always-y := $(hostprogs)
-
-KBUILD_HOSTCFLAGS += -I$(objtree)/usr/include
+userccflags += -I usr/include
 
 .PHONY: all clean
 

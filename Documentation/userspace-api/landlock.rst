@@ -7,7 +7,7 @@ Landlock: unprivileged access control
 =====================================
 
 :Author: Mickaël Salaün
-:Date: December 2020
+:Date: January 2021
 
 The goal of Landlock is to enable to restrict ambient rights (e.g. global
 filesystem access) for a set of processes.  Because Landlock is a stackable
@@ -29,9 +29,9 @@ Defining and enforcing a security policy
 ----------------------------------------
 
 We first need to create the ruleset that will contain our rules.  For this
-example, the ruleset will contain rules which only allow read actions, but
-write actions will be denied.  The ruleset then needs to handle both of these
-kind of actions.
+example, the ruleset will contain rules that only allow read actions, but write
+actions will be denied.  The ruleset then needs to handle both of these kind of
+actions.
 
 .. code-block:: c
 
@@ -108,21 +108,59 @@ The current thread is now ready to sandbox itself with the ruleset.
 
 .. code-block:: c
 
-    if (landlock_enforce_ruleset_current(ruleset_fd, 0)) {
+    if (landlock_enforce_ruleset_self(ruleset_fd, 0)) {
         perror("Failed to enforce ruleset");
         close(ruleset_fd);
         return 1;
     }
     close(ruleset_fd);
 
-If the `landlock_enforce_ruleset_current` system call succeeds, the current
-thread is now restricted and this policy will be enforced on all its
-subsequently created children as well.  Once a thread is landlocked, there is
-no way to remove its security policy; only adding more restrictions is allowed.
-These threads are now in a new Landlock domain, merge of their parent one (if
-any) with the new ruleset.
+If the `landlock_enforce_ruleset_self` system call succeeds, the current thread
+is now restricted and this policy will be enforced on all its subsequently
+created children as well.  Once a thread is landlocked, there is no way to
+remove its security policy; only adding more restrictions is allowed.  These
+threads are now in a new Landlock domain, merge of their parent one (if any)
+with the new ruleset.
 
 Full working code can be found in `samples/landlock/sandboxer.c`_.
+
+Layers of file path access rights
+---------------------------------
+
+Each time a thread enforces a ruleset on itself, it updates its Landlock domain
+with a new layer of policy.  Indeed, this complementary policy is stacked with
+the potentially other rulesets already restricting this thread.  A sandboxed
+thread can then safely add more constraints to itself with a new enforced
+ruleset.
+
+One policy layer grants access to a file path if at least one of its rules
+encountered on the path grants the access.  A sandboxed thread can only access
+a file path if all its enforced policy layers grant the access as well as all
+the other system access controls (e.g. filesystem DAC, other LSM policies,
+etc.).
+
+Bind mounts and OverlayFS
+-------------------------
+
+Landlock enables to restrict access to file hierarchies, which means that these
+access rights can be propagated with bind mounts (cf.
+:doc:`/filesystems/sharedsubtree`) but not with :doc:`/filesystems/overlayfs`.
+
+A bind mount mirrors a source file hierarchy to a destination.  The destination
+hierarchy is then composed of the exact same files, on which Landlock rules can
+be tied, either via the source or the destination path.  These rules restrict
+access when they are encountered on a path, which means that they can restrict
+access to multiple file hierarchies at the same time, whether these hierarchies
+are the result of bind mounts or not.
+
+An OverlayFS mount point consists of upper and lower layers.  These layers are
+combined in a merge directory, result of the mount point.  This merge hierarchy
+may include files from the upper and lower layers, but modifications performed
+on the merge hierarchy only reflects on the upper layer.  From a Landlock
+policy point of view, each OverlayFS layers and merge hierarchies are
+standalone and contains their own set of files and directories, which is
+different from bind mounts.  A policy restricting an OverlayFS layer will not
+restrict the resulted merged hierarchy, and vice versa.
 
 Inheritance
 -----------
@@ -140,11 +178,6 @@ policy will stay enforced on all this thread's descendants.  This allows
 creating standalone and modular security policies per application, which will
 automatically be composed between themselves according to their runtime parent
 policies.
-
-A sandboxed thread can add more constraints to itself with a new enforced
-ruleset.  This complementary policy inherits from the previous enforced
-rulesets.  Access to a file path is granted if, for each policy layer, at least
-one rule encountered on the path (from the file to the root) grants the access.
 
 Ptrace restrictions
 -------------------
@@ -167,7 +200,7 @@ Access rights
 Creating a new ruleset
 ----------------------
 
-.. kernel-doc:: security/landlock/syscall.c
+.. kernel-doc:: security/landlock/syscalls.c
     :identifiers: sys_landlock_create_ruleset
 
 .. kernel-doc:: include/uapi/linux/landlock.h
@@ -176,7 +209,7 @@ Creating a new ruleset
 Extending a ruleset
 -------------------
 
-.. kernel-doc:: security/landlock/syscall.c
+.. kernel-doc:: security/landlock/syscalls.c
     :identifiers: sys_landlock_add_rule
 
 .. kernel-doc:: include/uapi/linux/landlock.h
@@ -185,8 +218,8 @@ Extending a ruleset
 Enforcing a ruleset
 -------------------
 
-.. kernel-doc:: security/landlock/syscall.c
-    :identifiers: sys_landlock_enforce_ruleset_current
+.. kernel-doc:: security/landlock/syscalls.c
+    :identifiers: sys_landlock_enforce_ruleset_self
 
 Current limitations
 ===================
@@ -196,10 +229,10 @@ Ruleset layers
 
 There is a limit of 64 layers of stacked rulesets.  This can be an issue for a
 task willing to enforce a new ruleset in complement to its 64 inherited
-rulesets.  Once this limit is reached, sys_landlock_enforce_ruleset_current()
+rulesets.  Once this limit is reached, sys_landlock_enforce_ruleset_self()
 returns E2BIG.  It is then strongly suggested to carefully build rulesets once
 in the life of a thread, especially for applications able to launch other
-applications which may also want to sandbox themselves (e.g. shells, container
+applications that may also want to sandbox themselves (e.g. shells, container
 managers, etc.).
 
 Memory usage
@@ -216,38 +249,31 @@ handle composition of rules.  Such property also implies rules nesting.
 Properly handling multiple layers of ruleset, each one of them able to restrict
 access to files, also implies to inherit the ruleset restrictions from a parent
 to its hierarchy.  Because files are identified and restricted by their
-hierarchy, moving or linking a file from one directory to another imply to
+hierarchy, moving or linking a file from one directory to another implies to
 propagate the hierarchy constraints.  To protect against privilege escalations
 through renaming or linking, and for the sack of simplicity, Landlock currently
 limits linking and renaming to the same directory.  Future Landlock evolutions
 will enable more flexibility for renaming and linking, with dedicated ruleset
 flags.
 
-OverlayFS
----------
+Filesystem layout modification
+------------------------------
 
-An OverlayFS mount point consists of upper and lower layers.  It is currently
-not possible to reliably infer which underlying file hierarchy matches an
-OverlayFS path composed of such layers.  It is then not currently possible to
-track the source of an indirect access request, and then not possible to
-properly identify and allow an unified OverlayFS hierarchy.  Restricting files
-in an OverlayFS mount point works, but files allowed in one layer may not be
-allowed in a related OverlayFS mount point.  A future Landlock evolution will
-make possible to properly work with OverlayFS, according to a dedicated ruleset
-flag.
-
+As for file renaming and linking, a sandboxed thread cannot modify its
+filesystem layout, whether via :manpage:`mount(2)` or :manpage:`pivot_root(2)`.
+However, :manpage:`chroot(2)` calls are not denied.
 
 Special filesystems
 -------------------
 
 Access to regular files and directories can be restricted by Landlock,
-according to the handled accesses of a ruleset.  However, files which do not
+according to the handled accesses of a ruleset.  However, files that do not
 come from a user-visible filesystem (e.g. pipe, socket), but can still be
 accessed through /proc/self/fd/, cannot currently be restricted.  Likewise,
-some special kernel filesystems such as nsfs which can be accessed through
+some special kernel filesystems such as nsfs, which can be accessed through
 /proc/self/ns/, cannot currently be restricted.  For now, these kind of special
 paths are then always allowed.  Future Landlock evolutions will enable to
-restrict such paths, with dedicated ruleset flags.
+restrict such paths with dedicated ruleset flags.
 
 Questions and answers
 =====================

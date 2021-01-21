@@ -31,7 +31,7 @@ struct landlock_object_underops {
  *
  * The goal of this structure is to enable to tie a set of ephemeral access
  * rights (pertaining to different domains) to a kernel object (e.g an inode)
- * in a safe way.  This imply to handle concurrent use and modification.
+ * in a safe way.  This implies to handle concurrent use and modification.
  *
  * The lifetime of a &struct landlock_object depends of the rules referring to
  * it.

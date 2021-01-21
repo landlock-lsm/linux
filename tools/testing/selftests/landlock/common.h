@@ -4,18 +4,73 @@
  *
  * Copyright © 2017-2020 Mickaël Salaün <mic@digikod.net>
  * Copyright © 2019-2020 ANSSI
+ * Copyright © 2021 Microsoft Corporation
  */
 
 #include <errno.h>
 #include <linux/landlock.h>
 #include <sys/capability.h>
 #include <sys/syscall.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "../kselftest_harness.h"
 
 #ifndef ARRAY_SIZE
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 #endif
+
+/*
+ * TEST_F_FORK() is useful when a test drop privileges but the corresponding
+ * FIXTURE_TEARDOWN() requires them (e.g. to remove files from a directory
+ * where write actions are denied).  For convenience, FIXTURE_TEARDOWN() is
+ * also called when the test failed, but not when FIXTURE_SETUP() failed.
+ */
+#define TEST_F_FORK(fixture_name, test_name) \
+	static void fixture_name##_##test_name##_child( \
+		struct __test_metadata *_metadata, \
+		FIXTURE_DATA(fixture_name) *self, \
+		const FIXTURE_VARIANT(fixture_name) *variant); \
+	TEST_F(fixture_name, test_name) \
+	{ \
+		int status; \
+		const pid_t child = fork(); \
+		if (child < 0) \
+			abort(); \
+		if (child == 0) { \
+			fixture_name##_##test_name##_child(_metadata, self, variant); \
+			if (_metadata->skip) \
+				_exit(255); \
+			if (_metadata->passed) \
+				_exit(0); \
+			_exit(_metadata->step); \
+		} \
+		if (child != waitpid(child, &status, 0)) \
+			abort(); \
+		if (WIFSIGNALED(status) || !WIFEXITED(status)) { \
+			_metadata->passed = 0; \
+			return; \
+		} \
+		switch (WEXITSTATUS(status)) { \
+		case 0: \
+			_metadata->passed = 1; \
+			break; \
+		case 255: \
+			_metadata->passed = 1; \
+			_metadata->skip = 1; \
+			break; \
+		default: \
+			_metadata->passed = 0; \
+			_metadata->step = WEXITSTATUS(status); \
+			break; \
+		} \
+	} \
+	static void fixture_name##_##test_name##_child( \
+		struct __test_metadata __attribute__((unused)) *_metadata, \
+		FIXTURE_DATA(fixture_name) __attribute__((unused)) *self, \
+		const FIXTURE_VARIANT(fixture_name) \
+			__attribute__((unused)) *variant)
 
 #ifndef landlock_create_ruleset
 static inline int landlock_create_ruleset(
@@ -36,11 +91,11 @@ static inline int landlock_add_rule(const int ruleset_fd,
 }
 #endif
 
-#ifndef landlock_enforce_ruleset_current
-static inline int landlock_enforce_ruleset_current(const int ruleset_fd,
+#ifndef landlock_enforce_ruleset_self
+static inline int landlock_enforce_ruleset_self(const int ruleset_fd,
 		const __u32 flags)
 {
-	return syscall(__NR_landlock_enforce_ruleset_current, ruleset_fd,
+	return syscall(__NR_landlock_enforce_ruleset_self, ruleset_fd,
 			flags);
 }
 #endif
@@ -50,26 +105,27 @@ static void disable_caps(struct __test_metadata *const _metadata)
 	cap_t cap_p;
 	/* Only these three capabilities are useful for the tests. */
 	const cap_value_t caps[] = {
+		CAP_DAC_OVERRIDE,
 		CAP_MKNOD,
 		CAP_SYS_ADMIN,
 		CAP_SYS_CHROOT,
 	};
 
 	cap_p = cap_get_proc();
-	ASSERT_NE(NULL, cap_p) {
+	EXPECT_NE(NULL, cap_p) {
 		TH_LOG("Failed to cap_get_proc: %s", strerror(errno));
 	}
-	ASSERT_NE(-1, cap_clear(cap_p)) {
+	EXPECT_NE(-1, cap_clear(cap_p)) {
 		TH_LOG("Failed to cap_clear: %s", strerror(errno));
 	}
-	ASSERT_NE(-1, cap_set_flag(cap_p, CAP_PERMITTED, ARRAY_SIZE(caps),
+	EXPECT_NE(-1, cap_set_flag(cap_p, CAP_PERMITTED, ARRAY_SIZE(caps),
 				caps, CAP_SET)) {
 		TH_LOG("Failed to cap_set_flag: %s", strerror(errno));
 	}
-	ASSERT_NE(-1, cap_set_proc(cap_p)) {
+	EXPECT_NE(-1, cap_set_proc(cap_p)) {
 		TH_LOG("Failed to cap_set_proc: %s", strerror(errno));
 	}
-	ASSERT_NE(-1, cap_free(cap_p)) {
+	EXPECT_NE(-1, cap_free(cap_p)) {
 		TH_LOG("Failed to cap_free: %s", strerror(errno));
 	}
 }
@@ -80,16 +136,16 @@ static void effective_cap(struct __test_metadata *const _metadata,
 	cap_t cap_p;
 
 	cap_p = cap_get_proc();
-	ASSERT_NE(NULL, cap_p) {
+	EXPECT_NE(NULL, cap_p) {
 		TH_LOG("Failed to cap_get_proc: %s", strerror(errno));
 	}
-	ASSERT_NE(-1, cap_set_flag(cap_p, CAP_EFFECTIVE, 1, &caps, value)) {
+	EXPECT_NE(-1, cap_set_flag(cap_p, CAP_EFFECTIVE, 1, &caps, value)) {
 		TH_LOG("Failed to cap_set_flag: %s", strerror(errno));
 	}
-	ASSERT_NE(-1, cap_set_proc(cap_p)) {
+	EXPECT_NE(-1, cap_set_proc(cap_p)) {
 		TH_LOG("Failed to cap_set_proc: %s", strerror(errno));
 	}
-	ASSERT_NE(-1, cap_free(cap_p)) {
+	EXPECT_NE(-1, cap_free(cap_p)) {
 		TH_LOG("Failed to cap_free: %s", strerror(errno));
 	}
 }

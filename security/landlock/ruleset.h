@@ -117,7 +117,7 @@ struct landlock_ruleset {
 			 */
 			u32 num_rules;
 			/**
-			 * @num_layers: Number of layers which are used in this
+			 * @num_layers: Number of layers that are used in this
 			 * ruleset.  This enables to check that all the layers
 			 * allow an access request.  A value of 0 identifies a
 			 * non-merged ruleset (i.e. not a domain).
@@ -125,7 +125,7 @@ struct landlock_ruleset {
 			u32 num_layers;
 			/**
 			 * @fs_access_mask: Contains the subset of filesystem
-			 * actions which are restricted by a ruleset.  This is
+			 * actions that are restricted by a ruleset.  This is
 			 * used when merging rulesets and for user space
 			 * backward compatibility (i.e. future-proof).  Set
 			 * once and never changed for the lifetime of the

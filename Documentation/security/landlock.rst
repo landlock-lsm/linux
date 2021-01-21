@@ -7,7 +7,7 @@ Landlock LSM: kernel documentation
 ==================================
 
 :Author: Mickaël Salaün
-:Date: December 2020
+:Date: January 2021
 
 Landlock's goal is to create scoped access-control (i.e. sandboxing).  To
 harden a whole system, this feature should be available to any process,
@@ -65,7 +65,7 @@ duplicated and the ruleset is imported as a new layer of rules in the new
 domain.  Indeed, once in a domain, each rule is tied to a layer level.  To
 grant access to an object, at least one rule of each layer must allow the
 requested action on the object.  A task can then only transit to a new domain
-which is the intersection of the constraints from the current domain and those
+that is the intersection of the constraints from the current domain and those
 of a ruleset provided by the task.
 
 The definition of a subject is implicit for a task sandboxing itself, which
