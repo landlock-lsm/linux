@@ -24,21 +24,22 @@
 #include "object.h"
 #include "ruleset.h"
 
-static struct landlock_ruleset *create_ruleset(void)
+static struct landlock_ruleset *create_ruleset(const u32 num_layers)
 {
 	struct landlock_ruleset *new_ruleset;
 
-	new_ruleset = kzalloc(sizeof(*new_ruleset), GFP_KERNEL_ACCOUNT);
+	new_ruleset = kzalloc(struct_size(new_ruleset, fs_access_masks,
+				num_layers), GFP_KERNEL_ACCOUNT);
 	if (!new_ruleset)
 		return ERR_PTR(-ENOMEM);
 	refcount_set(&new_ruleset->usage, 1);
 	mutex_init(&new_ruleset->lock);
 	new_ruleset->root = RB_ROOT;
+	new_ruleset->num_layers = num_layers;
 	/*
 	 * hierarchy = NULL
 	 * num_rules = 0
-	 * num_layers = 0
-	 * fs_access_mask = 0
+	 * fs_access_masks[] = 0
 	 */
 	return new_ruleset;
 }
@@ -50,9 +51,9 @@ struct landlock_ruleset *landlock_create_ruleset(const u32 fs_access_mask)
 	/* Informs about useless ruleset. */
 	if (!fs_access_mask)
 		return ERR_PTR(-ENOMSG);
-	new_ruleset = create_ruleset();
+	new_ruleset = create_ruleset(1);
 	if (!IS_ERR(new_ruleset))
-		new_ruleset->fs_access_mask = fs_access_mask;
+		new_ruleset->fs_access_masks[0] = fs_access_mask;
 	return new_ruleset;
 }
 
@@ -72,14 +73,16 @@ static struct landlock_rule *create_rule(
 		const struct landlock_layer *const new_layer)
 {
 	struct landlock_rule *new_rule;
-	u32 new_num_layers = num_layers;
+	u32 new_num_layers;
 
 	build_check_rule();
 	if (new_layer) {
-		/* Should already be checked by merge_ruleset(). */
-		if (WARN_ON_ONCE(num_layers == LANDLOCK_MAX_NUM_LAYERS))
+		/* Should already be checked by landlock_merge_ruleset(). */
+		if (WARN_ON_ONCE(num_layers >= LANDLOCK_MAX_NUM_LAYERS))
 			return ERR_PTR(-E2BIG);
-		new_num_layers++;
+		new_num_layers = num_layers + 1;
+	} else {
+		new_num_layers = num_layers;
 	}
 	new_rule = kzalloc(struct_size(new_rule, layers, new_num_layers),
 			GFP_KERNEL_ACCOUNT);
@@ -89,12 +92,12 @@ static struct landlock_rule *create_rule(
 	landlock_get_object(object);
 	new_rule->object = object;
 	new_rule->num_layers = new_num_layers;
-	if (new_layer)
-		/* Push a copy of @new_layer on the layer stack. */
-		new_rule->layers[0] = *new_layer;
 	/* Copies the original layer stack. */
-	memcpy(&new_rule->layers[new_layer ? 1 : 0], layers,
+	memcpy(new_rule->layers, layers,
 			flex_array_size(new_rule, layers, num_layers));
+	if (new_layer)
+		/* Adds a copy of @new_layer on the layer stack. */
+		new_rule->layers[new_rule->num_layers - 1] = *new_layer;
 	return new_rule;
 }
 
@@ -112,12 +115,12 @@ static void build_check_ruleset(void)
 	const struct landlock_ruleset ruleset = {
 		.num_rules = ~0,
 		.num_layers = ~0,
-		.fs_access_mask = ~0,
 	};
+	typeof(ruleset.fs_access_masks[0]) fs_access_mask = ~0;
 
 	BUILD_BUG_ON(ruleset.num_rules < LANDLOCK_MAX_NUM_RULES);
 	BUILD_BUG_ON(ruleset.num_layers < LANDLOCK_MAX_NUM_LAYERS);
-	BUILD_BUG_ON(ruleset.fs_access_mask < LANDLOCK_MASK_ACCESS_FS);
+	BUILD_BUG_ON(fs_access_mask < LANDLOCK_MASK_ACCESS_FS);
 }
 
 /**
@@ -128,7 +131,7 @@ static void build_check_ruleset(void)
  *          object must be held by the caller.
  * @layers: One or multiple layers to be copied into the new rule.
  * @num_layers: The number of @layers entries.
-
+ *
  * When user space requests to add a new rule to a ruleset, @layers only
  * contains one entry and this entry is not assigned to any level.  In this
  * case, the new rule will extend @ruleset, similarly to a boolean OR between
@@ -201,7 +204,7 @@ static int insert_rule(struct landlock_ruleset *const ruleset,
 
 	/* There is no match for @object. */
 	build_check_ruleset();
-	if (ruleset->num_rules == LANDLOCK_MAX_NUM_RULES)
+	if (ruleset->num_rules >= LANDLOCK_MAX_NUM_RULES)
 		return -E2BIG;
 	new_rule = create_rule(object, layers, num_layers, NULL);
 	if (IS_ERR(new_rule))
@@ -223,6 +226,7 @@ static void build_check_layer(void)
 	BUILD_BUG_ON(layer.access < LANDLOCK_MASK_ACCESS_FS);
 }
 
+/* @ruleset must be locked by the caller. */
 int landlock_insert_rule(struct landlock_ruleset *const ruleset,
 		struct landlock_object *const object, const u32 access)
 {
@@ -259,34 +263,29 @@ static int merge_ruleset(struct landlock_ruleset *const dst,
 	int err = 0;
 
 	might_sleep();
-	if (!src)
+	/* Should already be checked by landlock_merge_ruleset() */
+	if (WARN_ON_ONCE(!src))
 		return 0;
 	/* Only merge into a domain. */
 	if (WARN_ON_ONCE(!dst || !dst->hierarchy))
 		return -EINVAL;
 
-	/*
-	 * The ruleset being modified (@dst) is locked first, then the ruleset
-	 * being copied (@src).
-	 */
+	/* Locks @dst first because we are its only owner. */
 	mutex_lock(&dst->lock);
 	mutex_lock_nested(&src->lock, SINGLE_DEPTH_NESTING);
-	/*
-	 * Makes a new layer, but only increments the number of layers after
-	 * the rules are inserted.  The layer 0 is invalid, and the last layer
-	 * is then LANDLOCK_MAX_NUM_LAYERS.
-	 */
-	if (dst->num_layers == LANDLOCK_MAX_NUM_LAYERS) {
-		err = -E2BIG;
+
+	/* Stacks the new layer. */
+	if (WARN_ON_ONCE(src->num_layers != 1 || dst->num_layers < 1)) {
+		err = -EINVAL;
 		goto out_unlock;
 	}
-	dst->fs_access_mask |= src->fs_access_mask;
+	dst->fs_access_masks[dst->num_layers - 1] = src->fs_access_masks[0];
 
 	/* Merges the @src tree. */
 	rbtree_postorder_for_each_entry_safe(walker_rule, next_rule,
 			&src->root, node) {
 		struct landlock_layer layers[] = {{
-			.level = dst->num_layers + 1,
+			.level = dst->num_layers,
 		}};
 
 		if (WARN_ON_ONCE(walker_rule->num_layers != 1)) {
@@ -303,7 +302,6 @@ static int merge_ruleset(struct landlock_ruleset *const dst,
 		if (err)
 			goto out_unlock;
 	}
-	dst->num_layers++;
 
 out_unlock:
 	mutex_unlock(&src->lock);
@@ -311,59 +309,48 @@ out_unlock:
 	return err;
 }
 
-static struct landlock_ruleset *inherit_ruleset(
-		struct landlock_ruleset *const parent)
+static int inherit_ruleset(struct landlock_ruleset *const parent,
+		struct landlock_ruleset *const child)
 {
 	struct landlock_rule *walker_rule, *next_rule;
-	struct landlock_ruleset *new_ruleset;
 	int err = 0;
 
 	might_sleep();
-	new_ruleset = create_ruleset();
-	if (IS_ERR(new_ruleset))
-		return new_ruleset;
-
-	new_ruleset->hierarchy = kzalloc(sizeof(*new_ruleset->hierarchy),
-			GFP_KERNEL_ACCOUNT);
-	if (!new_ruleset->hierarchy) {
-		err = -ENOMEM;
-		goto out_put_ruleset;
-	}
-	refcount_set(&new_ruleset->hierarchy->usage, 1);
 	if (!parent)
-		return new_ruleset;
+		return 0;
 
-	mutex_lock(&new_ruleset->lock);
+	/* Locks @child first because we are its only owner. */
+	mutex_lock(&child->lock);
 	mutex_lock_nested(&parent->lock, SINGLE_DEPTH_NESTING);
 
 	/* Copies the @parent tree. */
 	rbtree_postorder_for_each_entry_safe(walker_rule, next_rule,
 			&parent->root, node) {
-		err = insert_rule(new_ruleset, walker_rule->object,
+		err = insert_rule(child, walker_rule->object,
 				&walker_rule->layers, walker_rule->num_layers);
 		if (err)
 			goto out_unlock;
 	}
-	new_ruleset->num_layers = parent->num_layers;
-	new_ruleset->fs_access_mask = parent->fs_access_mask;
+
+	if (WARN_ON_ONCE(child->num_layers <= parent->num_layers)) {
+		err = -EINVAL;
+		goto out_unlock;
+	}
+	/* Copies the parent layer stack and leaves a space for the new layer. */
+	memcpy(child->fs_access_masks, parent->fs_access_masks,
+			flex_array_size(parent, fs_access_masks, parent->num_layers));
+
 	if (WARN_ON_ONCE(!parent->hierarchy)) {
 		err = -EINVAL;
 		goto out_unlock;
 	}
 	get_hierarchy(parent->hierarchy);
-	new_ruleset->hierarchy->parent = parent->hierarchy;
-
-	mutex_unlock(&parent->lock);
-	mutex_unlock(&new_ruleset->lock);
-	return new_ruleset;
+	child->hierarchy->parent = parent->hierarchy;
 
 out_unlock:
 	mutex_unlock(&parent->lock);
-	mutex_unlock(&new_ruleset->lock);
-
-out_put_ruleset:
-	landlock_put_ruleset(new_ruleset);
-	return ERR_PTR(err);
+	mutex_unlock(&child->lock);
+	return err;
 }
 
 static void free_ruleset(struct landlock_ruleset *const ruleset)
@@ -415,28 +402,48 @@ struct landlock_ruleset *landlock_merge_ruleset(
 		struct landlock_ruleset *const ruleset)
 {
 	struct landlock_ruleset *new_dom;
+	u32 num_layers;
 	int err;
 
 	might_sleep();
-	/*
-	 * Merging duplicates a ruleset, so a new ruleset cannot be
-	 * the same as the parent, but they can have similar content.
-	 */
-	if (WARN_ON_ONCE(!ruleset || parent == ruleset)) {
-		landlock_get_ruleset(parent);
-		return parent;
+	if (WARN_ON_ONCE(!ruleset || parent == ruleset))
+		return ERR_PTR(-EINVAL);
+
+	if (parent) {
+		if (parent->num_layers >= LANDLOCK_MAX_NUM_LAYERS)
+			return ERR_PTR(-E2BIG);
+		num_layers = parent->num_layers + 1;
+	} else {
+		num_layers = 1;
 	}
 
-	new_dom = inherit_ruleset(parent);
+	/* Creates a new domain... */
+	new_dom = create_ruleset(num_layers);
 	if (IS_ERR(new_dom))
 		return new_dom;
-
-	err = merge_ruleset(new_dom, ruleset);
-	if (err) {
-		landlock_put_ruleset(new_dom);
-		return ERR_PTR(err);
+	new_dom->hierarchy = kzalloc(sizeof(*new_dom->hierarchy),
+			GFP_KERNEL_ACCOUNT);
+	if (!new_dom->hierarchy) {
+		err = -ENOMEM;
+		goto out_put_dom;
 	}
+	refcount_set(&new_dom->hierarchy->usage, 1);
+
+	/* ...as a child of @parent... */
+	err = inherit_ruleset(parent, new_dom);
+	if (err)
+		goto out_put_dom;
+
+	/* ...and including @ruleset. */
+	err = merge_ruleset(new_dom, ruleset);
+	if (err)
+		goto out_put_dom;
+
 	return new_dom;
+
+out_put_dom:
+	landlock_put_ruleset(new_dom);
+	return ERR_PTR(err);
 }
 
 /*

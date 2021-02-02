@@ -82,7 +82,7 @@ TEST(empty_path_beneath_attr) {
 TEST(inval_fd_enforce) {
 	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0));
 
-	ASSERT_EQ(-1, landlock_enforce_ruleset_self(-1, 0));
+	ASSERT_EQ(-1, landlock_restrict_self(-1, 0));
 	ASSERT_EQ(EBADF, errno);
 }
 
@@ -90,7 +90,7 @@ TEST(unpriv_enforce_without_no_new_privs) {
 	int err;
 
 	disable_caps(_metadata);
-	err = landlock_enforce_ruleset_self(-1, 0);
+	err = landlock_restrict_self(-1, 0);
 	ASSERT_EQ(EPERM, errno);
 	ASSERT_EQ(err, -1);
 }
@@ -116,7 +116,7 @@ TEST(ruleset_fd_io)
 	ASSERT_EQ(0, close(ruleset_fd));
 }
 
-/* Tests enforcement of a ruleset FD transfered through a UNIX socket. */
+/* Tests enforcement of a ruleset FD transferred through a UNIX socket. */
 TEST(ruleset_fd_transfer)
 {
 	struct landlock_ruleset_attr ruleset_attr = {
@@ -188,7 +188,7 @@ TEST(ruleset_fd_transfer)
 
 		/* Enforces the received ruleset on the child. */
 		ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0));
-		ASSERT_EQ(0, landlock_enforce_ruleset_self(ruleset_fd_rx, 0));
+		ASSERT_EQ(0, landlock_restrict_self(ruleset_fd_rx, 0));
 		ASSERT_EQ(0, close(ruleset_fd_rx));
 
 		/* Checks that the ruleset enforcement. */

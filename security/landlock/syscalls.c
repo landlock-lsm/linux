@@ -214,6 +214,10 @@ static struct landlock_ruleset *get_ruleset_from_fd(const int fd,
 		goto out_fdput;
 	}
 	ruleset = ruleset_f.file->private_data;
+	if (WARN_ON_ONCE(ruleset->num_layers != 1)) {
+		ruleset = ERR_PTR(-EINVAL);
+		goto out_fdput;
+	}
 	landlock_get_ruleset(ruleset);
 
 out_fdput:
@@ -281,8 +285,12 @@ out_fdput:
  * - EINVAL: @flags is not 0, or inconsistent access in the rule (i.e.
  *   &landlock_path_beneath_attr.allowed_access is not a subset of the rule's
  *   accesses);
- * - EBADF: @ruleset_fd is not a file descriptor for the current thread;
- * - EBADFD: @ruleset_fd is not a ruleset file descriptor;
+ * - ENOMSG: Empty accesses (e.g. &landlock_path_beneath_attr.allowed_access);
+ * - EBADF: @ruleset_fd is not a file descriptor for the current thread, or a
+ *   member of @rule_attr is not a file descriptor as expected;
+ * - EBADFD: @ruleset_fd is not a ruleset file descriptor, or a member of
+ *   @rule_attr is not the expected file descriptor type (e.g. file open
+ *   without O_PATH);
  * - EPERM: @ruleset_fd has no write access to the underlying ruleset;
  * - EFAULT: @rule_attr inconsistency.
  */
@@ -317,12 +325,19 @@ SYSCALL_DEFINE4(landlock_add_rule,
 		return PTR_ERR(ruleset);
 
 	/*
-	 * Checks that allowed_access matches the @ruleset constraints
-	 * (ruleset->fs_access_mask is automatically upgraded to 64-bits).
-	 * Allows empty allowed_access i.e., deny @ruleset->fs_access_mask .
+	 * Informs about useless rule: empty allowed_access (i.e. deny rules)
+	 * are ignored in path walks.
 	 */
-	if ((path_beneath_attr.allowed_access | ruleset->fs_access_mask) !=
-			ruleset->fs_access_mask) {
+	if (!path_beneath_attr.allowed_access) {
+		err = -ENOMSG;
+		goto out_put_ruleset;
+	}
+	/*
+	 * Checks that allowed_access matches the @ruleset constraints
+	 * (ruleset->fs_access_masks[0] is automatically upgraded to 64-bits).
+	 */
+	if ((path_beneath_attr.allowed_access | ruleset->fs_access_masks[0]) !=
+			ruleset->fs_access_masks[0]) {
 		err = -EINVAL;
 		goto out_put_ruleset;
 	}
@@ -345,7 +360,7 @@ out_put_ruleset:
 /* Enforcement */
 
 /**
- * sys_landlock_enforce_ruleset_self - Enforce a ruleset on the calling thread
+ * sys_landlock_restrict_self - Enforce a ruleset on the calling thread
  *
  * @ruleset_fd: File descriptor tied to the ruleset to merge with the target.
  * @flags: Must be 0.
@@ -367,7 +382,7 @@ out_put_ruleset:
  * - E2BIG: The maximum number of stacked rulesets is reached for the current
  *   thread.
  */
-SYSCALL_DEFINE2(landlock_enforce_ruleset_self,
+SYSCALL_DEFINE2(landlock_restrict_self,
 		const int, ruleset_fd, const __u32, flags)
 {
 	struct landlock_ruleset *new_dom, *ruleset;

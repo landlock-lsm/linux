@@ -40,12 +40,11 @@ static inline int landlock_add_rule(const int ruleset_fd,
 }
 #endif
 
-#ifndef landlock_enforce_ruleset_self
-static inline int landlock_enforce_ruleset_self(const int ruleset_fd,
+#ifndef landlock_restrict_self
+static inline int landlock_restrict_self(const int ruleset_fd,
 		const __u32 flags)
 {
-	return syscall(__NR_landlock_enforce_ruleset_self, ruleset_fd,
-			flags);
+	return syscall(__NR_landlock_restrict_self, ruleset_fd, flags);
 }
 #endif
 
@@ -218,7 +217,7 @@ int main(const int argc, char *const argv[], char *const *const envp)
 		perror("Failed to restrict privileges");
 		goto err_close_ruleset;
 	}
-	if (landlock_enforce_ruleset_self(ruleset_fd, 0)) {
+	if (landlock_restrict_self(ruleset_fd, 0)) {
 		perror("Failed to enforce ruleset");
 		goto err_close_ruleset;
 	}

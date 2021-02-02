@@ -42,7 +42,7 @@ static void create_domain(struct __test_metadata *const _metadata)
 	EXPECT_EQ(0, close(path_beneath_attr.parent_fd));
 
 	EXPECT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0));
-	EXPECT_EQ(0, landlock_enforce_ruleset_self(ruleset_fd, 0));
+	EXPECT_EQ(0, landlock_restrict_self(ruleset_fd, 0));
 	EXPECT_EQ(0, close(ruleset_fd));
 }
 

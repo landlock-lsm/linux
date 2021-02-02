@@ -25,7 +25,9 @@
  * TEST_F_FORK() is useful when a test drop privileges but the corresponding
  * FIXTURE_TEARDOWN() requires them (e.g. to remove files from a directory
  * where write actions are denied).  For convenience, FIXTURE_TEARDOWN() is
- * also called when the test failed, but not when FIXTURE_SETUP() failed.
+ * also called when the test failed, but not when FIXTURE_SETUP() failed.  For
+ * this to be possible, we must not call abort() but instead exit smoothly
+ * (hence the step print).
  */
 #define TEST_F_FORK(fixture_name, test_name) \
 	static void fixture_name##_##test_name##_child( \
@@ -39,6 +41,7 @@
 		if (child < 0) \
 			abort(); \
 		if (child == 0) { \
+			_metadata->no_print = 1; \
 			fixture_name##_##test_name##_child(_metadata, self, variant); \
 			if (_metadata->skip) \
 				_exit(255); \
@@ -50,6 +53,7 @@
 			abort(); \
 		if (WIFSIGNALED(status) || !WIFEXITED(status)) { \
 			_metadata->passed = 0; \
+			_metadata->step = 1; \
 			return; \
 		} \
 		switch (WEXITSTATUS(status)) { \
@@ -91,12 +95,11 @@ static inline int landlock_add_rule(const int ruleset_fd,
 }
 #endif
 
-#ifndef landlock_enforce_ruleset_self
-static inline int landlock_enforce_ruleset_self(const int ruleset_fd,
+#ifndef landlock_restrict_self
+static inline int landlock_restrict_self(const int ruleset_fd,
 		const __u32 flags)
 {
-	return syscall(__NR_landlock_enforce_ruleset_self, ruleset_fd,
-			flags);
+	return syscall(__NR_landlock_restrict_self, ruleset_fd, flags);
 }
 #endif
 

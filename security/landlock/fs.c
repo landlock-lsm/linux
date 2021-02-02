@@ -147,9 +147,11 @@ int landlock_append_fs_rule(struct landlock_ruleset *const ruleset,
 	if (!d_is_dir(path->dentry) && (access_rights | ACCESS_FILE) !=
 			ACCESS_FILE)
 		return -EINVAL;
+	if (WARN_ON_ONCE(ruleset->num_layers != 1))
+		return -EINVAL;
 
 	/* Transforms relative access rights to absolute ones. */
-	access_rights |= LANDLOCK_MASK_ACCESS_FS & ~ruleset->fs_access_mask;
+	access_rights |= LANDLOCK_MASK_ACCESS_FS & ~ruleset->fs_access_masks[0];
 	object = get_inode_object(d_backing_inode(path->dentry));
 	if (IS_ERR(object))
 		return PTR_ERR(object);
@@ -190,13 +192,14 @@ static inline u64 unmask_layers(
 	 * An access is granted if, for each policy layer, at least one rule
 	 * encountered on the pathwalk grants the requested accesses,
 	 * regardless of their position in the layer stack.  We must then check
-	 * the remaining layers for each inode, from the last added layer to
-	 * the first one.
+	 * the remaining layers for each inode, from the first added layer to
+	 * the last one.
 	 */
 	for (i = 0; i < rule->num_layers; i++) {
 		const struct landlock_layer *const layer = &rule->layers[i];
 		const u64 layer_level = BIT_ULL(layer->level - 1);
 
+		/* Checks that the layer grants access to the full request. */
 		if ((layer->access & access_request) == access_request) {
 			layer_mask &= ~layer_level;
 
@@ -213,6 +216,7 @@ static int check_access_path(const struct landlock_ruleset *const domain,
 	bool allowed = false;
 	struct path walker_path;
 	u64 layer_mask;
+	size_t i;
 
 	/* Make sure all layers can be checked. */
 	BUILD_BUG_ON(BITS_PER_TYPE(layer_mask) < LANDLOCK_MAX_NUM_LAYERS);
@@ -231,14 +235,16 @@ static int check_access_path(const struct landlock_ruleset *const domain,
 	if (WARN_ON_ONCE(domain->num_layers < 1))
 		return -EACCES;
 
-	layer_mask = GENMASK_ULL(domain->num_layers - 1, 0);
-	/*
-	 * An access request that is not handled by the domain should be
-	 * allowed.
-	 */
-	access_request &= domain->fs_access_mask;
-	if (access_request == 0)
+	/* Saves all layers handling a subset of requested accesses. */
+	layer_mask = 0;
+	for (i = 0; i < domain->num_layers; i++) {
+		if (domain->fs_access_masks[i] & access_request)
+			layer_mask |= BIT_ULL(i);
+	}
+	/* An access request not handled by the domain is allowed. */
+	if (layer_mask == 0)
 		return 0;
+
 	walker_path = *path;
 	path_get(&walker_path);
 	/*
@@ -486,7 +492,7 @@ static int hook_path_link(struct dentry *const old_dentry,
 		return 0;
 	/* The mount points are the same for old and new paths, cf. EXDEV. */
 	if (old_dentry->d_parent != new_dir->dentry)
-		/* For now, forbid reparenting. */
+		/* For now, forbids reparenting. */
 		return -EACCES;
 	if (unlikely(d_is_negative(old_dentry)))
 		return -EACCES;
@@ -514,7 +520,7 @@ static int hook_path_rename(const struct path *const old_dir,
 		return 0;
 	/* The mount points are the same for old and new paths, cf. EXDEV. */
 	if (old_dir->dentry != new_dir->dentry)
-		/* For now, forbid reparenting. */
+		/* For now, forbids reparenting. */
 		return -EACCES;
 	if (WARN_ON_ONCE(d_is_negative(old_dentry)))
 		return -EACCES;

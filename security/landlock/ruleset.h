@@ -51,8 +51,8 @@ struct landlock_rule {
 	 */
 	u32 num_layers;
 	/**
-	 * @layers: Stack of layers, from the newest to the latest, implemented
-	 * as a flexible array member.
+	 * @layers: Stack of layers, from the latest to the newest, implemented
+	 * as a flexible array member (FAM).
 	 */
 	struct landlock_layer layers[];
 };
@@ -96,8 +96,8 @@ struct landlock_ruleset {
 		 * @work_free: Enables to free a ruleset within a lockless
 		 * section.  This is only used by
 		 * landlock_put_ruleset_deferred() when @usage reaches zero.
-		 * The fields @lock, @usage, @num_layers, @num_rules and
-		 * @fs_access_mask are then unused.
+		 * The fields @lock, @usage, @num_rules, @num_layers and
+		 * @fs_access_masks are then unused.
 		 */
 		struct work_struct work_free;
 		struct {
@@ -124,14 +124,18 @@ struct landlock_ruleset {
 			 */
 			u32 num_layers;
 			/**
-			 * @fs_access_mask: Contains the subset of filesystem
-			 * actions that are restricted by a ruleset.  This is
-			 * used when merging rulesets and for user space
-			 * backward compatibility (i.e. future-proof).  Set
-			 * once and never changed for the lifetime of the
-			 * ruleset.
+			 * @fs_access_masks: Contains the subset of filesystem
+			 * actions that are restricted by a ruleset.  A domain
+			 * saves all layers of merged rulesets in a stack
+			 * (FAM), starting from the first layer to the last
+			 * one.  These layers are used when merging rulesets,
+			 * for user space backward compatibility (i.e.
+			 * future-proof), and to properly handle merged
+			 * rulesets without overlapping access rights.  These
+			 * layers are set once and never changed for the
+			 * lifetime of the ruleset.
 			 */
-			u32 fs_access_mask;
+			u16 fs_access_masks[];
 		};
 	};
 };

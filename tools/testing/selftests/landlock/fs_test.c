@@ -78,7 +78,7 @@ static void mkdir_parents(struct __test_metadata *const _metadata,
 		const char *const path)
 {
 	char *walker;
-	const char*parent;
+	const char *parent;
 	int i, err;
 
 	ASSERT_NE(path[0], '\0');
@@ -337,15 +337,16 @@ TEST_F_FORK(layout1, inval)
 
 	/* Test with no access. */
 	path_beneath.allowed_access = 0;
-	ASSERT_EQ(0, landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH,
+	ASSERT_EQ(-1, landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH,
 				&path_beneath, 0));
+	ASSERT_EQ(ENOMSG, errno);
 	path_beneath.allowed_access &= ~(1ULL << 60);
 
 	ASSERT_EQ(0, close(path_beneath.parent_fd));
 
 	/* Enforces the ruleset. */
 	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0));
-	ASSERT_EQ(0, landlock_enforce_ruleset_self(ruleset_fd, 0));
+	ASSERT_EQ(0, landlock_restrict_self(ruleset_fd, 0));
 
 	ASSERT_EQ(0, close(ruleset_fd));
 }
@@ -466,7 +467,7 @@ static void enforce_ruleset(struct __test_metadata *const _metadata,
 		const int ruleset_fd)
 {
 	ASSERT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0));
-	ASSERT_EQ(0, landlock_enforce_ruleset_self(ruleset_fd, 0)) {
+	ASSERT_EQ(0, landlock_restrict_self(ruleset_fd, 0)) {
 		TH_LOG("Failed to enforce ruleset: %s", strerror(errno));
 	}
 }
@@ -545,7 +546,7 @@ TEST_F_FORK(layout1, unpriv) {
 	drop_privileges(_metadata);
 	ruleset_fd = create_ruleset(_metadata, ACCESS_RO, rules);
 	ASSERT_LE(0, ruleset_fd);
-	ASSERT_EQ(-1, landlock_enforce_ruleset_self(ruleset_fd, 0));
+	ASSERT_EQ(-1, landlock_restrict_self(ruleset_fd, 0));
 	ASSERT_EQ(EPERM, errno);
 
 	/* enforce_ruleset() calls prctl(no_new_privs). */
@@ -673,55 +674,110 @@ TEST_F_FORK(layout1, ruleset_overlap)
 	ASSERT_EQ(0, test_open(dir_s1d3, O_RDONLY | O_DIRECTORY));
 }
 
+TEST_F_FORK(layout1, non_overlapping_accesses)
+{
+	const struct rule layer1[] = {
+		{
+			.path = dir_s1d2,
+			.access = LANDLOCK_ACCESS_FS_MAKE_REG,
+		},
+		{}
+	};
+	const struct rule layer2[] = {
+		{
+			.path = dir_s1d3,
+			.access = LANDLOCK_ACCESS_FS_REMOVE_FILE,
+		},
+		{}
+	};
+	int ruleset_fd;
+
+	ASSERT_EQ(0, unlink(file1_s1d1));
+	ASSERT_EQ(0, unlink(file1_s1d2));
+
+	ruleset_fd = create_ruleset(_metadata, LANDLOCK_ACCESS_FS_MAKE_REG,
+			layer1);
+	ASSERT_LE(0, ruleset_fd);
+	enforce_ruleset(_metadata, ruleset_fd);
+	ASSERT_EQ(0, close(ruleset_fd));
+
+	ASSERT_EQ(-1, mknod(file1_s1d1, S_IFREG | 0700, 0));
+	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(0, mknod(file1_s1d2, S_IFREG | 0700, 0));
+	ASSERT_EQ(0, unlink(file1_s1d2));
+
+	ruleset_fd = create_ruleset(_metadata, LANDLOCK_ACCESS_FS_REMOVE_FILE,
+			layer2);
+	ASSERT_LE(0, ruleset_fd);
+	enforce_ruleset(_metadata, ruleset_fd);
+	ASSERT_EQ(0, close(ruleset_fd));
+
+	/* Unchanged accesses for file creation. */
+	ASSERT_EQ(-1, mknod(file1_s1d1, S_IFREG | 0700, 0));
+	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(0, mknod(file1_s1d2, S_IFREG | 0700, 0));
+
+	/* Checks file removing. */
+	ASSERT_EQ(-1, unlink(file1_s1d2));
+	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(0, unlink(file1_s1d3));
+}
+
 TEST_F_FORK(layout1, interleaved_masked_accesses)
 {
 	/*
 	 * Checks overly restrictive rules:
-	 * layer 1: allows R  s1d1/s1d2/s1d3/file1
-	 * layer 2: allows R  s1d1/s1d2/s1d3
-	 *          denies R  s1d1/s1d2
-	 * layer 3: allows R  s1d1
-	 * layer 4: denies  W s1d1/s1d2
-	 * layer 5: allows R  s1d1/s1d2
-	 * layer 6: denies R  s1d1/s1d2
+	 * layer 1: allows R   s1d1/s1d2/s1d3/file1
+	 * layer 2: allows RW  s1d1/s1d2/s1d3
+	 *          allows  W  s1d1/s1d2
+	 *          denies R   s1d1/s1d2
+	 * layer 3: allows R   s1d1
+	 * layer 4: allows R   s1d1/s1d2
+	 *          denies  W  s1d1/s1d2
+	 * layer 5: allows R   s1d1/s1d2
+	 * layer 6: allows   X ----
+	 * layer 7: allows  W  s1d1/s1d2
+	 *          denies R   s1d1/s1d2
 	 */
 	const struct rule layer1_read[] = {
-		/* Allows access to file1_s1d3 with the first layer. */
+		/* Allows read access to file1_s1d3 with the first layer. */
 		{
 			.path = file1_s1d3,
 			.access = LANDLOCK_ACCESS_FS_READ_FILE,
 		},
 		{}
 	};
-	const struct rule layer2_read[] = {
-		/* Start by granting access via its parent directory... */
+	/* First rule with write restrictions. */
+	const struct rule layer2_read_write[] = {
+		/* Start by granting read-write access via its parent directory... */
 		{
 			.path = dir_s1d3,
-			.access = LANDLOCK_ACCESS_FS_READ_FILE,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE |
+				LANDLOCK_ACCESS_FS_WRITE_FILE,
 		},
-		/* ...but also denies access via its grandparent directory. */
+		/* ...but also denies read access via its grandparent directory. */
 		{
 			.path = dir_s1d2,
-			.access = 0,
+			.access = LANDLOCK_ACCESS_FS_WRITE_FILE,
 		},
 		{}
 	};
 	const struct rule layer3_read[] = {
-		/* Allows access via its great-grandparent directory. */
+		/* Allows read access via its great-grandparent directory. */
 		{
 			.path = dir_s1d1,
 			.access = LANDLOCK_ACCESS_FS_READ_FILE,
 		},
 		{}
 	};
-	const struct rule layer4_write[] = {
+	const struct rule layer4_read_write[] = {
 		/*
 		 * Try to confuse the deny access by denying write (but not
 		 * read) access via its grandparent directory.
 		 */
 		{
 			.path = dir_s1d2,
-			.access = 0,
+			.access = LANDLOCK_ACCESS_FS_READ_FILE,
 		},
 		{}
 	};
@@ -736,14 +792,25 @@ TEST_F_FORK(layout1, interleaved_masked_accesses)
 		},
 		{}
 	};
-	const struct rule layer6_read[] = {
+	const struct rule layer6_execute[] = {
+		/*
+		 * Restricts an unrelated file hierarchy with a new access
+		 * (non-overlapping) type.
+		 */
+		{
+			.path = dir_s2d1,
+			.access = LANDLOCK_ACCESS_FS_EXECUTE,
+		},
+		{}
+	};
+	const struct rule layer7_read_write[] = {
 		/*
 		 * Finally, denies read access to file1_s1d3 via its
 		 * grandparent.
 		 */
 		{
 			.path = dir_s1d2,
-			.access = 0,
+			.access = LANDLOCK_ACCESS_FS_WRITE_FILE,
 		},
 		{}
 	};
@@ -755,13 +822,13 @@ TEST_F_FORK(layout1, interleaved_masked_accesses)
 	enforce_ruleset(_metadata, ruleset_fd);
 	ASSERT_EQ(0, close(ruleset_fd));
 
-	/* Checks that access is granted for file1_s1d3 with layer 1. */
+	/* Checks that read access is granted for file1_s1d3 with layer 1. */
 	ASSERT_EQ(0, test_open(file1_s1d3, O_RDWR));
 	ASSERT_EQ(EACCES, test_open(file2_s1d3, O_RDONLY));
 	ASSERT_EQ(0, test_open(file2_s1d3, O_WRONLY));
 
-	ruleset_fd = create_ruleset(_metadata, LANDLOCK_ACCESS_FS_READ_FILE,
-			layer2_read);
+	ruleset_fd = create_ruleset(_metadata, LANDLOCK_ACCESS_FS_READ_FILE |
+			LANDLOCK_ACCESS_FS_WRITE_FILE, layer2_read_write);
 	ASSERT_LE(0, ruleset_fd);
 	enforce_ruleset(_metadata, ruleset_fd);
 	ASSERT_EQ(0, close(ruleset_fd));
@@ -782,9 +849,9 @@ TEST_F_FORK(layout1, interleaved_masked_accesses)
 	ASSERT_EQ(EACCES, test_open(file2_s1d3, O_RDONLY));
 	ASSERT_EQ(0, test_open(file2_s1d3, O_WRONLY));
 
-	/* This time, creates a write-only rule. */
-	ruleset_fd = create_ruleset(_metadata, LANDLOCK_ACCESS_FS_WRITE_FILE,
-			layer4_write);
+	/* This time, denies write access for the file hierarchy. */
+	ruleset_fd = create_ruleset(_metadata, LANDLOCK_ACCESS_FS_READ_FILE |
+			LANDLOCK_ACCESS_FS_WRITE_FILE, layer4_read_write);
 	ASSERT_LE(0, ruleset_fd);
 	enforce_ruleset(_metadata, ruleset_fd);
 	ASSERT_EQ(0, close(ruleset_fd));
@@ -810,13 +877,25 @@ TEST_F_FORK(layout1, interleaved_masked_accesses)
 	ASSERT_EQ(EACCES, test_open(file2_s1d3, O_WRONLY));
 	ASSERT_EQ(EACCES, test_open(file2_s1d3, O_RDONLY));
 
-	ruleset_fd = create_ruleset(_metadata, LANDLOCK_ACCESS_FS_READ_FILE,
-			layer6_read);
+	ruleset_fd = create_ruleset(_metadata, LANDLOCK_ACCESS_FS_EXECUTE,
+			layer6_execute);
 	ASSERT_LE(0, ruleset_fd);
 	enforce_ruleset(_metadata, ruleset_fd);
 	ASSERT_EQ(0, close(ruleset_fd));
 
-	/* Checks read access is now denied with layer 6. */
+	/* Checks that previous access rights are unchanged with layer 6. */
+	ASSERT_EQ(0, test_open(file1_s1d3, O_RDONLY));
+	ASSERT_EQ(EACCES, test_open(file1_s1d3, O_WRONLY));
+	ASSERT_EQ(EACCES, test_open(file2_s1d3, O_WRONLY));
+	ASSERT_EQ(EACCES, test_open(file2_s1d3, O_RDONLY));
+
+	ruleset_fd = create_ruleset(_metadata, LANDLOCK_ACCESS_FS_READ_FILE |
+			LANDLOCK_ACCESS_FS_WRITE_FILE, layer7_read_write);
+	ASSERT_LE(0, ruleset_fd);
+	enforce_ruleset(_metadata, ruleset_fd);
+	ASSERT_EQ(0, close(ruleset_fd));
+
+	/* Checks read access is now denied with layer 7. */
 	ASSERT_EQ(EACCES, test_open(file1_s1d3, O_RDONLY));
 	ASSERT_EQ(EACCES, test_open(file1_s1d3, O_WRONLY));
 	ASSERT_EQ(EACCES, test_open(file2_s1d3, O_WRONLY));
@@ -992,7 +1071,7 @@ TEST_F_FORK(layout1, max_layers)
 		enforce_ruleset(_metadata, ruleset_fd);
 
 	for (i = 0; i < 2; i++) {
-		err = landlock_enforce_ruleset_self(ruleset_fd, 0);
+		err = landlock_restrict_self(ruleset_fd, 0);
 		ASSERT_EQ(-1, err);
 		ASSERT_EQ(E2BIG, errno);
 	}

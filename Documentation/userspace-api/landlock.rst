@@ -1,13 +1,14 @@
 .. SPDX-License-Identifier: GPL-2.0
 .. Copyright © 2017-2020 Mickaël Salaün <mic@digikod.net>
 .. Copyright © 2019-2020 ANSSI
+.. Copyright © 2021 Microsoft Corporation
 
 =====================================
 Landlock: unprivileged access control
 =====================================
 
 :Author: Mickaël Salaün
-:Date: January 2021
+:Date: February 2021
 
 The goal of Landlock is to enable to restrict ambient rights (e.g. global
 filesystem access) for a set of processes.  Because Landlock is a stackable
@@ -108,19 +109,19 @@ The current thread is now ready to sandbox itself with the ruleset.
 
 .. code-block:: c
 
-    if (landlock_enforce_ruleset_self(ruleset_fd, 0)) {
+    if (landlock_restrict_self(ruleset_fd, 0)) {
         perror("Failed to enforce ruleset");
         close(ruleset_fd);
         return 1;
     }
     close(ruleset_fd);
 
-If the `landlock_enforce_ruleset_self` system call succeeds, the current thread
-is now restricted and this policy will be enforced on all its subsequently
-created children as well.  Once a thread is landlocked, there is no way to
-remove its security policy; only adding more restrictions is allowed.  These
-threads are now in a new Landlock domain, merge of their parent one (if any)
-with the new ruleset.
+If the `landlock_restrict_self` system call succeeds, the current thread is now
+restricted and this policy will be enforced on all its subsequently created
+children as well.  Once a thread is landlocked, there is no way to remove its
+security policy; only adding more restrictions is allowed.  These threads are
+now in a new Landlock domain, merge of their parent one (if any) with the new
+ruleset.
 
 Full working code can be found in `samples/landlock/sandboxer.c`_.
 
@@ -219,7 +220,7 @@ Enforcing a ruleset
 -------------------
 
 .. kernel-doc:: security/landlock/syscalls.c
-    :identifiers: sys_landlock_enforce_ruleset_self
+    :identifiers: sys_landlock_restrict_self
 
 Current limitations
 ===================
@@ -229,11 +230,11 @@ Ruleset layers
 
 There is a limit of 64 layers of stacked rulesets.  This can be an issue for a
 task willing to enforce a new ruleset in complement to its 64 inherited
-rulesets.  Once this limit is reached, sys_landlock_enforce_ruleset_self()
-returns E2BIG.  It is then strongly suggested to carefully build rulesets once
-in the life of a thread, especially for applications able to launch other
-applications that may also want to sandbox themselves (e.g. shells, container
-managers, etc.).
+rulesets.  Once this limit is reached, sys_landlock_restrict_self() returns
+E2BIG.  It is then strongly suggested to carefully build rulesets once in the
+life of a thread, especially for applications able to launch other applications
+that may also want to sandbox themselves (e.g. shells, container managers,
+etc.).
 
 Memory usage
 ------------

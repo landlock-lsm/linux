@@ -125,10 +125,10 @@ config SAMPLE_HIDRAW
 	depends on CC_CAN_LINK && HEADERS_INSTALL
 
 config SAMPLE_LANDLOCK
-	bool "Build Landlock sample code"
+	bool "Build Landlock example"
 	depends on CC_CAN_LINK && HEADERS_INSTALL
 	help
-	  Build a simple Landlock sandbox manager able to launch a process
+	  Build a simple Landlock sandbox manager able to start a process
 	  restricted by a user-defined filesystem access control policy.
 
 config SAMPLE_PIDFD

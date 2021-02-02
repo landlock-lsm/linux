@@ -865,8 +865,8 @@ __SC_COMP(__NR_epoll_pwait2, sys_epoll_pwait2, compat_sys_epoll_pwait2)
 __SYSCALL(__NR_landlock_create_ruleset, sys_landlock_create_ruleset)
 #define __NR_landlock_add_rule 445
 __SYSCALL(__NR_landlock_add_rule, sys_landlock_add_rule)
-#define __NR_landlock_enforce_ruleset_self 446
-__SYSCALL(__NR_landlock_enforce_ruleset_self, sys_landlock_enforce_ruleset_self)
+#define __NR_landlock_restrict_self 446
+__SYSCALL(__NR_landlock_restrict_self, sys_landlock_restrict_self)
 
 #undef __NR_syscalls
 #define __NR_syscalls 447
