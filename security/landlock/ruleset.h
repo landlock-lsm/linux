@@ -102,7 +102,7 @@ struct landlock_ruleset {
 		struct work_struct work_free;
 		struct {
 			/**
-			 * @lock: Guards against concurrent modifications of
+			 * @lock: Protects against concurrent modifications of
 			 * @root, if @usage is greater than zero.
 			 */
 			struct mutex lock;

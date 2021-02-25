@@ -50,18 +50,27 @@ static void release_inode(struct landlock_object *const object)
 		return;
 	}
 
-	spin_lock(&inode->i_lock);
 	/*
-	 * Make sure that if the filesystem is concurrently unmounted,
+	 * Protects against concurrent use by hook_sb_delete() of the reference
+	 * to the underlying inode.
+	 */
+	object->underobj = NULL;
+	/*
+	 * Makes sure that if the filesystem is concurrently unmounted,
 	 * hook_sb_delete() will wait for us to finish iput().
 	 */
 	sb = inode->i_sb;
 	atomic_long_inc(&landlock_superblock(sb)->inode_refs);
-	rcu_assign_pointer(landlock_inode(inode)->object, NULL);
-	spin_unlock(&inode->i_lock);
 	spin_unlock(&object->lock);
 	/*
-	 * Now, new rules can safely be tied to @inode.
+	 * Because object->underobj was not NULL, hook_sb_delete() and
+	 * get_inode_object() guarantee that it is safe to reset
+	 * landlock_inode(inode)->object while it is not NULL.  It is therefore
+	 * not necessary to lock inode->i_lock.
+	 */
+	rcu_assign_pointer(landlock_inode(inode)->object, NULL);
+	/*
+	 * Now, new rules can safely be tied to @inode with get_inode_object().
 	 */
 
 	iput(inode);
@@ -106,6 +115,7 @@ retry:
 	if (IS_ERR(new_object))
 		return new_object;
 
+	/* Protects against concurrent get_inode_object() calls. */
 	spin_lock(&inode->i_lock);
 	object = rcu_dereference_protected(inode_sec->object,
 			lockdep_is_held(&inode->i_lock));
@@ -221,6 +231,8 @@ static int check_access_path(const struct landlock_ruleset *const domain,
 	/* Make sure all layers can be checked. */
 	BUILD_BUG_ON(BITS_PER_TYPE(layer_mask) < LANDLOCK_MAX_NUM_LAYERS);
 
+	if (!access_request)
+		return 0;
 	if (WARN_ON_ONCE(!domain || !path))
 		return 0;
 	/*
@@ -304,12 +316,23 @@ static inline int current_check_access_path(const struct path *const path,
 	return check_access_path(dom, path, access_request);
 }
 
+/* Inode hooks */
+
+static void hook_inode_free_security(struct inode *const inode)
+{
+	/*
+	 * All inodes must already have been untied from their object by
+	 * release_inode() or hook_sb_delete().
+	 */
+	WARN_ON_ONCE(landlock_inode(inode)->object);
+}
+
 /* Super-block hooks */
 
 /*
  * Release the inodes used in a security policy.
  *
- * Cf. fsnotify_unmount_inodes()
+ * Cf. fsnotify_unmount_inodes() and invalidate_inodes()
  */
 static void hook_sb_delete(struct super_block *const sb)
 {
@@ -320,58 +343,92 @@ static void hook_sb_delete(struct super_block *const sb)
 
 	spin_lock(&sb->s_inode_list_lock);
 	list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {
-		struct landlock_inode_security *inode_sec =
-			landlock_inode(inode);
 		struct landlock_object *object;
-		bool do_put = false;
 
-		rcu_read_lock();
-		object = rcu_dereference(inode_sec->object);
-		if (!object) {
-			rcu_read_unlock();
-			continue;
-		}
-
-		spin_lock(&object->lock);
-		if (object->underobj) {
-			object->underobj = NULL;
-			do_put = true;
-			spin_lock(&inode->i_lock);
-			rcu_assign_pointer(inode_sec->object, NULL);
-			spin_unlock(&inode->i_lock);
-		}
-		spin_unlock(&object->lock);
-		rcu_read_unlock();
-		if (!do_put)
-			/*
-			 * A concurrent iput() in release_inode() is ongoing
-			 * and we will just wait for it to finish.
-			 */
+		/* Only handles referenced inodes. */
+		if (!atomic_read(&inode->i_count))
 			continue;
 
 		/*
-		 * At this point, we own the ihold() reference that was
-		 * originally set up by get_inode_object(). Therefore we can
-		 * drop the list lock and know that the inode won't disappear
-		 * from under us until the next loop walk.
+		 * Checks I_FREEING and I_WILL_FREE  to protect against a race
+		 * condition when release_inode() just called iput(), which
+		 * could lead to a NULL dereference of inode->security or a
+		 * second call to iput() for the same Landlock object.  Also
+		 * checks I_NEW because such inode cannot be tied to an object.
+		 */
+		spin_lock(&inode->i_lock);
+		if (inode->i_state & (I_FREEING | I_WILL_FREE | I_NEW)) {
+			spin_unlock(&inode->i_lock);
+			continue;
+		}
+
+		rcu_read_lock();
+		object = rcu_dereference(landlock_inode(inode)->object);
+		if (!object) {
+			rcu_read_unlock();
+			spin_unlock(&inode->i_lock);
+			continue;
+		}
+		/* Keeps a reference to this inode until the next loop walk. */
+		__iget(inode);
+		spin_unlock(&inode->i_lock);
+
+		/*
+		 * If there is no concurrent release_inode() ongoing, then we
+		 * are in charge of calling iput() on this inode, otherwise we
+		 * will just wait for it to finish.
+		 */
+		spin_lock(&object->lock);
+		if (object->underobj == inode) {
+			object->underobj = NULL;
+			spin_unlock(&object->lock);
+			rcu_read_unlock();
+
+			/*
+			 * Because object->underobj was not NULL,
+			 * release_inode() and get_inode_object() guarantee
+			 * that it is safe to reset
+			 * landlock_inode(inode)->object while it is not NULL.
+			 * It is therefore not necessary to lock inode->i_lock.
+			 */
+			rcu_assign_pointer(landlock_inode(inode)->object, NULL);
+			/*
+			 * At this point, we own the ihold() reference that was
+			 * originally set up by get_inode_object() and the
+			 * __iget() reference that we just set in this loop
+			 * walk.  Therefore the following call to iput() will
+			 * not sleep nor drop the inode because there is now at
+			 * least two references to it.
+			 */
+			iput(inode);
+		} else {
+			spin_unlock(&object->lock);
+			rcu_read_unlock();
+		}
+
+		/*
+		 * At this point, we still own the __iget() reference that we
+		 * just set in this loop walk.  Therefore we can drop the list
+		 * lock and know that the inode won't disappear from under us
+		 * until the next loop walk.
 		 */
 		spin_unlock(&sb->s_inode_list_lock);
 		/*
-		 * We can now actually put the previous inode, which is not
-		 * needed anymore for the loop walk.
+		 * We can now actually put the inode reference from the
+		 * previous loop walk, which is not needed anymore.
 		 */
 		if (iput_inode)
 			iput(iput_inode);
 		iput_inode = inode;
+		cond_resched();
 		spin_lock(&sb->s_inode_list_lock);
 	}
 	spin_unlock(&sb->s_inode_list_lock);
+
+	/* Puts the inode reference from the last loop walk, if any. */
 	if (iput_inode)
 		iput(iput_inode);
-
-	/*
-	 * Wait for pending iput() in release_inode().
-	 */
+	/* Waits for pending iput() in release_inode(). */
 	wait_var_event(&landlock_superblock(sb)->inode_refs, !atomic_long_read(
 				&landlock_superblock(sb)->inode_refs));
 }
@@ -602,6 +659,8 @@ static int hook_file_open(struct file *const file)
 }
 
 static struct security_hook_list landlock_hooks[] __lsm_ro_after_init = {
+	LSM_HOOK_INIT(inode_free_security, hook_inode_free_security),
+
 	LSM_HOOK_INIT(sb_delete, hook_sb_delete),
 	LSM_HOOK_INIT(sb_mount, hook_sb_mount),
 	LSM_HOOK_INIT(move_mount, hook_move_mount),

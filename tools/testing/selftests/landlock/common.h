@@ -103,7 +103,7 @@ static inline int landlock_restrict_self(const int ruleset_fd,
 }
 #endif
 
-static void disable_caps(struct __test_metadata *const _metadata)
+static void _init_caps(struct __test_metadata *const _metadata, bool drop_all)
 {
 	cap_t cap_p;
 	/* Only these three capabilities are useful for the tests. */
@@ -121,9 +121,11 @@ static void disable_caps(struct __test_metadata *const _metadata)
 	EXPECT_NE(-1, cap_clear(cap_p)) {
 		TH_LOG("Failed to cap_clear: %s", strerror(errno));
 	}
-	EXPECT_NE(-1, cap_set_flag(cap_p, CAP_PERMITTED, ARRAY_SIZE(caps),
-				caps, CAP_SET)) {
-		TH_LOG("Failed to cap_set_flag: %s", strerror(errno));
+	if (!drop_all) {
+		EXPECT_NE(-1, cap_set_flag(cap_p, CAP_PERMITTED,
+					ARRAY_SIZE(caps), caps, CAP_SET)) {
+			TH_LOG("Failed to cap_set_flag: %s", strerror(errno));
+		}
 	}
 	EXPECT_NE(-1, cap_set_proc(cap_p)) {
 		TH_LOG("Failed to cap_set_proc: %s", strerror(errno));
@@ -133,7 +135,20 @@ static void disable_caps(struct __test_metadata *const _metadata)
 	}
 }
 
-static void effective_cap(struct __test_metadata *const _metadata,
+/* We cannot put such helpers in a library because of kselftest_harness.h . */
+__attribute__((__unused__))
+static void disable_caps(struct __test_metadata *const _metadata)
+{
+	_init_caps(_metadata, false);
+}
+
+__attribute__((__unused__))
+static void drop_caps(struct __test_metadata *const _metadata)
+{
+	_init_caps(_metadata, true);
+}
+
+static void _effective_cap(struct __test_metadata *const _metadata,
 		const cap_value_t caps, const cap_flag_value_t value)
 {
 	cap_t cap_p;
@@ -153,17 +168,16 @@ static void effective_cap(struct __test_metadata *const _metadata,
 	}
 }
 
-/* We cannot put such helpers in a library because of kselftest_harness.h . */
 __attribute__((__unused__))
 static void set_cap(struct __test_metadata *const _metadata,
 		const cap_value_t caps)
 {
-	effective_cap(_metadata, caps, CAP_SET);
+	_effective_cap(_metadata, caps, CAP_SET);
 }
 
 __attribute__((__unused__))
 static void clear_cap(struct __test_metadata *const _metadata,
 		const cap_value_t caps)
 {
-	effective_cap(_metadata, caps, CAP_CLEAR);
+	_effective_cap(_metadata, caps, CAP_CLEAR);
 }

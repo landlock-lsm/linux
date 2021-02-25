@@ -89,7 +89,7 @@ TEST(inval_fd_enforce) {
 TEST(unpriv_enforce_without_no_new_privs) {
 	int err;
 
-	disable_caps(_metadata);
+	drop_caps(_metadata);
 	err = landlock_restrict_self(-1, 0);
 	ASSERT_EQ(EPERM, errno);
 	ASSERT_EQ(err, -1);
@@ -103,7 +103,7 @@ TEST(ruleset_fd_io)
 	int ruleset_fd;
 	char buf;
 
-	disable_caps(_metadata);
+	drop_caps(_metadata);
 	ruleset_fd = landlock_create_ruleset(&ruleset_attr,
 			sizeof(ruleset_attr), 0);
 	ASSERT_LE(0, ruleset_fd);
@@ -147,7 +147,7 @@ TEST(ruleset_fd_transfer)
 	pid_t child;
 	int status;
 
-	disable_caps(_metadata);
+	drop_caps(_metadata);
 
 	/* Creates a test ruleset with a simple rule. */
 	ruleset_fd_tx = landlock_create_ruleset(&ruleset_attr,

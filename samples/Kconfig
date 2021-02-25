@@ -125,7 +125,7 @@ config SAMPLE_HIDRAW
 	depends on CC_CAN_LINK && HEADERS_INSTALL
 
 config SAMPLE_LANDLOCK
-	bool "Build Landlock example"
+	bool "Landlock example"
 	depends on CC_CAN_LINK && HEADERS_INSTALL
 	help
 	  Build a simple Landlock sandbox manager able to start a process

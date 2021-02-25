@@ -153,14 +153,33 @@ out:
 	return err;
 }
 
-static void create_layout1(struct __test_metadata *const _metadata)
+static void prepare_layout(struct __test_metadata *const _metadata)
 {
-	/* Do not pollute the rest of the system. */
+	disable_caps(_metadata);
+	umask(0077);
+	create_directory(_metadata, TMP_DIR);
+
+	/*
+	 * Do not pollute the rest of the system: creates a private mount point
+	 * for tests relying on pivot_root(2) and move_mount(2).
+	 */
 	set_cap(_metadata, CAP_SYS_ADMIN);
 	ASSERT_EQ(0, unshare(CLONE_NEWNS));
+	ASSERT_EQ(0, mount("tmp", TMP_DIR, "tmpfs", 0, "size=4m,mode=700"));
+	ASSERT_EQ(0, mount(NULL, TMP_DIR, NULL, MS_PRIVATE | MS_REC, NULL));
 	clear_cap(_metadata, CAP_SYS_ADMIN);
-	umask(0077);
+}
 
+static void cleanup_layout(struct __test_metadata *const _metadata)
+{
+	set_cap(_metadata, CAP_SYS_ADMIN);
+	EXPECT_EQ(0, umount(TMP_DIR));
+	clear_cap(_metadata, CAP_SYS_ADMIN);
+	EXPECT_EQ(0, remove_path(TMP_DIR));
+}
+
+static void create_layout1(struct __test_metadata *const _metadata)
+{
 	create_file(_metadata, file1_s1d1);
 	create_file(_metadata, file1_s1d2);
 	create_file(_metadata, file1_s1d3);
@@ -200,8 +219,6 @@ static void remove_layout1(struct __test_metadata *const _metadata)
 	umount(dir_s3d2);
 	clear_cap(_metadata, CAP_SYS_ADMIN);
 	EXPECT_EQ(0, remove_path(dir_s3d2));
-
-	EXPECT_EQ(0, remove_path(TMP_DIR));
 }
 
 FIXTURE(layout1) {
@@ -209,13 +226,16 @@ FIXTURE(layout1) {
 
 FIXTURE_SETUP(layout1)
 {
-	disable_caps(_metadata);
+	prepare_layout(_metadata);
+
 	create_layout1(_metadata);
 }
 
 FIXTURE_TEARDOWN(layout1)
 {
 	remove_layout1(_metadata);
+
+	cleanup_layout(_metadata);
 }
 
 /*
@@ -230,13 +250,13 @@ static int test_open_rel(const int dirfd, const char *const path, const int flag
 	fd = openat(dirfd, path, flags | O_CLOEXEC);
 	if (fd < 0)
 		return errno;
-	if (close(fd) == 0)
-		return 0;
 	/*
 	 * Mixing error codes from close(2) and open(2) should not lead to any
 	 * (access type) confusion for this test.
 	 */
-	return errno;
+	if (close(fd) != 0)
+		return errno;
+	return 0;
 }
 
 static int test_open(const char *const path, const int flags)
@@ -315,6 +335,12 @@ TEST_F_FORK(layout1, inval)
 				&path_beneath, 0));
 	ASSERT_EQ(EBADFD, errno);
 	ASSERT_EQ(0, close(path_beneath.parent_fd));
+
+	/* Tests with a ruleset FD. */
+	path_beneath.parent_fd = ruleset_fd;
+	ASSERT_EQ(-1, landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH,
+				&path_beneath, 0));
+	ASSERT_EQ(EBADFD, errno);
 
 	/* Checks unhandled allowed_access. */
 	path_beneath.parent_fd = open(dir_s1d2, O_PATH | O_DIRECTORY |
@@ -520,19 +546,6 @@ TEST_F_FORK(layout1, proc_nsfs)
 	ASSERT_EQ(0, close(path_beneath.parent_fd));
 }
 
-static void drop_privileges(struct __test_metadata *const _metadata)
-{
-	cap_t caps;
-	const cap_value_t cap_val = CAP_SYS_ADMIN;
-
-	caps = cap_get_proc();
-	ASSERT_NE(NULL, caps);
-	ASSERT_EQ(0, cap_set_flag(caps, CAP_EFFECTIVE, 1, &cap_val,
-				CAP_CLEAR));
-	ASSERT_EQ(0, cap_set_proc(caps));
-	ASSERT_EQ(0, cap_free(caps));
-}
-
 TEST_F_FORK(layout1, unpriv) {
 	const struct rule rules[] = {
 		{
@@ -543,7 +556,8 @@ TEST_F_FORK(layout1, unpriv) {
 	};
 	int ruleset_fd;
 
-	drop_privileges(_metadata);
+	drop_caps(_metadata);
+
 	ruleset_fd = create_ruleset(_metadata, ACCESS_RO, rules);
 	ASSERT_LE(0, ruleset_fd);
 	ASSERT_EQ(-1, landlock_restrict_self(ruleset_fd, 0));
@@ -1236,10 +1250,8 @@ TEST_F_FORK(layout1, rule_inside_mount_ns)
 	int ruleset_fd;
 
 	set_cap(_metadata, CAP_SYS_ADMIN);
-	ASSERT_EQ(0, mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL));
 	ASSERT_EQ(0, syscall(SYS_pivot_root, dir_s3d2, dir_s3d3)) {
-		TH_LOG("Failed to pivot_root into \"%s\": %s", dir_s3d2,
-				strerror(errno));
+		TH_LOG("Failed to pivot root: %s", strerror(errno));
 	};
 	ASSERT_EQ(0, chdir("/"));
 	clear_cap(_metadata, CAP_SYS_ADMIN);
@@ -1265,16 +1277,15 @@ TEST_F_FORK(layout1, mount_and_pivot)
 	const int ruleset_fd = create_ruleset(_metadata, ACCESS_RW, rules);
 
 	ASSERT_LE(0, ruleset_fd);
-	set_cap(_metadata, CAP_SYS_ADMIN);
-	ASSERT_EQ(0, mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL));
-
 	enforce_ruleset(_metadata, ruleset_fd);
 	ASSERT_EQ(0, close(ruleset_fd));
 
-	ASSERT_EQ(-1, mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL));
+	set_cap(_metadata, CAP_SYS_ADMIN);
+	ASSERT_EQ(-1, mount(NULL, dir_s3d2, NULL, MS_RDONLY, NULL));
 	ASSERT_EQ(EPERM, errno);
 	ASSERT_EQ(-1, syscall(SYS_pivot_root, dir_s3d2, dir_s3d3));
 	ASSERT_EQ(EPERM, errno);
+	clear_cap(_metadata, CAP_SYS_ADMIN);
 }
 
 TEST_F_FORK(layout1, move_mount)
@@ -1291,20 +1302,23 @@ TEST_F_FORK(layout1, move_mount)
 	ASSERT_LE(0, ruleset_fd);
 
 	set_cap(_metadata, CAP_SYS_ADMIN);
-	ASSERT_EQ(0, mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL));
 	ASSERT_EQ(0, syscall(SYS_move_mount, AT_FDCWD, dir_s3d2, AT_FDCWD,
 				dir_s1d2, 0)) {
-		TH_LOG("Failed to move_mount: %s", strerror(errno));
+		TH_LOG("Failed to move mount: %s", strerror(errno));
 	}
+
 	ASSERT_EQ(0, syscall(SYS_move_mount, AT_FDCWD, dir_s1d2, AT_FDCWD,
 				dir_s3d2, 0));
+	clear_cap(_metadata, CAP_SYS_ADMIN);
 
 	enforce_ruleset(_metadata, ruleset_fd);
 	ASSERT_EQ(0, close(ruleset_fd));
 
+	set_cap(_metadata, CAP_SYS_ADMIN);
 	ASSERT_EQ(-1, syscall(SYS_move_mount, AT_FDCWD, dir_s3d2, AT_FDCWD,
 				dir_s1d2, 0));
 	ASSERT_EQ(EPERM, errno);
+	clear_cap(_metadata, CAP_SYS_ADMIN);
 }
 
 TEST_F_FORK(layout1, release_inodes)
@@ -1480,7 +1494,7 @@ static void copy_binary(struct __test_metadata *const _metadata,
 }
 
 static void test_execute(struct __test_metadata *const _metadata,
-		const char *const path, const int ret)
+		const int err, const char *const path)
 {
 	int status;
 	char *const argv[] = {(char *)path, NULL};
@@ -1488,17 +1502,17 @@ static void test_execute(struct __test_metadata *const _metadata,
 
 	ASSERT_LE(0, child);
 	if (child == 0) {
-		ASSERT_EQ(ret, execve(path, argv, NULL)) {
+		ASSERT_EQ(err ? -1 : 0, execve(path, argv, NULL)) {
 			TH_LOG("Failed to execute \"%s\": %s", path,
 					strerror(errno));
 		};
-		ASSERT_EQ(EACCES, errno);
+		ASSERT_EQ(err, errno);
 		_exit(_metadata->passed ? 2 : 1);
 		return;
 	}
 	ASSERT_EQ(child, waitpid(child, &status, 0));
 	ASSERT_EQ(1, WIFEXITED(status));
-	ASSERT_EQ(ret ? 2 : 0, WEXITSTATUS(status)) {
+	ASSERT_EQ(err ? 2 : 0, WEXITSTATUS(status)) {
 		TH_LOG("Unexpected return code for \"%s\": %s", path,
 				strerror(errno));
 	};
@@ -1524,9 +1538,17 @@ TEST_F_FORK(layout1, execute)
 	enforce_ruleset(_metadata, ruleset_fd);
 	ASSERT_EQ(0, close(ruleset_fd));
 
-	test_execute(_metadata, file1_s1d1, -1);
-	test_execute(_metadata, file1_s1d2, 0);
-	test_execute(_metadata, file1_s1d3, 0);
+	ASSERT_EQ(0, test_open(dir_s1d1, O_RDONLY));
+	ASSERT_EQ(0, test_open(file1_s1d1, O_RDONLY));
+	test_execute(_metadata, EACCES, file1_s1d1);
+
+	ASSERT_EQ(0, test_open(dir_s1d2, O_RDONLY));
+	ASSERT_EQ(0, test_open(file1_s1d2, O_RDONLY));
+	test_execute(_metadata, 0, file1_s1d2);
+
+	ASSERT_EQ(0, test_open(dir_s1d3, O_RDONLY));
+	ASSERT_EQ(0, test_open(file1_s1d3, O_RDONLY));
+	test_execute(_metadata, 0, file1_s1d3);
 }
 
 TEST_F_FORK(layout1, link)
@@ -1558,10 +1580,7 @@ TEST_F_FORK(layout1, link)
 	ASSERT_EQ(-1, link(file2_s1d2, file1_s1d3));
 	ASSERT_EQ(EACCES, errno);
 
-	ASSERT_EQ(0, link(file2_s1d2, file1_s1d2)) {
-		TH_LOG("Failed to link file to \"%s\": %s", file2_s1d2,
-				strerror(errno));
-	};
+	ASSERT_EQ(0, link(file2_s1d2, file1_s1d2));
 	ASSERT_EQ(0, link(file2_s1d3, file1_s1d3));
 }
 
@@ -1589,25 +1608,57 @@ TEST_F_FORK(layout1, rename_file)
 	enforce_ruleset(_metadata, ruleset_fd);
 	ASSERT_EQ(0, close(ruleset_fd));
 
-	/* Replaces file. */
+	/*
+	 * Tries to replace a file, from a directory that allows file removal,
+	 * but to a different directory (which also allows file removal).
+	 */
 	ASSERT_EQ(-1, rename(file1_s2d3, file1_s1d3));
 	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(-1, renameat2(AT_FDCWD, file1_s2d3, AT_FDCWD, file1_s1d3,
+				RENAME_EXCHANGE));
+	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(-1, renameat2(AT_FDCWD, file1_s2d3, AT_FDCWD, dir_s1d3,
+				RENAME_EXCHANGE));
+	ASSERT_EQ(EACCES, errno);
+
+	/*
+	 * Tries to replace a file, from a directory that denies file removal,
+	 * to a different directory (which allows file removal).
+	 */
 	ASSERT_EQ(-1, rename(file1_s2d1, file1_s1d3));
 	ASSERT_EQ(EACCES, errno);
-	/* Same parent. */
-	ASSERT_EQ(0, rename(file2_s2d3, file1_s2d3)) {
-		TH_LOG("Failed to rename file \"%s\": %s", file2_s2d3,
-				strerror(errno));
-	};
+	ASSERT_EQ(-1, renameat2(AT_FDCWD, file1_s2d1, AT_FDCWD, file1_s1d3,
+				RENAME_EXCHANGE));
+	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(-1, renameat2(AT_FDCWD, dir_s2d2, AT_FDCWD, file1_s1d3,
+				RENAME_EXCHANGE));
+	ASSERT_EQ(EACCES, errno);
 
-	/* Renames files. */
+	/* Exchanges files and directories that partially allow removal. */
+	ASSERT_EQ(-1, renameat2(AT_FDCWD, dir_s2d2, AT_FDCWD, file1_s2d1,
+				RENAME_EXCHANGE));
+	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(-1, renameat2(AT_FDCWD, file1_s2d1, AT_FDCWD, dir_s2d2,
+				RENAME_EXCHANGE));
+	ASSERT_EQ(EACCES, errno);
+
+	/* Renames files with different parents. */
 	ASSERT_EQ(-1, rename(file1_s2d2, file1_s1d2));
 	ASSERT_EQ(EACCES, errno);
 	ASSERT_EQ(0, unlink(file1_s1d3));
 	ASSERT_EQ(-1, rename(file1_s2d1, file1_s1d3));
 	ASSERT_EQ(EACCES, errno);
-	/* Same parent. */
-	ASSERT_EQ(0, rename(file2_s1d3, file1_s1d3));
+
+	/* Exchanges and renames files with same parent. */
+	ASSERT_EQ(0, renameat2(AT_FDCWD, file2_s2d3, AT_FDCWD, file1_s2d3,
+				RENAME_EXCHANGE));
+	ASSERT_EQ(0, rename(file2_s2d3, file1_s2d3));
+
+	/* Exchanges files and directories with same parent, twice. */
+	ASSERT_EQ(0, renameat2(AT_FDCWD, file1_s2d2, AT_FDCWD, dir_s2d3,
+				RENAME_EXCHANGE));
+	ASSERT_EQ(0, renameat2(AT_FDCWD, file1_s2d2, AT_FDCWD, dir_s2d3,
+				RENAME_EXCHANGE));
 }
 
 TEST_F_FORK(layout1, rename_dir)
@@ -1628,25 +1679,47 @@ TEST_F_FORK(layout1, rename_dir)
 
 	ASSERT_LE(0, ruleset_fd);
 
-	/* Empties dir_s1d3. */
+	/* Empties dir_s1d3 to allow renaming. */
 	ASSERT_EQ(0, unlink(file1_s1d3));
 	ASSERT_EQ(0, unlink(file2_s1d3));
 
 	enforce_ruleset(_metadata, ruleset_fd);
 	ASSERT_EQ(0, close(ruleset_fd));
 
-	/* Renames directory. */
+	/* Exchanges and renames directory to a different parent. */
+	ASSERT_EQ(-1, renameat2(AT_FDCWD, dir_s2d3, AT_FDCWD, dir_s1d3,
+				RENAME_EXCHANGE));
+	ASSERT_EQ(EACCES, errno);
 	ASSERT_EQ(-1, rename(dir_s2d3, dir_s1d3));
 	ASSERT_EQ(EACCES, errno);
-	ASSERT_EQ(0, unlink(file1_s1d2));
-	ASSERT_EQ(0, rename(dir_s1d3, file1_s1d2)) {
-		TH_LOG("Failed to rename directory \"%s\": %s", dir_s1d3,
-				strerror(errno));
-	};
-	ASSERT_EQ(0, rmdir(file1_s1d2));
+	ASSERT_EQ(-1, renameat2(AT_FDCWD, file1_s2d2, AT_FDCWD, dir_s1d3,
+				RENAME_EXCHANGE));
+	ASSERT_EQ(EACCES, errno);
+
+	/*
+	 * Exchanges directory to the same parent, which doesn't allow
+	 * directory removal.
+	 */
+	ASSERT_EQ(-1, renameat2(AT_FDCWD, dir_s1d1, AT_FDCWD, dir_s2d1,
+				RENAME_EXCHANGE));
+	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(-1, renameat2(AT_FDCWD, file1_s1d1, AT_FDCWD, dir_s1d2,
+				RENAME_EXCHANGE));
+	ASSERT_EQ(EACCES, errno);
+
+	/*
+	 * Exchanges and renames directory to the same parent, which allows
+	 * directory removal.
+	 */
+	ASSERT_EQ(0, renameat2(AT_FDCWD, dir_s1d3, AT_FDCWD, file1_s1d2,
+				RENAME_EXCHANGE));
+	ASSERT_EQ(0, unlink(dir_s1d3));
+	ASSERT_EQ(0, mkdir(dir_s1d3, 0700));
+	ASSERT_EQ(0, rename(file1_s1d2, dir_s1d3));
+	ASSERT_EQ(0, rmdir(dir_s1d3));
 }
 
-TEST_F_FORK(layout1, rmdir)
+TEST_F_FORK(layout1, remove_dir)
 {
 	const struct rule rules[] = {
 		{
@@ -1669,14 +1742,21 @@ TEST_F_FORK(layout1, rmdir)
 	ASSERT_EQ(0, close(ruleset_fd));
 
 	ASSERT_EQ(0, rmdir(dir_s1d3));
+	ASSERT_EQ(0, mkdir(dir_s1d3, 0700));
+	ASSERT_EQ(0, unlinkat(AT_FDCWD, dir_s1d3, AT_REMOVEDIR));
+
 	/* dir_s1d2 itself cannot be removed. */
 	ASSERT_EQ(-1, rmdir(dir_s1d2));
 	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(-1, unlinkat(AT_FDCWD, dir_s1d2, AT_REMOVEDIR));
+	ASSERT_EQ(EACCES, errno);
 	ASSERT_EQ(-1, rmdir(dir_s1d1));
+	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(-1, unlinkat(AT_FDCWD, dir_s1d1, AT_REMOVEDIR));
 	ASSERT_EQ(EACCES, errno);
 }
 
-TEST_F_FORK(layout1, unlink)
+TEST_F_FORK(layout1, remove_file)
 {
 	const struct rule rules[] = {
 		{
@@ -1694,11 +1774,10 @@ TEST_F_FORK(layout1, unlink)
 
 	ASSERT_EQ(-1, unlink(file1_s1d1));
 	ASSERT_EQ(EACCES, errno);
-	ASSERT_EQ(0, unlink(file1_s1d2)) {
-		TH_LOG("Failed to unlink file \"%s\": %s", file1_s1d2,
-				strerror(errno));
-	};
-	ASSERT_EQ(0, unlink(file1_s1d3));
+	ASSERT_EQ(-1, unlinkat(AT_FDCWD, file1_s1d1, 0));
+	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(0, unlink(file1_s1d2));
+	ASSERT_EQ(0, unlinkat(AT_FDCWD, file1_s1d3, 0));
 }
 
 static void test_make_file(struct __test_metadata *const _metadata,
@@ -1786,10 +1865,7 @@ TEST_F_FORK(layout1, make_sym)
 
 	ASSERT_EQ(-1, symlink("none", file1_s1d1));
 	ASSERT_EQ(EACCES, errno);
-	ASSERT_EQ(0, symlink("none", file1_s1d2)) {
-		TH_LOG("Failed to make symlink \"%s\": %s",
-				file1_s1d2, strerror(errno));
-	};
+	ASSERT_EQ(0, symlink("none", file1_s1d2));
 	ASSERT_EQ(0, symlink("none", file1_s1d3));
 }
 
@@ -1817,10 +1893,7 @@ TEST_F_FORK(layout1, make_dir)
 	/* Uses file_* as directory names. */
 	ASSERT_EQ(-1, mkdir(file1_s1d1, 0700));
 	ASSERT_EQ(EACCES, errno);
-	ASSERT_EQ(0, mkdir(file1_s1d2, 0700)) {
-		TH_LOG("Failed to make directory \"%s\": %s",
-				file1_s1d2, strerror(errno));
-	};
+	ASSERT_EQ(0, mkdir(file1_s1d2, 0700));
 	ASSERT_EQ(0, mkdir(file1_s1d3, 0700));
 }
 
@@ -1930,8 +2003,13 @@ TEST_F_FORK(layout1, proc_pipe)
 	ASSERT_EQ(0, close(pipe_fds[1]));
 }
 
-static void create_layout1_bind(struct __test_metadata *const _metadata)
+FIXTURE(layout1_bind) {
+};
+
+FIXTURE_SETUP(layout1_bind)
 {
+	prepare_layout(_metadata);
+
 	create_layout1(_metadata);
 
 	set_cap(_metadata, CAP_SYS_ADMIN);
@@ -1939,27 +2017,15 @@ static void create_layout1_bind(struct __test_metadata *const _metadata)
 	clear_cap(_metadata, CAP_SYS_ADMIN);
 }
 
-static void remove_layout1_bind(struct __test_metadata *const _metadata)
+FIXTURE_TEARDOWN(layout1_bind)
 {
 	set_cap(_metadata, CAP_SYS_ADMIN);
 	EXPECT_EQ(0, umount(dir_s2d2));
 	clear_cap(_metadata, CAP_SYS_ADMIN);
 
 	remove_layout1(_metadata);
-}
 
-FIXTURE(layout1_bind) {
-};
-
-FIXTURE_SETUP(layout1_bind)
-{
-	disable_caps(_metadata);
-	create_layout1_bind(_metadata);
-}
-
-FIXTURE_TEARDOWN(layout1_bind)
-{
-	remove_layout1_bind(_metadata);
+	cleanup_layout(_metadata);
 }
 
 static const char bind_dir_s1d3[] = TMP_DIR "/s2d1/s2d2/s1d3";
@@ -2283,13 +2349,7 @@ FIXTURE(layout2_overlay) {
 
 FIXTURE_SETUP(layout2_overlay)
 {
-	disable_caps(_metadata);
-
-	/* Do not pollute the rest of the system. */
-	set_cap(_metadata, CAP_SYS_ADMIN);
-	ASSERT_EQ(0, unshare(CLONE_NEWNS));
-	clear_cap(_metadata, CAP_SYS_ADMIN);
-	umask(0077);
+	prepare_layout(_metadata);
 
 	create_directory(_metadata, LOWER_BASE);
 	set_cap(_metadata, CAP_SYS_ADMIN);
@@ -2352,7 +2412,7 @@ FIXTURE_TEARDOWN(layout2_overlay)
 	clear_cap(_metadata, CAP_SYS_ADMIN);
 	EXPECT_EQ(0, remove_path(MERGE_DATA));
 
-	EXPECT_EQ(0, remove_path(TMP_DIR));
+	cleanup_layout(_metadata);
 }
 
 TEST_F_FORK(layout2_overlay, no_restriction)

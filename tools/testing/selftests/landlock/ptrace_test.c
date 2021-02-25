@@ -23,10 +23,7 @@ static void create_domain(struct __test_metadata *const _metadata)
 {
 	int ruleset_fd;
 	struct landlock_ruleset_attr ruleset_attr = {
-		.handled_access_fs = LANDLOCK_ACCESS_FS_READ_FILE,
-	};
-	struct landlock_path_beneath_attr path_beneath_attr = {
-		.allowed_access = LANDLOCK_ACCESS_FS_READ_FILE,
+		.handled_access_fs = LANDLOCK_ACCESS_FS_MAKE_BLOCK,
 	};
 
 	ruleset_fd = landlock_create_ruleset(&ruleset_attr,
@@ -34,16 +31,32 @@ static void create_domain(struct __test_metadata *const _metadata)
 	EXPECT_LE(0, ruleset_fd) {
 		TH_LOG("Failed to create a ruleset: %s", strerror(errno));
 	}
-	path_beneath_attr.parent_fd = open("/tmp", O_PATH | O_NOFOLLOW |
-			O_DIRECTORY | O_CLOEXEC);
-	EXPECT_LE(0, path_beneath_attr.parent_fd);
-	EXPECT_EQ(0, landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH,
-				&path_beneath_attr, 0));
-	EXPECT_EQ(0, close(path_beneath_attr.parent_fd));
-
 	EXPECT_EQ(0, prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0));
 	EXPECT_EQ(0, landlock_restrict_self(ruleset_fd, 0));
 	EXPECT_EQ(0, close(ruleset_fd));
+}
+
+static int test_ptrace_read(const pid_t pid)
+{
+	static const char path_template[] = "/proc/%d/environ";
+	char procenv_path[sizeof(path_template) + 10];
+	int procenv_path_size, fd;
+
+	procenv_path_size = snprintf(procenv_path, sizeof(procenv_path),
+			path_template, pid);
+	if (procenv_path_size >= sizeof(procenv_path))
+		return E2BIG;
+
+	fd = open(procenv_path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return errno;
+	/*
+	 * Mixing error codes from close(2) and open(2) should not lead to any
+	 * (access type) confusion for this test.
+	 */
+	if (close(fd) != 0)
+		return errno;
+	return 0;
 }
 
 FIXTURE(hierarchy) { };
@@ -195,12 +208,16 @@ FIXTURE_TEARDOWN(hierarchy)
 TEST_F(hierarchy, trace)
 {
 	pid_t child, parent;
-	int status;
+	int status, err_proc_read;
 	int pipe_child[2], pipe_parent[2];
 	char buf_parent;
 	long ret;
 
-	disable_caps(_metadata);
+	/*
+	 * Removes all effective and permitted capabilities to not interfere
+	 * with cap_ptrace_access_check() in case of PTRACE_MODE_FSCREDS.
+	 */
+	drop_caps(_metadata);
 
 	parent = getpid();
 	ASSERT_EQ(0, pipe2(pipe_child, O_CLOEXEC));
@@ -225,13 +242,16 @@ TEST_F(hierarchy, trace)
 		/* Waits for the parent to be in a domain, if any. */
 		ASSERT_EQ(1, read(pipe_parent[0], &buf_child, 1));
 
-		/* Tests PTRACE_ATTACH on the parent. */
+		/* Tests PTRACE_ATTACH and PTRACE_MODE_READ on the parent. */
+		err_proc_read = test_ptrace_read(parent);
 		ret = ptrace(PTRACE_ATTACH, parent, NULL, 0);
 		if (variant->domain_child) {
 			EXPECT_EQ(-1, ret);
 			EXPECT_EQ(EPERM, errno);
+			EXPECT_EQ(EACCES, err_proc_read);
 		} else {
 			EXPECT_EQ(0, ret);
+			EXPECT_EQ(0, err_proc_read);
 		}
 		if (ret == 0) {
 			ASSERT_EQ(parent, waitpid(parent, &status, 0));
@@ -289,13 +309,16 @@ TEST_F(hierarchy, trace)
 		EXPECT_EQ(ESRCH, errno);
 	}
 
-	/* Tests PTRACE_ATTACH on the child. */
+	/* Tests PTRACE_ATTACH and PTRACE_MODE_READ on the child. */
+	err_proc_read = test_ptrace_read(child);
 	ret = ptrace(PTRACE_ATTACH, child, NULL, 0);
 	if (variant->domain_parent) {
 		EXPECT_EQ(-1, ret);
 		EXPECT_EQ(EPERM, errno);
+		EXPECT_EQ(EACCES, err_proc_read);
 	} else {
 		EXPECT_EQ(0, ret);
+		EXPECT_EQ(0, err_proc_read);
 	}
 	if (ret == 0) {
 		ASSERT_EQ(child, waitpid(child, &status, 0));
