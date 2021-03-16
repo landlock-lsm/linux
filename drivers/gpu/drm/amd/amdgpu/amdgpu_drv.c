@@ -781,6 +781,10 @@ uint amdgpu_dm_abm_level;
 MODULE_PARM_DESC(abmlevel, "ABM level (0 = off (default), 1-4 = backlight reduction level) ");
 module_param_named(abmlevel, amdgpu_dm_abm_level, uint, 0444);
 
+int amdgpu_backlight = -1;
+MODULE_PARM_DESC(backlight, "Backlight control (0 = pwm, 1 = aux, -1 auto (default))");
+module_param_named(backlight, amdgpu_backlight, bint, 0444);
+
 /**
  * DOC: tmz (int)
  * Trusted Memory Zone (TMZ) is a method to protect data being written
@@ -1270,7 +1274,9 @@ amdgpu_pci_shutdown(struct pci_dev *pdev)
 	 */
 	if (!amdgpu_passthrough(adev))
 		adev->mp1_state = PP_MP1_STATE_UNLOAD;
+	adev->in_poweroff_reboot_com = true;
 	amdgpu_device_ip_suspend(adev);
+	adev->in_poweroff_reboot_com = false;
 	adev->mp1_state = PP_MP1_STATE_NONE;
 }
 
@@ -1312,8 +1318,13 @@ static int amdgpu_pmops_thaw(struct device *dev)
 static int amdgpu_pmops_poweroff(struct device *dev)
 {
 	struct drm_device *drm_dev = dev_get_drvdata(dev);
+	struct amdgpu_device *adev = drm_to_adev(drm_dev);
+	int r;
 
-	return amdgpu_device_suspend(drm_dev, true);
+	adev->in_poweroff_reboot_com = true;
+	r =  amdgpu_device_suspend(drm_dev, true);
+	adev->in_poweroff_reboot_com = false;
+	return r;
 }
 
 static int amdgpu_pmops_restore(struct device *dev)

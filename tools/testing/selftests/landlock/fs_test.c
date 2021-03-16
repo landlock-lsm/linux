@@ -1365,7 +1365,18 @@ enum relative_access {
 static void test_relative_path(struct __test_metadata *const _metadata,
 		const enum relative_access rel)
 {
-	const struct rule rules[] = {
+	/*
+	 * Common layer to check that chroot doesn't ignore it (i.e. a chroot
+	 * is not a disconnected root directory).
+	 */
+	const struct rule layer1_base[] = {
+		{
+			.path = TMP_DIR,
+			.access = ACCESS_RO,
+		},
+		{}
+	};
+	const struct rule layer2_subs[] = {
 		{
 			.path = dir_s1d2,
 			.access = ACCESS_RO,
@@ -1376,8 +1387,14 @@ static void test_relative_path(struct __test_metadata *const _metadata,
 		},
 		{}
 	};
-	int dirfd;
-	const int ruleset_fd = create_ruleset(_metadata, ACCESS_RW, rules);
+	int dirfd, ruleset_fd;
+
+	ruleset_fd = create_ruleset(_metadata, ACCESS_RW, layer1_base);
+	ASSERT_LE(0, ruleset_fd);
+	enforce_ruleset(_metadata, ruleset_fd);
+	ASSERT_EQ(0, close(ruleset_fd));
+
+	ruleset_fd = create_ruleset(_metadata, ACCESS_RW, layer2_subs);
 
 	ASSERT_LE(0, ruleset_fd);
 	switch (rel) {
@@ -1433,6 +1450,14 @@ static void test_relative_path(struct __test_metadata *const _metadata,
 	} else {
 		/* The current directory is dir_s1d2. */
 		ASSERT_EQ(0, test_open_rel(dirfd, "./s1d3", O_RDONLY));
+	}
+
+	if (rel == REL_CHROOT_ONLY || rel == REL_CHROOT_CHDIR) {
+		/* Checks the root dir_s1d2. */
+		ASSERT_EQ(0, test_open_rel(dirfd, "/..", O_RDONLY));
+		ASSERT_EQ(0, test_open_rel(dirfd, "/", O_RDONLY));
+		ASSERT_EQ(0, test_open_rel(dirfd, "/f1", O_RDONLY));
+		ASSERT_EQ(0, test_open_rel(dirfd, "/s1d3", O_RDONLY));
 	}
 
 	if (rel != REL_CHROOT_CHDIR) {
@@ -1794,20 +1819,41 @@ static void test_make_file(struct __test_metadata *const _metadata,
 
 	ASSERT_LE(0, ruleset_fd);
 
-	unlink(file1_s1d1);
-	unlink(file1_s1d2);
-	unlink(file1_s1d3);
+	ASSERT_EQ(0, unlink(file1_s1d1));
+	ASSERT_EQ(0, unlink(file2_s1d1));
+	ASSERT_EQ(0, mknod(file2_s1d1, mode | 0400, dev)) {
+		TH_LOG("Failed to make file \"%s\": %s",
+				file2_s1d1, strerror(errno));
+	};
+
+	ASSERT_EQ(0, unlink(file1_s1d2));
+	ASSERT_EQ(0, unlink(file2_s1d2));
+
+	ASSERT_EQ(0, unlink(file1_s1d3));
+	ASSERT_EQ(0, unlink(file2_s1d3));
 
 	enforce_ruleset(_metadata, ruleset_fd);
 	ASSERT_EQ(0, close(ruleset_fd));
 
 	ASSERT_EQ(-1, mknod(file1_s1d1, mode | 0400, dev));
 	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(-1, link(file2_s1d1, file1_s1d1));
+	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(-1, rename(file2_s1d1, file1_s1d1));
+	ASSERT_EQ(EACCES, errno);
+
 	ASSERT_EQ(0, mknod(file1_s1d2, mode | 0400, dev)) {
 		TH_LOG("Failed to make file \"%s\": %s",
 				file1_s1d2, strerror(errno));
 	};
+	ASSERT_EQ(0, link(file1_s1d2, file2_s1d2));
+	ASSERT_EQ(0, unlink(file2_s1d2));
+	ASSERT_EQ(0, rename(file1_s1d2, file2_s1d2));
+
 	ASSERT_EQ(0, mknod(file1_s1d3, mode | 0400, dev));
+	ASSERT_EQ(0, link(file1_s1d3, file2_s1d3));
+	ASSERT_EQ(0, unlink(file2_s1d3));
+	ASSERT_EQ(0, rename(file1_s1d3, file2_s1d3));
 }
 
 TEST_F_FORK(layout1, make_char)
@@ -1826,9 +1872,13 @@ TEST_F_FORK(layout1, make_block)
 			makedev(7, 0));
 }
 
-TEST_F_FORK(layout1, make_reg)
+TEST_F_FORK(layout1, make_reg_1)
 {
 	test_make_file(_metadata, LANDLOCK_ACCESS_FS_MAKE_REG, S_IFREG, 0);
+}
+
+TEST_F_FORK(layout1, make_reg_2)
+{
 	test_make_file(_metadata, LANDLOCK_ACCESS_FS_MAKE_REG, 0, 0);
 }
 
@@ -1857,16 +1907,34 @@ TEST_F_FORK(layout1, make_sym)
 	ASSERT_LE(0, ruleset_fd);
 
 	ASSERT_EQ(0, unlink(file1_s1d1));
+	ASSERT_EQ(0, unlink(file2_s1d1));
+	ASSERT_EQ(0, symlink("none", file2_s1d1));
+
 	ASSERT_EQ(0, unlink(file1_s1d2));
+	ASSERT_EQ(0, unlink(file2_s1d2));
+
 	ASSERT_EQ(0, unlink(file1_s1d3));
+	ASSERT_EQ(0, unlink(file2_s1d3));
 
 	enforce_ruleset(_metadata, ruleset_fd);
 	ASSERT_EQ(0, close(ruleset_fd));
 
 	ASSERT_EQ(-1, symlink("none", file1_s1d1));
 	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(-1, link(file2_s1d1, file1_s1d1));
+	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(-1, rename(file2_s1d1, file1_s1d1));
+	ASSERT_EQ(EACCES, errno);
+
 	ASSERT_EQ(0, symlink("none", file1_s1d2));
+	ASSERT_EQ(0, link(file1_s1d2, file2_s1d2));
+	ASSERT_EQ(0, unlink(file2_s1d2));
+	ASSERT_EQ(0, rename(file1_s1d2, file2_s1d2));
+
 	ASSERT_EQ(0, symlink("none", file1_s1d3));
+	ASSERT_EQ(0, link(file1_s1d3, file2_s1d3));
+	ASSERT_EQ(0, unlink(file2_s1d3));
+	ASSERT_EQ(0, rename(file1_s1d3, file2_s1d3));
 }
 
 TEST_F_FORK(layout1, make_dir)
