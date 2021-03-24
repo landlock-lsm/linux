@@ -8,7 +8,7 @@ Landlock: unprivileged access control
 =====================================
 
 :Author: Mickaël Salaün
-:Date: February 2021
+:Date: March 2021
 
 The goal of Landlock is to enable to restrict ambient rights (e.g. global
 filesystem access) for a set of processes.  Because Landlock is a stackable
@@ -22,7 +22,7 @@ Landlock rules
 ==============
 
 A Landlock rule describes an action on an object.  An object is currently a
-file hierarchy, and the related filesystem actions are defined in `Access
+file hierarchy, and the related filesystem actions are defined with `access
 rights`_.  A set of rules is aggregated in a ruleset, which can then restrict
 the thread enforcing it, and its future children.
 
@@ -161,7 +161,9 @@ on the merge hierarchy only reflects on the upper layer.  From a Landlock
 policy point of view, each OverlayFS layers and merge hierarchies are
 standalone and contains their own set of files and directories, which is
 different from bind mounts.  A policy restricting an OverlayFS layer will not
-restrict the resulted merged hierarchy, and vice versa.
+restrict the resulted merged hierarchy, and vice versa.  Landlock users should
+then only think about file hierarchies they want to allow access to, regardless
+of the underlying filesystem.
 
 Inheritance
 -----------
@@ -235,7 +237,7 @@ access to files, also implies to inherit the ruleset restrictions from a parent
 to its hierarchy.  Because files are identified and restricted by their
 hierarchy, moving or linking a file from one directory to another implies to
 propagate the hierarchy constraints.  To protect against privilege escalations
-through renaming or linking, and for the sack of simplicity, Landlock currently
+through renaming or linking, and for the sake of simplicity, Landlock currently
 limits linking and renaming to the same directory.  Future Landlock evolutions
 will enable more flexibility for renaming and linking, with dedicated ruleset
 flags.
@@ -253,10 +255,12 @@ Special filesystems
 Access to regular files and directories can be restricted by Landlock,
 according to the handled accesses of a ruleset.  However, files that do not
 come from a user-visible filesystem (e.g. pipe, socket), but can still be
-accessed through /proc/self/fd/, cannot currently be restricted.  Likewise,
-some special kernel filesystems such as nsfs, which can be accessed through
-/proc/self/ns/, cannot currently be restricted.  For now, these kind of special
-paths are then always allowed.  Future Landlock evolutions will enable to
+accessed through ``/proc/<pid>/fd/*``, cannot currently be explicitly
+restricted.  Likewise, some special kernel filesystems such as nsfs, which can
+be accessed through ``/proc/<pid>/ns/*``, cannot currently be explicitly
+restricted.  However, thanks to the `ptrace restrictions`_, access to such
+sensitive ``/proc`` files are automatically restricted according to domain
+hierarchies.  Future Landlock evolutions could still enable to explicitly
 restrict such paths with dedicated ruleset flags.
 
 Ruleset layers

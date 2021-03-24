@@ -115,11 +115,12 @@ retry:
 	if (IS_ERR(new_object))
 		return new_object;
 
-	/* Protects against concurrent get_inode_object() calls. */
+	/*
+	 * Protects against concurrent calls to get_inode_object() or
+	 * hook_sb_delete().
+	 */
 	spin_lock(&inode->i_lock);
-	object = rcu_dereference_protected(inode_sec->object,
-			lockdep_is_held(&inode->i_lock));
-	if (unlikely(object)) {
+	if (unlikely(rcu_access_pointer(inode_sec->object))) {
 		/* Someone else just created the object, bail out and retry. */
 		spin_unlock(&inode->i_lock);
 		kfree(new_object);
@@ -128,12 +129,13 @@ retry:
 		goto retry;
 	}
 
-	rcu_assign_pointer(inode_sec->object, new_object);
 	/*
 	 * @inode will be released by hook_sb_delete() on its superblock
-	 * shutdown.
+	 * shutdown, or by release_inode() when no more ruleset references the
+	 * related object.
 	 */
 	ihold(inode);
+	rcu_assign_pointer(inode_sec->object, new_object);
 	spin_unlock(&inode->i_lock);
 	return new_object;
 }
@@ -238,7 +240,7 @@ static int check_access_path(const struct landlock_ruleset *const domain,
 	/*
 	 * Allows access to pseudo filesystems that will never be mountable
 	 * (e.g. sockfs, pipefs), but can still be reachable through
-	 * /proc/self/fd .
+	 * /proc/<pid>/fd/<file-descriptor> .
 	 */
 	if ((path->dentry->d_sb->s_flags & SB_NOUSER) ||
 			(d_is_positive(path->dentry) &&
@@ -292,7 +294,7 @@ jump_up:
 			/*
 			 * Stops at disconnected root directories.  Only allows
 			 * access to internal filesystems (e.g. nsfs, which is
-			 * reachable through /proc/self/ns).
+			 * reachable through /proc/<pid>/ns/<namespace>).
 			 */
 			allowed = !!(walker_path.mnt->mnt_flags & MNT_INTERNAL);
 			break;
@@ -350,13 +352,17 @@ static void hook_sb_delete(struct super_block *const sb)
 			continue;
 
 		/*
+		 * Protects against concurrent modification of inode (e.g.
+		 * from get_inode_object()).
+		 */
+		spin_lock(&inode->i_lock);
+		/*
 		 * Checks I_FREEING and I_WILL_FREE  to protect against a race
 		 * condition when release_inode() just called iput(), which
 		 * could lead to a NULL dereference of inode->security or a
 		 * second call to iput() for the same Landlock object.  Also
 		 * checks I_NEW because such inode cannot be tied to an object.
 		 */
-		spin_lock(&inode->i_lock);
 		if (inode->i_state & (I_FREEING | I_WILL_FREE | I_NEW)) {
 			spin_unlock(&inode->i_lock);
 			continue;

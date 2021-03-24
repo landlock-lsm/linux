@@ -101,7 +101,7 @@ static struct landlock_rule *create_rule(
 	return new_rule;
 }
 
-static void put_rule(struct landlock_rule *const rule)
+static void free_rule(struct landlock_rule *const rule)
 {
 	might_sleep();
 	if (!rule)
@@ -198,7 +198,7 @@ static int insert_rule(struct landlock_ruleset *const ruleset,
 		if (IS_ERR(new_rule))
 			return PTR_ERR(new_rule);
 		rb_replace_node(&this->node, &new_rule->node, &ruleset->root);
-		put_rule(this);
+		free_rule(this);
 		return 0;
 	}
 
@@ -360,7 +360,7 @@ static void free_ruleset(struct landlock_ruleset *const ruleset)
 	might_sleep();
 	rbtree_postorder_for_each_entry_safe(freeme, next, &ruleset->root,
 			node)
-		put_rule(freeme);
+		free_rule(freeme);
 	put_hierarchy(ruleset->hierarchy);
 	kfree(ruleset);
 }

@@ -16,21 +16,35 @@
 #include "ruleset.h"
 #include "setup.h"
 
+/**
+ * struct landlock_inode_security - Inode security blob
+ *
+ * Enable to reference a &struct landlock_object tied to an inode (i.e.
+ * underlying object).
+ */
 struct landlock_inode_security {
-	/*
-	 * @object: Weak pointer to an allocated object.  All writes (i.e.
-	 * creating a new object or removing one) are protected by the
-	 * underlying inode->i_lock.  Disassociating @object from the inode is
-	 * additionally protected by @object->lock, from the time @object's
-	 * usage refcount drops to zero to the time this pointer is nulled out.
-	 * Cf. release_inode().
+	/**
+	 * @object: Weak pointer to an allocated object.  All assignments of a
+	 * new object are protected by the underlying inode->i_lock.  However,
+	 * atomically disassociating @object from the inode is only protected
+	 * by @object->lock, from the time @object's usage refcount drops to
+	 * zero to the time this pointer is nulled out (cf. release_inode() and
+	 * hook_sb_delete()).  Indeed, such disassociation doesn't require
+	 * inode->i_lock thanks to the careful rcu_access_pointer() check
+	 * performed by get_inode_object().
 	 */
 	struct landlock_object __rcu *object;
 };
 
+/**
+ * struct landlock_superblock_security - Superblock security blob
+ *
+ * Enable hook_sb_delete() to wait for concurrent calls to release_inode().
+ */
 struct landlock_superblock_security {
-	/*
-	 * @inode_refs: References to Landlock underlying objects.
+	/**
+	 * @inode_refs: Number of pending inodes (from this superblock) that
+	 * are being released by release_inode().
 	 * Cf. struct super_block->s_fsnotify_inode_refs .
 	 */
 	atomic_long_t inode_refs;

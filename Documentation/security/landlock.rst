@@ -7,7 +7,7 @@ Landlock LSM: kernel documentation
 ==================================
 
 :Author: Mickaël Salaün
-:Date: February 2021
+:Date: March 2021
 
 Landlock's goal is to create scoped access-control (i.e. sandboxing).  To
 harden a whole system, this feature should be available to any process,
@@ -54,6 +54,12 @@ Object
 ------
 
 .. kernel-doc:: security/landlock/object.h
+    :identifiers:
+
+Filesystem
+----------
+
+.. kernel-doc:: security/landlock/fs.h
     :identifiers:
 
 Ruleset and domain
