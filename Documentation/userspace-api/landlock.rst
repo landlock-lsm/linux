@@ -242,12 +242,12 @@ limits linking and renaming to the same directory.  Future Landlock evolutions
 will enable more flexibility for renaming and linking, with dedicated ruleset
 flags.
 
-Filesystem layout modification
-------------------------------
+Filesystem topology modification
+--------------------------------
 
 As for file renaming and linking, a sandboxed thread cannot modify its
-filesystem layout, whether via :manpage:`mount(2)` or :manpage:`pivot_root(2)`.
-However, :manpage:`chroot(2)` calls are not denied.
+filesystem topology, whether via :manpage:`mount(2)` or
+:manpage:`pivot_root(2)`.  However, :manpage:`chroot(2)` calls are not denied.
 
 Special filesystems
 -------------------

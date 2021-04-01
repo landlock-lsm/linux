@@ -190,7 +190,7 @@ static inline u64 unmask_layers(
 	size_t i;
 
 	if (d_is_negative(path->dentry))
-		/* Continues to walk while there is no mapped inode. */
+		/* Ignore nonexistent leafs. */
 		return layer_mask;
 	inode = d_backing_inode(path->dentry);
 	rcu_read_lock();
@@ -442,10 +442,10 @@ static void hook_sb_delete(struct super_block *const sb)
 
 /*
  * Because a Landlock security policy is defined according to the filesystem
- * layout (i.e. the mount namespace), changing it may grant access to files not
- * previously allowed.
+ * topology (i.e. the mount namespace), changing it may grant access to files
+ * not previously allowed.
  *
- * To make it simple, deny any filesystem layout modification by landlocked
+ * To make it simple, deny any filesystem topology modification by landlocked
  * processes.  Non-landlocked processes may still change the namespace of a
  * landlocked process, but this kind of threat must be handled by a system-wide
  * access-control security policy.
@@ -456,8 +456,7 @@ static void hook_sb_delete(struct super_block *const sb)
  * account the accesses of the source and the destination of a new mount point.
  * However, it would also require to make all the child domains dynamically
  * inherit these new constraints.  Anyway, for backward compatibility reasons,
- * a dedicated user space option would be required (e.g. as a ruleset command
- * option).
+ * a dedicated user space option would be required (e.g. as a ruleset flag).
  */
 static int hook_sb_mount(const char *const dev_name,
 		const struct path *const path, const char *const type,
@@ -556,10 +555,10 @@ static int hook_path_link(struct dentry *const old_dentry,
 		return 0;
 	/* The mount points are the same for old and new paths, cf. EXDEV. */
 	if (old_dentry->d_parent != new_dir->dentry)
-		/* For now, forbids reparenting. */
-		return -EACCES;
+		/* Gracefully forbids reparenting. */
+		return -EXDEV;
 	if (unlikely(d_is_negative(old_dentry)))
-		return -EACCES;
+		return -ENOENT;
 	return check_access_path(dom, new_dir,
 			get_mode_access(d_backing_inode(old_dentry)->i_mode));
 }
@@ -584,10 +583,10 @@ static int hook_path_rename(const struct path *const old_dir,
 		return 0;
 	/* The mount points are the same for old and new paths, cf. EXDEV. */
 	if (old_dir->dentry != new_dir->dentry)
-		/* For now, forbids reparenting. */
-		return -EACCES;
-	if (WARN_ON_ONCE(d_is_negative(old_dentry)))
-		return -EACCES;
+		/* Gracefully forbids reparenting. */
+		return -EXDEV;
+	if (unlikely(d_is_negative(old_dentry)))
+		return -ENOENT;
 	/* RENAME_EXCHANGE is handled because directories are the same. */
 	return check_access_path(dom, old_dir, maybe_remove(old_dentry) |
 			maybe_remove(new_dentry) |

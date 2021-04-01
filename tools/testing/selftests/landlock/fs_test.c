@@ -1601,9 +1601,9 @@ TEST_F_FORK(layout1, link)
 	ASSERT_EQ(EACCES, errno);
 	/* Denies linking because of reparenting. */
 	ASSERT_EQ(-1, link(file1_s2d1, file1_s1d2));
-	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(EXDEV, errno);
 	ASSERT_EQ(-1, link(file2_s1d2, file1_s1d3));
-	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(EXDEV, errno);
 
 	ASSERT_EQ(0, link(file2_s1d2, file1_s1d2));
 	ASSERT_EQ(0, link(file2_s1d3, file1_s1d3));
@@ -1638,26 +1638,26 @@ TEST_F_FORK(layout1, rename_file)
 	 * but to a different directory (which also allows file removal).
 	 */
 	ASSERT_EQ(-1, rename(file1_s2d3, file1_s1d3));
-	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(EXDEV, errno);
 	ASSERT_EQ(-1, renameat2(AT_FDCWD, file1_s2d3, AT_FDCWD, file1_s1d3,
 				RENAME_EXCHANGE));
-	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(EXDEV, errno);
 	ASSERT_EQ(-1, renameat2(AT_FDCWD, file1_s2d3, AT_FDCWD, dir_s1d3,
 				RENAME_EXCHANGE));
-	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(EXDEV, errno);
 
 	/*
 	 * Tries to replace a file, from a directory that denies file removal,
 	 * to a different directory (which allows file removal).
 	 */
 	ASSERT_EQ(-1, rename(file1_s2d1, file1_s1d3));
-	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(EXDEV, errno);
 	ASSERT_EQ(-1, renameat2(AT_FDCWD, file1_s2d1, AT_FDCWD, file1_s1d3,
 				RENAME_EXCHANGE));
-	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(EXDEV, errno);
 	ASSERT_EQ(-1, renameat2(AT_FDCWD, dir_s2d2, AT_FDCWD, file1_s1d3,
 				RENAME_EXCHANGE));
-	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(EXDEV, errno);
 
 	/* Exchanges files and directories that partially allow removal. */
 	ASSERT_EQ(-1, renameat2(AT_FDCWD, dir_s2d2, AT_FDCWD, file1_s2d1,
@@ -1669,10 +1669,10 @@ TEST_F_FORK(layout1, rename_file)
 
 	/* Renames files with different parents. */
 	ASSERT_EQ(-1, rename(file1_s2d2, file1_s1d2));
-	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(EXDEV, errno);
 	ASSERT_EQ(0, unlink(file1_s1d3));
 	ASSERT_EQ(-1, rename(file1_s2d1, file1_s1d3));
-	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(EXDEV, errno);
 
 	/* Exchanges and renames files with same parent. */
 	ASSERT_EQ(0, renameat2(AT_FDCWD, file2_s2d3, AT_FDCWD, file1_s2d3,
@@ -1714,12 +1714,12 @@ TEST_F_FORK(layout1, rename_dir)
 	/* Exchanges and renames directory to a different parent. */
 	ASSERT_EQ(-1, renameat2(AT_FDCWD, dir_s2d3, AT_FDCWD, dir_s1d3,
 				RENAME_EXCHANGE));
-	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(EXDEV, errno);
 	ASSERT_EQ(-1, rename(dir_s2d3, dir_s1d3));
-	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(EXDEV, errno);
 	ASSERT_EQ(-1, renameat2(AT_FDCWD, file1_s2d2, AT_FDCWD, dir_s1d3,
 				RENAME_EXCHANGE));
-	ASSERT_EQ(EACCES, errno);
+	ASSERT_EQ(EXDEV, errno);
 
 	/*
 	 * Exchanges directory to the same parent, which doesn't allow

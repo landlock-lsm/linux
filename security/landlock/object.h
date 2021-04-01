@@ -33,7 +33,7 @@ struct landlock_object_underops {
  * rights (pertaining to different domains) to a kernel object (e.g an inode)
  * in a safe way.  This implies to handle concurrent use and modification.
  *
- * The lifetime of a &struct landlock_object depends of the rules referring to
+ * The lifetime of a &struct landlock_object depends on the rules referring to
  * it.
  */
 struct landlock_object {

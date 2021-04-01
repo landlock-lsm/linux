@@ -108,7 +108,8 @@ struct landlock_path_beneath_attr {
  *   accessible through these syscall families: :manpage:`chdir(2)`,
  *   :manpage:`truncate(2)`, :manpage:`stat(2)`, :manpage:`flock(2)`,
  *   :manpage:`chmod(2)`, :manpage:`chown(2)`, :manpage:`setxattr(2)`,
- *   :manpage:`utime(2)`, :manpage:`ioctl(2)`, :manpage:`fcntl(2)`.
+ *   :manpage:`utime(2)`, :manpage:`ioctl(2)`, :manpage:`fcntl(2)`,
+ *   :manpage:`access(2)`.
  *   Future Landlock evolutions will enable to restrict them.
  */
 #define LANDLOCK_ACCESS_FS_EXECUTE			(1ULL << 0)
