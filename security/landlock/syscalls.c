@@ -243,14 +243,11 @@ static int get_path_from_fd(const s32 fd, struct path *const path)
 	if (!f.file)
 		return -EBADF;
 	/*
-	 * Only allows O_PATH file descriptor: enables to restrict ambient
-	 * filesystem access without requiring to open and risk leaking or
-	 * misusing a file descriptor.  Forbids ruleset FDs, internal
-	 * filesystems (e.g. nsfs), including pseudo filesystems that will
-	 * never be mountable (e.g. sockfs, pipefs).
+	 * Forbids ruleset FDs, internal filesystems (e.g. nsfs), including
+	 * pseudo filesystems that will never be mountable (e.g. sockfs,
+	 * pipefs).
 	 */
-	if (!(f.file->f_mode & FMODE_PATH) ||
-			(f.file->f_op == &ruleset_fops) ||
+	if ((f.file->f_op == &ruleset_fops) ||
 			(f.file->f_path.mnt->mnt_flags & MNT_INTERNAL) ||
 			(f.file->f_path.dentry->d_sb->s_flags & SB_NOUSER) ||
 			d_is_negative(f.file->f_path.dentry) ||

@@ -308,7 +308,7 @@ TEST_F_FORK(layout1, inval)
 	ASSERT_LE(0, ruleset_fd);
 	ASSERT_EQ(-1, landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH,
 				&path_beneath, 0));
-	/* Returns EBADF because ruleset_fd contains O_PATH. */
+	/* Returns EBADF because ruleset_fd is not a landlock-ruleset FD. */
 	ASSERT_EQ(EBADF, errno);
 	ASSERT_EQ(0, close(ruleset_fd));
 
@@ -331,9 +331,8 @@ TEST_F_FORK(layout1, inval)
 	/* Tests without O_PATH. */
 	path_beneath.parent_fd = open(dir_s1d2, O_DIRECTORY | O_CLOEXEC);
 	ASSERT_LE(0, path_beneath.parent_fd);
-	ASSERT_EQ(-1, landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH,
+	ASSERT_EQ(0, landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH,
 				&path_beneath, 0));
-	ASSERT_EQ(EBADFD, errno);
 	ASSERT_EQ(0, close(path_beneath.parent_fd));
 
 	/* Tests with a ruleset FD. */
